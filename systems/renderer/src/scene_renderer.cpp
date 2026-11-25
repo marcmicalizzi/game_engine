@@ -80,6 +80,15 @@ constexpr u32 k_light_cap_word = 15;
 u64 light_cap_offset(const GpuScene& scene) noexcept {
   return scene.run_drops_offset() + 2 * sizeof(u32);
 }
+// The cap on the lights' shadow rays in a view's resolve params (R213; renderer.md): the frame's
+// word (`shadow_light_cap_tunable`, read once a frame), the share, and the pixels counted behind
+// the visible list's drop counts (`k_light_cap_word`), which the frame zeroes and reads back.
+void set_light_cap(gfx::ResolveParams& resolve, u32 word, bool cull,
+                   const GpuScene& scene) noexcept {
+  resolve.light_cap_rays = word;
+  resolve.light_cap_share = shadow_light_cap_share_tunable();
+  resolve.light_cap_count = cull ? scene.visible.address + light_cap_offset(scene) : 0;
+}
 // The deformed-vertex pool's allocation record, copied in behind every view's block: it is one
 // record for the frame, not one per view, because the pool's budget is the frame's.
 constexpr u32 k_alloc_words = sizeof(gfx::DeformAlloc) / sizeof(u32);
@@ -4007,6 +4016,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     gi_frame_ += gi_steps;
   }
   const u32 gi_shell_columns = gfx::gi_shell_columns(gi_shell_rays);
+  // R213: the cap's word, read once a frame for every view's params and the resolve's declaration.
+  const u32 light_cap_word = shadow_light_cap_tunable();
 
   for (u32 v = 0; v < views; ++v) {
     const View& view = views_[v];
@@ -4417,11 +4428,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // A light too faint to test (R115; renderer.md): read by the resolve only while the lights'
     // shadows are traced, and 0 traces every light.
     resolve.light_tolerance = shadow_light_tolerance_tunable();
-    // The cap on the lights' shadow rays (R213; renderer.md): its pixels counted behind the
-    // visible list's drop counts (`k_light_cap_word`), which the frame zeroes and reads back.
-    resolve.light_cap_rays = shadow_light_cap_tunable();
-    resolve.light_cap_share = shadow_light_cap_share_tunable();
-    resolve.light_cap_count = settings.cull ? scene.visible.address + light_cap_offset(scene) : 0;
+    set_light_cap(resolve, light_cap_word, settings.cull, scene);  // R213
     resolve.water_white_tier = water_white_tier_tunable();  // W139
     if (resolved_.hybrid) {
       // **Rays near, maps far** (R102): every light is traced as above within the ray distance of
@@ -6944,7 +6951,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the shadow rays
           // A masked candidate's pair (R186 A1), and the capped pixels' count behind the list
           // (R213), which the cap's atomics read and write.
-          if (shadows && light_cap_ && (shadow_light_cap_tunable() & 0xffu) != 0u) {
+          if (shadows && light_cap_ && (light_cap_word & 0xffu) != 0u) {
             b.write(rg_visible, gfx::Access::FragmentReadWrite);
           } else {
             b.read(rg_visible, gfx::Access::FragmentRead);

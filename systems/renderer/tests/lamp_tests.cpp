@@ -22,8 +22,10 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <brdf_reference.h>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <span>
 #include <string>
@@ -619,17 +621,47 @@ void lights_by_reach(ShadowMode shadows, const char* name) {
       (void)tunables::apply_overrides("renderer.shadow.light_rays=8");
     }
   } restore;
-  // With the cap off (R213): under it a pixel's traced lights are added in their rank's order, so
-  // a point whose cell holds no more lights than the cap and the whole array more would differ in
-  // the summation's last bits.
-  REQUIRE(tunables::apply_overrides("renderer.shadow.light_rays=0"));
-  REQUIRE(tunables::apply_overrides("renderer.lights.grid=true"));
+  // Under the cap on the shadow rays (R213; renderer.md, "A cap on the shadow rays a pixel
+  // traces") as well as without it: every ray (`light_rays` 0), the default's 8, and 3, where most
+  // lit pixels under traced shadows are cut. The grid lists more lights at a point than reach it,
+  // and the whole array far more, so the cap's ranking is entered with the grid off where it is
+  // not with it on; the ranking only decides, one walk adds every light, and a cut depends on the
+  // lights that reach the point alone, so all three hold the grid to the byte — and count the same
+  // capped pixels.
+  const auto pair = [&](const char* rays, CapturedFrame& culled, CapturedFrame& whole) {
+    REQUIRE(tunables::apply_overrides(rays));
+    REQUIRE(tunables::apply_overrides("renderer.lights.grid=true"));
+    REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, culled, &rig.error), rig.error);
+    const auto on = rig.renderer.stats();
+    REQUIRE(tunables::apply_overrides("renderer.lights.grid=false"));
+    REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, whole, &rig.error), rig.error);
+    const auto off = rig.renderer.stats();
+    u32 differ = 0;
+    for (u32 i = 0; i < culled.light.size(); ++i)
+      differ += culled.light[i] != whole.light[i];
+    MESSAGE(std::string(name) << ", " << std::string(rays) << ": " << differ
+                              << " light values differ with the grid off; capped pixels "
+                              << on.light_cap_pixels << " on, " << off.light_cap_pixels << " off");
+    CHECK(differ == 0);
+    CHECK(culled.light == whole.light);
+    CHECK(on.light_cap_pixels == off.light_cap_pixels);
+    return std::make_pair(on, off);
+  };
+  CapturedFrame cut_on, cut_off, default_on, default_off;
+  const auto cut = pair("renderer.shadow.light_rays=3", cut_on, cut_off);
+  (void)pair("renderer.shadow.light_rays=8", default_on, default_off);
   CapturedFrame culled, whole;
-  REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, culled, &rig.error), rig.error);
-  const auto on = rig.renderer.stats();
-  REQUIRE(tunables::apply_overrides("renderer.lights.grid=false"));
-  REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, whole, &rig.error), rig.error);
-  const auto off = rig.renderer.stats();
+  const auto [on, off] = pair("renderer.shadow.light_rays=0", culled, whole);
+  CHECK(on.light_cap_pixels == 0);
+  if (shadows == ShadowMode::RayTraced) {
+    // The cap was taken at 3: pixels stopped at it with the share unmet (their untraced lamps
+    // are faint enough here that the halves need not move).
+    CHECK(cut.first.light_cap_pixels > 0);
+  } else {
+    // Under the maps no lamp is traced, and the cap is never asked.
+    CHECK(cut_on.light == culled.light);
+    CHECK(default_on.light == culled.light);
+  }
   CHECK(on.lamp_lights == 63);
   CHECK(on.fire_lights == 6);
   CHECK(on.light_grid_cells > 100);
@@ -642,12 +674,6 @@ void lights_by_reach(ShadowMode shadows, const char* name) {
   CHECK(per_cell < 8.0);
   REQUIRE(culled.light.size() == size_t{k_width} * k_height * 3);
   REQUIRE(whole.light.size() == culled.light.size());
-  u32 differ = 0;
-  for (u32 i = 0; i < culled.light.size(); ++i)
-    differ += culled.light[i] != whole.light[i];
-  MESSAGE(std::string(name) << ": " << differ << " light values differ with the grid off");
-  CHECK(differ == 0);
-  CHECK(culled.light == whole.light);
   // And the floor is lit: the lamps reach it (the frame is not the moonless dark of none).
   u32 lit = 0;
   for (u32 i = 0; i < culled.light.size(); ++i)
@@ -657,12 +683,19 @@ void lights_by_reach(ShadowMode shadows, const char* name) {
 
 // **The cap on the shadow rays a pixel traces** (renderer.md; R213): twelve lamps whose reach
 // covers the whole floor, some low beside the slab so that it shadows them over parts of it, drawn
-// with every ray traced (`renderer.shadow.light_rays=0`) and with three rays a pixel. Where the
-// floor sees every lamp, the capped picture is the traced one (the traced lamps' visibility, 1, is
-// what the untraced are added at); everywhere it is off by no more than the untraced lamps'
-// unshadowed light, which the frame drawn under the cascaded maps (no lamp shadowed) bounds; the
-// pixels that stopped at the cap are counted, fewer for a larger share; and under the maps, which
-// trace no lamp, the cap changes no byte.
+// with every ray traced (`renderer.shadow.light_rays=0`), with three rays a pixel and at the
+// default's eight. Where the floor sees every lamp, the capped picture is the traced one (the
+// traced lamps' visibility, 1, is what the untraced are added at); every value lies between the
+// fills that leave the untraced lamps out and light them unshadowed, and so does every ray's; the
+// default's error is held to what was measured; the pixels that stopped at the cap are counted,
+// fewer for a larger share, and the same frame twice is the same bytes; where the cap is not taken
+// (its edge, compiled in or out) the bytes are every ray's; drawn by class the frame is the one
+// draw's; and under the maps, which trace no lamp, the cap changes no byte. The default's error on
+// the cap's floor against every ray, as a display's codes (below): what R213's mend measured there
+// and a margin (renderer.md, "What it keeps").
+constexpr u32 k_default_over2_most = 0;  // measured 0: none can be, with the worst held to 2
+constexpr i32 k_default_worst_most = 2;  // measured 1, and a code's margin
+
 void shadow_ray_cap(ShadowMode shadows, const char* name) {
   gfx::Device device;
   std::string error;
@@ -717,24 +750,40 @@ void shadow_ray_cap(ShadowMode shadows, const char* name) {
     REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, out, &rig.error), rig.error);
     capped = rig.renderer.stats().light_cap_pixels;
   };
-  CapturedFrame every, three, three_wide, none_lit;
-  u32 every_capped = 0, three_capped = 0, wide_capped = 0;
-  // The first frame sizes the ray tracing chain's capacity from nothing and may leave casters out
-  // of its structures (renderer.md, "The ray tracing chain's memory"): every side is a later frame.
+  CapturedFrame every, three, three_again, three_wide, eight, none_lit;
+  u32 every_capped = 0, three_capped = 0, again_capped = 0, wide_capped = 0, eight_capped = 0;
+  // Every side is the rig's first frame of its kind: the chain's first frame, which sizes its
+  // capacity from nothing (renderer.md, "The ray tracing chain's memory"), left no caster out here.
   draw("renderer.shadow.light_rays=0", every, every_capped);
-  draw("renderer.shadow.light_rays=0", every, every_capped);
+  draw("renderer.shadow.light_rays=8", eight, eight_capped);
   draw("renderer.shadow.light_rays=3", three, three_capped);
+  draw("renderer.shadow.light_rays=3", three_again, again_capped);
   draw("renderer.shadow.light_cap_share=1", three_wide, wide_capped);
+  REQUIRE(tunables::apply_overrides("renderer.shadow.light_cap_share=0.002"));
   REQUIRE_MESSAGE(dark.renderer.capture(frame, channels, none_lit, &dark.error), dark.error);
   REQUIRE(every.light.size() == size_t{k_width} * k_height * 3);
   REQUIRE(three.light.size() == every.light.size());
   CHECK(every_capped == 0);
+  // The cap is deterministic: the same frame twice is the same bytes and the same count.
+  CHECK(three_again.light == three.light);
+  CHECK(again_capped == three_capped);
   if (shadows != ShadowMode::RayTraced) {
     // Under the maps no lamp is traced: the cap is not asked, and counts nothing.
     CHECK(three.light == every.light);
+    CHECK(eight.light == every.light);
     CHECK(three_capped == 0);
+    CHECK(eight_capped == 0);
     return;
   }
+  // The fills at three rays: the untraced lamps unshadowed (1) and not at all (2), which bracket
+  // the estimate (0, the default) and every ray's picture.
+  CapturedFrame three_open, three_dark;
+  u32 open_capped = 0, dark_capped = 0;
+  draw("renderer.shadow.light_cap_fill=1", three_open, open_capped);
+  draw("renderer.shadow.light_cap_fill=2", three_dark, dark_capped);
+  REQUIRE(tunables::apply_overrides("renderer.shadow.light_cap_fill=0"));
+  CHECK(open_capped == three_capped);  // the fill moves no cut
+  CHECK(dark_capped == three_capped);
   // The lamps unshadowed: the same rig under the cascaded maps, which shadow no lamp.
   LampRig open;
   REQUIRE_MESSAGE(
@@ -748,12 +797,16 @@ void shadow_ray_cap(ShadowMode shadows, const char* name) {
   REQUIRE_MESSAGE(open_dark.renderer.capture(frame, channels, unshadowed_base, &open_dark.error),
                   open_dark.error);
   MESSAGE(std::string(name) << ": " << three_capped << " pixels stopped at three rays with the "
-                            << "0.2% share unmet, " << wide_capped << " with a share of 1");
+                            << "0.2% share unmet, " << wide_capped << " with a share of 1, "
+                            << eight_capped << " at the default's eight");
   CHECK(three_capped > 0);
   CHECK(wide_capped <= three_capped);
-  u32 seen_all = 0, differ = 0, over = 0;
-  f64 worst_seen = 0.0, worst_bound = 0.0;
+  u32 seen_all = 0, differ = 0, over = 0, bracket_out = 0;
+  f64 worst_seen = 0.0, worst_bound = 0.0, worst_bracket = 0.0;
   const auto at = [](const CapturedFrame& f, u32 i) { return static_cast<f64>(f.light[i]); };
+  // The target is halves: two sums of the same terms in another order may round apart by a step
+  // of the pixel's whole light.
+  const auto step = [](f64 x) { return std::ldexp(1.0, std::ilogb(std::max(x, 1e-30)) - 10); };
   // A pixel whose every channel is lit as with no lamp shadowed: it sees every lamp.
   Vector<u8> sees;
   sees.resize(size_t{k_width} * k_height);
@@ -773,25 +826,34 @@ void shadow_ray_cap(ShadowMode shadows, const char* name) {
     const f64 got = at(three, i) - base;
     const f64 open_light = at(unshadowed, i) - at(unshadowed_base, i);
     differ += three.light[i] != every.light[i];
+    // The fills' bracket, every pixel: the untraced lamps at 0 and at 1 hold the estimate between
+    // them, and every ray's picture, whose untraced lamps are seen in part, too — to a step of the
+    // pixel's light, since every ray adds them in the array's order and the cap after the walk.
+    {
+      const f64 lo = at(three_dark, i), hi = at(three_open, i);
+      const f64 slack = step(std::max(std::fabs(hi), std::fabs(at(every, i))));
+      const f64 e =
+          std::max({lo - at(three, i), at(three, i) - hi, lo - at(every, i), at(every, i) - hi}) /
+          slack;
+      worst_bracket = std::max(worst_bracket, e);
+      if (e > 1.0 && bracket_out < 6) {
+        MESSAGE("value " << i << ": dark fill " << lo << ", estimate " << at(three, i)
+                         << ", every ray " << at(every, i) << ", open fill " << hi);
+      }
+      bracket_out += e > 1.0;
+    }
     if (open_light <= 1e-4) continue;
     // Within the untraced lamps' light: no fill moves a pixel by more than every lamp's.
     const f64 bound = std::fabs(got - ref) / (open_light * (1.0 + 1e-3) + 1e-5);
     worst_bound = std::max(worst_bound, bound);
     CHECK(bound <= 1.0);
-    // The floor that sees every lamp, a pixel from any shadow's edge (where the capped walk's own
-    // arithmetic for a ray's direction may meet an edge the other walk's missed): the capped
-    // picture is the traced one, to the sum's rounding.
+    // The floor that sees every lamp: the capped picture is the traced one, to the sum's rounding
+    // (the traced lamps' rays are the walk's own, one body capped or not, and their visibility, 1,
+    // is what the untraced are added at).
     const u32 px = i / 3, x = px % k_width, y = px / k_width;
-    if (x == 0 || y == 0 || x + 1 >= k_width || y + 1 >= k_height) continue;
-    bool around = true;
-    for (u32 dy = 0; dy < 3; ++dy)
-      for (u32 dx = 0; dx < 3; ++dx)
-        around = around && sees[(y + dy - 1) * k_width + (x + dx - 1)] != 0;
-    if (!around) continue;
+    if (sees[px] == 0) continue;
     ++seen_all;
-    // The target is halves: the two sums may round apart by a step of the pixel's whole light.
-    const f64 step = std::ldexp(1.0, std::ilogb(at(every, i)) - 10);
-    const f64 e = std::fabs(got - ref) / (1e-4 * open_light + step);
+    const f64 e = std::fabs(got - ref) / (1e-4 * open_light + step(at(every, i)));
     worst_seen = std::max(worst_seen, e);
     if (e > 1.0 && over < 6) {
       MESSAGE("pixel " << x << "," << y << " channel " << i % 3 << ": capped " << got
@@ -803,10 +865,112 @@ void shadow_ray_cap(ShadowMode shadows, const char* name) {
   MESSAGE(std::string(name) << ": " << differ << " light values differ from every ray's; "
                             << seen_all << " see every lamp, worst there " << worst_seen
                             << " of a half's step and 1e-4 of the light; the worst elsewhere "
-                            << worst_bound << " of the lamps' unshadowed light");
+                            << worst_bound << " of the lamps' unshadowed light; the fills' "
+                            << "bracket worst at " << worst_bracket << " of a step, " << bracket_out
+                            << " values outside it");
   CHECK(differ > 0);  // three rays of twelve changed the picture where the slab shadows
   CHECK(seen_all > 1000);
   CHECK(over == 0);
+  CHECK(bracket_out == 0);
+
+  // **The default's error on this floor** (renderer.md, "What it keeps"): eight rays of twelve at
+  // the 0.2% share against every ray, as a display's code of each value (x / (1 + x), sRGB, 8
+  // bits): the values more than 2 codes off and the worst, each held to what was measured here plus
+  // a stated margin.
+  const auto code = [](f64 x) {
+    const f64 t = std::max(x, 0.0) / (1.0 + std::max(x, 0.0));
+    const f64 s = t <= 0.0031308 ? 12.92 * t : 1.055 * std::pow(t, 1.0 / 2.4) - 0.055;
+    return static_cast<i32>(std::lround(s * 255.0));
+  };
+  u32 eight_over2 = 0;
+  i32 eight_worst = 0;
+  for (u32 i = 0; i < every.light.size(); ++i) {
+    const i32 d = std::abs(code(at(eight, i)) - code(at(every, i)));
+    eight_over2 += d > 2;
+    eight_worst = std::max(eight_worst, d);
+  }
+  MESSAGE(std::string(name) << ": the default (8 rays, 0.2%) against every ray: " << eight_over2
+                            << " values over 2 codes of 255, the worst " << eight_worst);
+  CHECK(eight_over2 <= k_default_over2_most);
+  CHECK(eight_worst <= k_default_worst_most);
+
+  // **Where the cap is not taken** (renderer.md, "What it keeps"): four of the lamps, and a fifth
+  // far off the floor whose reach meets nothing here, so the whole array lists five where four
+  // reach. Made with the cap at four, the capped walk is compiled in (the leading two and five
+  // lamps are more than four); at four rays with the grid off the ranking is entered (five listed)
+  // and finds four candidates, the cap's edge, and cuts nothing; at eight it is not entered. Both
+  // are every ray's bytes. Made at the default's eight, the walk is compiled out, and that
+  // pipeline draws the same bytes as well.
+  Vector<FireDesc> four;
+  for (u32 k = 0; k < 4; ++k)
+    four.push_back(lamps[k]);
+  FireDesc far = lamps[0];
+  far.position = WorldPos{40.0, 0.5, 0.0};
+  far.reach_m = 1.0f;
+  four.push_back(far);
+  struct Grid {
+    ~Grid() { (void)tunables::apply_overrides("renderer.lights.grid=true"); }
+  } grid;
+  REQUIRE(tunables::apply_overrides("renderer.shadow.light_rays=4"));
+  CHECK(shadow_light_cap_compiled(0, four.size(), false));
+  LampRig few;
+  REQUIRE_MESSAGE(few.build(device, room, shadows, nullptr, std::span<const FireDesc>(four)),
+                  few.error);
+  REQUIRE(tunables::apply_overrides("renderer.shadow.light_rays=8"));
+  CHECK_FALSE(shadow_light_cap_compiled(0, four.size(), false));
+  LampRig few_out;
+  REQUIRE_MESSAGE(few_out.build(device, room, shadows, nullptr, std::span<const FireDesc>(four)),
+                  few_out.error);
+  REQUIRE(tunables::apply_overrides("renderer.lights.grid=false"));
+  const auto draw_few = [&](LampRig& r, const char* rays, CapturedFrame& out) {
+    REQUIRE(tunables::apply_overrides(rays));
+    REQUIRE_MESSAGE(r.renderer.capture(frame, channels, out, &r.error), r.error);
+    CHECK(r.renderer.stats().light_cap_pixels == 0);
+  };
+  CapturedFrame few_every, few_edge, few_eight, few_grid, out_every, out_eight;
+  draw_few(few, "renderer.shadow.light_rays=0", few_every);
+  draw_few(few, "renderer.shadow.light_rays=0", few_every);
+  draw_few(few, "renderer.shadow.light_rays=4", few_edge);
+  draw_few(few, "renderer.shadow.light_rays=8", few_eight);
+  REQUIRE(tunables::apply_overrides("renderer.lights.grid=true"));
+  draw_few(few, "renderer.shadow.light_rays=4", few_grid);
+  draw_few(few_out, "renderer.shadow.light_rays=0", out_every);
+  draw_few(few_out, "renderer.shadow.light_rays=0", out_every);
+  draw_few(few_out, "renderer.shadow.light_rays=8", out_eight);
+  CHECK(few_edge.light == few_every.light);
+  CHECK(few_eight.light == few_every.light);
+  CHECK(few_grid.light == few_every.light);
+  CHECK(out_every.light == few_every.light);
+  CHECK(out_eight.light == few_every.light);
+
+  // **The resolve by class keeps its early depth test** (renderer.md, "A cap on the shadow rays a
+  // pixel traces"; R151): drawn by class, depth-equal, the capped frame is the one draw's bytes and
+  // counts the same pixels, none of another class's.
+  tunables::Tunable* classes = tunables::find("renderer.resolve.classes");
+  REQUIRE(classes != nullptr);
+  std::string previous;
+  classes->append_value(previous);
+  struct Classes {
+    tunables::Tunable* t;
+    const std::string& was;
+    ~Classes() { (void)t->set_from_text(was); }
+  } classes_back{classes, previous};
+  REQUIRE(classes->set_from_text("draws"));
+  LampRig classed;
+  REQUIRE_MESSAGE(classed.build(device, room, shadows, nullptr, std::span<const FireDesc>(lamps)),
+                  classed.error);
+  REQUIRE(tunables::apply_overrides("renderer.shadow.light_rays=3"));
+  CapturedFrame by_class;
+  REQUIRE_MESSAGE(classed.renderer.capture(frame, channels, by_class, &classed.error),
+                  classed.error);
+  REQUIRE_MESSAGE(classed.renderer.capture(frame, channels, by_class, &classed.error),
+                  classed.error);
+  MESSAGE(std::string(name) << ": by class, " << classed.renderer.resolve_classes_drawn()
+                            << " classes drawn, " << classed.renderer.stats().light_cap_pixels
+                            << " capped pixels");
+  CHECK(classed.renderer.resolve_classes_drawn() > 0);
+  CHECK(by_class.light == three.light);
+  CHECK(classed.renderer.stats().light_cap_pixels == three_capped);
 }
 
 }  // namespace

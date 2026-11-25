@@ -1,12 +1,12 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R213",
-  "reason": "R213's cap on the lights' shadow rays: the resolve's three cap words and the visible list declared read and written for its count in record_frame; its section in renderer.md and the frame record's field in apps.md",
+  "reason": "R213's cap on the lights' shadow rays and its mend: the cap's helper and the resolve's visible-list declaration in record_frame; its section in renderer.md (one walk, the class mode's early depth test, what the cases hold) and the frame record's field in apps.md",
   "date": "2026-11-25",
   "by": "Marc Micalizzi",
   "deltas": {
-    "renderer.record_frame.lines": 12,
-    "page:docs/subsystems/renderer.md": 8730,
+    "renderer.record_frame.lines": 10,
+    "page:docs/subsystems/renderer.md": 13962,
     "page:docs/subsystems/apps.md": 300
   }
 }

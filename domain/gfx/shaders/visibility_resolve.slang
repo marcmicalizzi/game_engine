@@ -1583,6 +1583,12 @@ float4 empty_pixel(ResolveParams* params, float2 source, uint2 noise_pixel) {
 #ifndef RESOLVE_HALF_PASS
 #include "resolve_class.slang"
 
+// The depth test before the shader (R213; renderer.md, "A cap on the shadow rays a pixel traces"):
+// the cap's count is a storage write, and a shader with one is otherwise depth-tested after it runs,
+// so the resolve by class (R151, depth-equal) would shade every class's pixels in every class's draw
+// and count them. Nothing drawn moves: the shader writes no depth and no pipeline of the resolve
+// writes depth or uses stencil, so a discard below leaves the depth image as a late test would.
+[earlydepthstencil]
 [shader("fragment")]
 float4 fs_resolve(FullscreenOut in) : SV_Target {
   ResolveParams* params = (ResolveParams*)g_push.params;
@@ -2100,54 +2106,52 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
         params->light_grid != 0 ? params->lights + uint64_t(params->light_grid) : uint64_t(0),
         params->light_count, s.position);
     uint i;
-#ifdef RESOLVE_RAY_SHADOWS
     // **A cap on the shadow rays a pixel traces** (renderer.md; R213, after Ward's adaptive shadow
-    // testing, 1991, with the pixel's own tests for his history): where more lights reach the point
-    // than `cap`, the ones a ray would be asked for are ranked by their unshadowed irradiance here
-    // — the light's luminance at the point times its cosine to the normal, which no eye moves —
+    // testing, 1991, with the pixel's own tests for his history): where more finite lights reach
+    // the point than `cap`, those a ray could be asked for are ranked by their unshadowed irradiance
+    // here — the light's luminance at the point times its cosine to the normal, which no eye moves —
     // with ties to the lower index, and the heaviest traced: `cap` of them, or fewer once what the
     // rest could add is at most `light_cap_share` of what they could. The rest are added at the
     // fill. The cap counts the finite lights: a directional one (a sky's moon, which leads the
-    // array) is traced as below, every pixel. A point no more finite lights reach than the cap, and
-    // every pixel with `cap` 0, takes the walk below: R87's bytes.
-    const uint cap = min(params->light_cap_rays & 0xffu, k_max_light_cap_rays);
+    // array) is traced as below, every pixel. The ranking only decides; **the one walk below adds
+    // every light**, capped or not, with the same tests in the same order and the same arithmetic,
+    // so a pixel with nothing to cut — no more finite lights reach it than `cap`, or `cap` is 0 —
+    // is R87's walk to the byte, and a cut depends on the lights that reach the point and their
+    // weights alone, never on how many the light grid (or the whole array) listed there.
+#ifdef RESOLVE_RAY_SHADOWS
+    bool capped = false;  // a cut was made: the lights ranked under `cut` are added at the fill
+    uint cut = 0u;        // the word of the last light traced; every heavier word is traced too
+    bool met = true;      // the share was met within the cap
     uint directional = 0u;
+    const uint cap = min(params->light_cap_rays & 0xffu, k_max_light_cap_rays);
     while (directional < params->light_count && lights[directional].direction_type.w >= 1.5)
       directional += 1u;
+    // The ranking is entered only where the walk lists more lights than the cap could take (a cheap
+    // count, which decides nothing drawn: a ranking that finds no more candidates than `cap` cuts
+    // nothing, and the walk below is then the uncapped one).
     if (k_scene_light_cap && cap != 0u &&
         (params->shadow_flags & (k_shadow_lights | k_shadow_cascades)) == k_shadow_lights &&
         !stop_skips(k_stop_light_shadows) && light_walk_count(walk) > cap + directional) {
-      // Two walks, each light's BSDF once, and the rays in the array's order. The first ranks the
-      // candidates by the cheap weight alone (a light facing away from the surface is added as
-      // below, unshadowed) — a rank is one word, the weight's half-float bits over the index's
-      // complement (`light_cap_key`), so the ranking is `cap` registers and a tie goes to the lower
-      // index — and the cut is read off the ranking with no ray: the fewest of the heaviest whose
-      // weight leaves the rest at most `light_cap_share` of theirs, `cap` at most. The second walks
-      // the array again and traces the lights ranked above the cut, so a wave's lanes ask their
-      // rays of the same light together (a rank-order trace made every lane trace another light:
-      // 1.42 -> 1.69 ms at 8 fires), and sums the rest unshadowed for the fill.
-      const LightWalk fresh = walk;
+      // The candidates by the cheap weight alone, with no BSDF and no ray: a rank is one word, the
+      // weight's half-float bits over the index's complement (`light_cap_key`), so the ranking is
+      // `cap` registers and a tie goes to the lower index. A light facing away from the surface is
+      // no candidate (the walk below adds it unshadowed, as it does every light's).
+      LightWalk rank = walk;
       uint top[k_max_light_cap_rays];
       [unroll] for (uint j = 0; j < k_max_light_cap_rays; ++j)
         top[j] = 0u;
       float total_w = 0.0;
       uint candidates = 0u;
-      while (light_walk_next(walk, i)) {
+      while (light_walk_next(rank, i)) {
+        if (i < directional) continue;  // traced as below, uncounted
         float3 light_dir;
         float3 radiance;
         float light_distance;
         if (!light_sample(lights[i], s.position, light_dir, radiance, light_distance)) continue;
-        if (has_sky && lights[i].direction_type.w >= 1.5) {
-          radiance = sky_light_at(sky, s.position, light_dir, radiance);
-        }
         if (!(foliage ? foliage_lights(material, surface, light_dir)
                       : dot(surface.normal, light_dir) > 0.0)) {
-          float3 lit = brdf_direct(surface, light_dir, radiance);  // no shadow is asked, as below
-          if (foliage) lit = foliage_direct(material, surface, light_dir, radiance, lit);
-          color += lit;
           continue;
         }
-        if (i < directional) continue;  // traced in the second walk, uncounted
         const float w = light_cap_weight(radiance, surface.normal, light_dir);
         total_w += w;
         candidates += 1u;
@@ -2160,79 +2164,28 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
           }
         }
       }
-      // The cut: the ranked weights as their halves, which is all the decision needs.
-      float ranked_w = 0.0;
-      uint cut = 0u;  // the rank of the last light traced's word; every heavier word is traced too
-      bool met = candidates <= cap;
-      [unroll] for (uint j = 0; j < k_max_light_cap_rays; ++j) {
-        if (j < cap && j < candidates && !met) {
-          ranked_w += f16tof32(top[j] >> 16);
-          cut = top[j];
-          met = total_w - ranked_w <= params->light_cap_share * ranked_w;
-        }
-      }
-      if (candidates <= cap) cut = 0u;  // every candidate is traced
-      float traced_w = 0.0;
-      float found_w = 0.0;
-      float3 untraced = float3(0.0);
-      LightWalk again = fresh;
-      while (light_walk_next(again, i)) {
-        float3 light_dir;
-        float3 radiance;
-        float light_distance;
-        if (!light_sample(lights[i], s.position, light_dir, radiance, light_distance)) continue;
-        if (has_sky && lights[i].direction_type.w >= 1.5) {
-          radiance = sky_light_at(sky, s.position, light_dir, radiance);
-        }
-        if (!(foliage ? foliage_lights(material, surface, light_dir)
-                      : dot(surface.normal, light_dir) > 0.0)) {
-          continue;  // added in the first walk
-        }
-        const float w = light_cap_weight(radiance, surface.normal, light_dir);
-        float3 lit = brdf_direct(surface, light_dir, radiance);
-        if (foliage) lit = foliage_direct(material, surface, light_dir, radiance, lit);
-        float v;
-        // A directional light is traced as below (unless too faint to test) and not counted; one
-        // call of the shadow query for both, since every call is the ray query's whole loop inlined.
-        const bool faint = weigh && max(lit.r, max(lit.g, lit.b)) <= rest;
-        if (i < directional ? !faint : light_cap_key(w, i) >= cut) {
-          v = shadow_visibility(params, k_shadow_lights, i + 1u, s.position,
-                                foliage ? ray_side(s.geometric, light_dir) : s.geometric, ray_bias,
-                                light_dir, light_distance - ray_bias - lights[i].spot.z);
-          if (i >= directional) {
-            traced_w += w;
-            found_w += w * v;
+      // The cut, read off the ranking: the fewest of the heaviest whose weight leaves the rest at
+      // most `light_cap_share` of theirs, `cap` at most; the ranked weights as their halves, which
+      // is all the decision needs.
+      capped = candidates > cap;
+      if (capped) {
+        float ranked_w = 0.0;
+        met = false;
+        [unroll] for (uint j = 0; j < k_max_light_cap_rays; ++j) {
+          if (j < cap && !met) {
+            ranked_w += f16tof32(top[j] >> 16);
+            cut = top[j];
+            met = total_w - ranked_w <= params->light_cap_share * ranked_w;
           }
-        } else if (faint) {
-          v = sun_visibility;  // too faint to test, as below
-        } else {
-          untraced += lit;  // at the fill, below
-          continue;
-        }
-        if (v >= 1.0) {
-          color += lit;
-        } else if (v > 0.0) {
-          float3 shaded = brdf_direct(surface, light_dir, radiance * v);
-          if (foliage) shaded = foliage_direct(material, surface, light_dir, radiance * v, shaded);
-          color += shaded;
         }
       }
-      // The untraced at the fill: the traced ones' visibility weighted by their irradiance (the
-      // default), 1, or 0 — any of the three moves the pixel by at most their unshadowed light,
-      // which the cut held to the share of the traced lights' wherever it was met before the cap.
-      const uint fill = (params->light_cap_rays >> 8) & 3u;
-      const float at = fill == 1u ? 1.0
-                       : fill == 2u ? 0.0
-                       : (traced_w > 0.0 ? found_w / traced_w : sun_visibility);
-      color += untraced * at;
-      // A pixel that stopped at the cap with its bound unmet, counted once a wave by a lane that is
-      // not a helper (a helper's atomic writes nothing).
-      if (!met && params->light_cap_count != 0 && !IsHelperLane()) {
-        const uint n = WaveActiveCountBits(true);
-        if (WaveIsFirstLane()) InterlockedAdd(*(uint*)params->light_cap_count, n);
-      }
-    } else
+    }
+    float traced_w = 0.0;
+    float found_w = 0.0;
+    float3 untraced = float3(0.0);
+    bool filled = false;
 #endif
+    // **The one walk** (R87's, and the cap's): every light, in the array's order.
     while (light_walk_next(walk, i)) {
       float3 light_dir;
       float3 radiance;
@@ -2249,14 +2202,33 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
                    : dot(surface.normal, light_dir) > 0.0) &&
           !stop_skips(k_stop_light_shadows)) {
         if (weigh && max(lit.r, max(lit.g, lit.b)) <= rest) {
-          v = sun_visibility;
+          v = sun_visibility;  // too faint to test, whether ranked or not
         } else {
+#ifdef RESOLVE_RAY_SHADOWS
+          // Under a cut, a finite light ranked below it is added at the fill, after the walk.
+          float w = 0.0;
+          const bool ranked = capped && i >= directional;
+          if (ranked) {
+            w = light_cap_weight(radiance, surface.normal, light_dir);
+            if (light_cap_key(w, i) < cut) {
+              untraced += lit;
+              filled = true;
+              continue;
+            }
+          }
+#endif
           // The ray stops short of the light by the bias and by its emitter's radius
           // (`spot.z`: a lamp's globe, R86), so the glass round a light never shadows it.
           v = shadow_visibility(params, k_shadow_lights, i + 1u, s.position,
                                 foliage ? ray_side(s.geometric, light_dir) : s.geometric,
                                 ray_bias, light_dir,
                                 light_distance - ray_bias - lights[i].spot.z);
+#ifdef RESOLVE_RAY_SHADOWS
+          if (ranked) {
+            traced_w += w;
+            found_w += w * v;
+          }
+#endif
         }
         if (v <= 0.0) continue;
       }
@@ -2270,6 +2242,26 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
         color += shaded;
       }
     }
+#ifdef RESOLVE_RAY_SHADOWS
+    if (capped) {
+      // The untraced at the fill: the traced ones' visibility weighted by their irradiance (the
+      // default), 1, or 0 — any of the three moves the pixel by at most their unshadowed light,
+      // which the cut held to the share of the traced lights' wherever it was met before the cap.
+      if (filled) {
+        const uint fill = (params->light_cap_rays >> 8) & 3u;
+        const float at = fill == 1u ? 1.0
+                         : fill == 2u ? 0.0
+                         : (traced_w > 0.0 ? found_w / traced_w : sun_visibility);
+        color += untraced * at;
+      }
+      // A pixel that stopped at the cap with its bound unmet, counted once a wave by a lane that is
+      // not a helper (a helper's atomic writes nothing).
+      if (!met && params->light_cap_count != 0 && !IsHelperLane()) {
+        const uint n = WaveActiveCountBits(true);
+        if (WaveIsFirstLane()) InterlockedAdd(*(uint*)params->light_cap_count, n);
+      }
+    }
+#endif
     color += indirect;
     // Emission — the factor times the emissive texture — is radiance the surface gives off, added
     // after the lighting and touched by no shadow and no occlusion.

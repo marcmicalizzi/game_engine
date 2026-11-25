@@ -397,8 +397,8 @@ tunables::Int shadow_light_rays{
 tunables::Float shadow_light_cap_share{
     "renderer.shadow.light_cap_share", 0.002, 0.0, 1.0,
     "Under the cap, a pixel traces fewer than its rays once the untraced lights' irradiance is at "
-    "most this share of the traced lights' (0.2%; R213 measured 2%, Lightcuts' Weber fraction, "
-    "too coarse)"};
+    "most this share of the traced lights' (0.2%; R213 measured 2%, the Weber fraction Lightcuts' "
+    "abstract and course pages give, too coarse; the paper was not read)"};
 tunables::Int shadow_light_cap_fill{
     "renderer.shadow.light_cap_fill", 0, 0, 2,
     "What the lights past the cap are added at: 0 the traced lights' visibility weighted by their "
