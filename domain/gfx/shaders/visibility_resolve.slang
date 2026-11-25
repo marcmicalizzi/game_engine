@@ -228,6 +228,9 @@ struct ResolveParams {
 };
 // gfx::k_max_light_cap_rays: the most `light_cap_rays` names, the ranking's registers (R213).
 static const uint k_max_light_cap_rays = 8u;
+// gfx::k_spec_scene_light_cap: false where the scene cannot light more lights than the cap, so the
+// capped walk and its ranking's registers fold out at the driver's compile (R213).
+[vk::constant_id(213)] const bool k_scene_light_cap = true;
 
 // **The resolve's split** (gfx::ResolveStop; renderer.md, "Where the resolve's time goes"; R115).
 // The pass is one draw, so its time is divided by frames that end each pixel's work after a named
@@ -2094,7 +2097,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // deliver. The untraced are added at the fill, by their unshadowed sum. A point no more lights
     // reach than the cap, and every pixel with `cap` 0, takes the walk below: R87's bytes.
     const uint cap = min(params->light_cap_rays & 0xffu, k_max_light_cap_rays);
-    if (cap != 0u &&
+    if (k_scene_light_cap && cap != 0u &&
         (params->shadow_flags & (k_shadow_lights | k_shadow_cascades)) == k_shadow_lights &&
         !stop_skips(k_stop_light_shadows) && light_walk_count(walk) > cap) {
       float top_w[k_max_light_cap_rays];

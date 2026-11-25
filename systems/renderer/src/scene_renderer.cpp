@@ -344,10 +344,23 @@ const char* resolve_module_name(bool shadows, bool water, bool terrain, bool sto
 }
 
 // R177: one SPIR-V, the foliage lines folded out by the driver where the scene has none.
-gfx::Specialization resolve_specialization(bool foliage) noexcept {
+gfx::Specialization resolve_specialization(bool foliage, bool light_cap) noexcept {
   gfx::Specialization spec;
   if (!foliage) spec.set(gfx::k_spec_scene_foliage, 0u);
+  if (!light_cap) spec.set(gfx::k_spec_scene_light_cap, 0u);  // R213
   return spec;
+}
+bool scene_light_cap(std::span<const FireDesc> fires, std::span<const FireDesc> lamps,
+                     std::span<const SceneProp> props) noexcept {
+  bool props_light = false;
+  for (const SceneProp& prop : props)
+    props_light = props_light || prop.fire.has_value() || prop.lamp.has_value();
+  return shadow_light_cap_compiled(fires.size(), lamps.size(), props_light);
+}
+bool scene_light_cap(const SceneData& data) noexcept {
+  return scene_light_cap(std::span<const FireDesc>(data.fires.data(), data.fires.size()),
+                         std::span<const FireDesc>(data.lamps.data(), data.lamps.size()),
+                         std::span<const SceneProp>(data.props.data(), data.props.size()));
 }
 
 // **The retired set is freed on a worker** (R128; renderer.md, "A resize is swapped in, not waited
@@ -625,6 +638,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   scene_ = &scene;
   // The scene's fires (fire.h): its own, and the props' that a tail may place.
   fires_.reset(scene.data());
+  light_cap_ = scene_light_cap(scene.data());  // R213: the cap compiled into the resolve or not
   far_forest_.reset(&scene.data().far_forest);
   frame_fires_.clear();
   frame_fires_.reserve(k_max_fires);
@@ -1067,7 +1081,7 @@ bool SceneRenderer::create_frame_pass_pipelines(std::string* error) {
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
   resolve_desc.color_format = k_frame_pass_format;
-  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials());
+  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials(), light_cap_);
   gfx::GraphicsPipelineDesc encode_desc;
   encode_desc.vertex = encode->module;
   encode_desc.vertex_entry = "vs_encode";
@@ -1551,7 +1565,8 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     if (!gfx::create_compute_pipeline(
             device, half->module, "half_sun_main",
             std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1), sizeof(u64),
-            resolve_specialization(scene_->has_foliage_materials()), pipelines_.half_sun, error)) {
+            resolve_specialization(scene_->has_foliage_materials(), light_cap_),
+            pipelines_.half_sun, error)) {
       return false;
     }
   }
@@ -1568,7 +1583,8 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     if (!gfx::create_compute_pipeline(
             device, gi->module, "gi_sample_main",
             std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1),
-            sizeof(gfx::GiStepPush), resolve_specialization(scene_->has_foliage_materials()),
+            sizeof(gfx::GiStepPush),
+            resolve_specialization(scene_->has_foliage_materials(), light_cap_),
             pipelines_.gi_sample, error) ||
         !gfx::create_compute_pipeline(
             device, gi->module, "gi_fold_main",
@@ -1732,15 +1748,16 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
   resolve_desc.color_format = desc_.color_format;
-  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials());
+  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials(), light_cap_);
   // The one draw's pipeline, unless the renderer is made to draw by class (R151): the same module
   // twice in one batch is the driver compiling it twice. Started on a worker when the scene file
   // was read (early_pipelines.h; R205): taken after the batch, so the rest compiles beside it.
   const bool one_draw = resolve_one_draw_built(resolve_class_mode_for(resolve_classes_tunable(),
                                                                       scene_->has_masked())) ||
                         resolved_.direct;
-  const ResolveKey key{resolve->name, resolve->hash, desc_.color_format,
-                       scene_->has_foliage_materials(), bindless.capacity()};
+  const ResolveKey key{resolve->name,      resolve->hash,
+                       desc_.color_format, scene_->has_foliage_materials(),
+                       light_cap_,         bindless.capacity()};
   const bool early = one_draw && desc_.early != nullptr && desc_.early->has(key);
   // Asked only where a compile was started and not taken: another key is then a wrong guess, and
   // is counted as one (a re-create after the take, or nothing started, is not).
@@ -6927,7 +6944,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the shadow rays
           // A masked candidate's pair (R186 A1), and the capped pixels' count behind the list
           // (R213), which the cap's atomics read and write.
-          if (shadows && (shadow_light_cap_tunable() & 0xffu) != 0u) {
+          if (shadows && light_cap_ && (shadow_light_cap_tunable() & 0xffu) != 0u) {
             b.write(rg_visible, gfx::Access::FragmentReadWrite);
           } else {
             b.read(rg_visible, gfx::Access::FragmentRead);

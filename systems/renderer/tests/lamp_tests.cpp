@@ -683,8 +683,8 @@ void shadow_ray_cap(ShadowMode shadows, const char* name) {
     const f64 r = (k % 2 == 0) ? 1.6 : 3.4;
     lamp.position = WorldPos{1.3 + r * std::cos(a), 0.45 + 0.6 * (k % 3), r * std::sin(a)};
     lamp.intensity = 0.6f + 0.15f * static_cast<f32>(k % 4);
-    lamp.color = Vec3{0.8f + 0.04f * static_cast<f32>(k % 5), 1.0f,
-                      0.7f + 0.05f * static_cast<f32>(k % 4)};
+    lamp.color =
+        Vec3{0.8f + 0.04f * static_cast<f32>(k % 5), 1.0f, 0.7f + 0.05f * static_cast<f32>(k % 4)};
     lamp.color = lamp.color * (1.0f / luminance(lamp.color));
     lamp.reach_m = 20.0f;
     lamps.push_back(lamp);
@@ -737,9 +737,9 @@ void shadow_ray_cap(ShadowMode shadows, const char* name) {
   }
   // The lamps unshadowed: the same rig under the cascaded maps, which shadow no lamp.
   LampRig open;
-  REQUIRE_MESSAGE(open.build(device, room, ShadowMode::Cascaded, nullptr,
-                             std::span<const FireDesc>(lamps)),
-                  open.error);
+  REQUIRE_MESSAGE(
+      open.build(device, room, ShadowMode::Cascaded, nullptr, std::span<const FireDesc>(lamps)),
+      open.error);
   LampRig open_dark;  // its own floor with no lamp, since the two rigs' sun may differ
   REQUIRE_MESSAGE(open_dark.build(device, room, ShadowMode::Cascaded, nullptr), open_dark.error);
   CapturedFrame unshadowed, unshadowed_base;
@@ -802,9 +802,9 @@ void shadow_ray_cap(ShadowMode shadows, const char* name) {
   }
   MESSAGE(std::string(name) << ": " << differ << " light values differ from every ray's; "
                             << seen_all << " see every lamp, worst there " << worst_seen
-                            << " of a half's step and 1e-4 of the light; the worst elsewhere " << worst_bound
-                            << " of the lamps' unshadowed light");
-  CHECK(differ > 0);           // three rays of twelve changed the picture where the slab shadows
+                            << " of a half's step and 1e-4 of the light; the worst elsewhere "
+                            << worst_bound << " of the lamps' unshadowed light");
+  CHECK(differ > 0);  // three rays of twelve changed the picture where the slab shadows
   CHECK(seen_all > 1000);
   CHECK(over == 0);
 }
@@ -827,10 +827,12 @@ TEST_CASE("lamp: lights culled by reach draw the bytes of every light, under the
   lights_by_reach(ShadowMode::Cascaded, "--shadows csm");
 }
 
-TEST_CASE("lamp: the cap on the shadow rays a pixel traces holds the picture, under traced shadows") {
+TEST_CASE(
+    "lamp: the cap on the shadow rays a pixel traces holds the picture, under traced shadows") {
   shadow_ray_cap(ShadowMode::RayTraced, "--shadows rt");
 }
 
-TEST_CASE("lamp: the cap on the shadow rays a pixel traces changes nothing under the cascaded maps") {
+TEST_CASE(
+    "lamp: the cap on the shadow rays a pixel traces changes nothing under the cascaded maps") {
   shadow_ray_cap(ShadowMode::Cascaded, "--shadows csm");
 }

@@ -1364,6 +1364,8 @@ class SceneRenderer {
   // The scene's fires (fire.h): its own and its placed props', found again when the tail changes,
   // and this frame's burnt at the world's clock (reserved once: a frame allocates nothing).
   FireSet fires_;
+  // R213: the resolve's pipelines were made with the capped walk compiled in (`scene_light_cap`).
+  bool light_cap_ = false;
   // **The far forest's hand-off** (renderer.md, "The far forest"): which of the load's far tiles
   // are drawn, moved with every tail handed over (`set_dynamic_instances`).
   FarForestHandOff far_forest_;

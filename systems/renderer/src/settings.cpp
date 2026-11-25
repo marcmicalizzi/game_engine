@@ -858,6 +858,10 @@ u32 shadow_light_cap_tunable() noexcept {
 f32 shadow_light_cap_share_tunable() noexcept {
   return static_cast<f32>(shadow_light_cap_share.get());
 }
+bool shadow_light_cap_compiled(u64 fires, u64 lamps, bool props_light) noexcept {
+  const u64 rays = static_cast<u64>(shadow_light_rays.get());
+  return rays != 0 && (props_light || k_light_cap_leading + fires + lamps > rays);
+}
 u32 water_white_tier_tunable() noexcept { return static_cast<u32>(water_white_tier.get()); }
 u32 foliage_backlit_tier_tunable() noexcept { return static_cast<u32>(foliage_backlit_tier.get()); }
 f32 half_rate_sides_tunable(u64 frame_index) noexcept {

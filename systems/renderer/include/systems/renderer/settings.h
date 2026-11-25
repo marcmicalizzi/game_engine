@@ -711,10 +711,17 @@ bool half_rate_centre_tunable() noexcept;
 f32 shadow_light_tolerance_tunable() noexcept;
 // `renderer.shadow.light_rays` (8) and `renderer.shadow.light_cap_fill` (0) as
 // `gfx::ResolveParams::light_cap_rays`, and `renderer.shadow.light_cap_share` (0.02) as
-// `light_cap_share`: the cap on the lights' shadow rays a pixel traces (R213; renderer.md, "A cap on
-// the shadow rays a pixel traces"). A rays count of 0 traces every light.
+// `light_cap_share`: the cap on the lights' shadow rays a pixel traces (R213; renderer.md, "A cap
+// on the shadow rays a pixel traces"). A rays count of 0 traces every light.
 u32 shadow_light_cap_tunable() noexcept;
 f32 shadow_light_cap_share_tunable() noexcept;
+// Whether the resolve's pipelines are made with the capped walk compiled in
+// (`gfx::k_spec_scene_light_cap`; R213): the cap is on and the scene can light more lights than it
+// — its `fires` and `lamps` behind the array's two leading lights (the stand-in's pair, or a sky's
+// moon), or any prop that carries a fire or a lamp, since a tail may place any number. Read when
+// the pipelines are made: a scene that cannot exceed the cap draws R87's resolve, at its cost.
+inline constexpr u64 k_light_cap_leading = 2;
+bool shadow_light_cap_compiled(u64 fires, u64 lamps, bool props_light) noexcept;
 // `renderer.water.white_tier` (1): `gfx::ResolveParams::water_white_tier`, the white water's tier
 // (W139; water.md, "Shading"): 0 the low tier's white, 1 the top tier's.
 u32 water_white_tier_tunable() noexcept;
