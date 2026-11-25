@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R219",
+  "reason": "gfx.md names the render graph's new pass labels (RenderGraph::set_labels) in one line pointing at bench.md, where the capture they serve is described",
+  "date": "2026-11-24",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/gfx.md": 88
+  }
+}

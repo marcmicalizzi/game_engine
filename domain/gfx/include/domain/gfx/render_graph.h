@@ -172,6 +172,13 @@ class RenderGraph {
   // dependency nobody declared. Off by default; it outlives reset(), and moves no barrier count.
   void set_serialize(bool on) noexcept { serialize_ = on; }
   bool serialize() const noexcept { return serialize_; }
+  // **Pass labels** (R219): with it on, execute() wraps every pass — its barriers, its rendering
+  // scope and its body — in a command-buffer label named as the pass is, so a Vulkan capture
+  // (Nsight Systems' Vulkan trace, RenderDoc) shows the frame by the graph's passes. Only where the
+  // device enabled VK_EXT_debug_utils (`DeviceFeatures::debug_labels`); the caller passes both.
+  // Off by default and then one test of a bool a pass; it outlives reset(), and moves no barrier.
+  void set_labels(bool on) noexcept { labels_ = on; }
+  bool labels() const noexcept { return labels_; }
 
   // --- lookups for pass bodies ---
   const BufferResource& buffer(RgBuffer handle) const noexcept;
@@ -206,6 +213,7 @@ class RenderGraph {
     u32 image_barriers = 0;
     u32 layout_transitions = 0;
     u32 raster_passes = 0;
+    u32 labels = 0;  // the pass labels the last execute() recorded: `passes` with labels on, else 0
   };
   const Stats& stats() const noexcept { return stats_; }
 
@@ -326,6 +334,7 @@ class RenderGraph {
   Extent2D render_area_{};
   bool compiled_ = false;
   bool serialize_ = false;
+  bool labels_ = false;
   Stats stats_;
 };
 

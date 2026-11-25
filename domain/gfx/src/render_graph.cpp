@@ -580,8 +580,20 @@ void RenderGraph::execute(CommandList commands) {
   // Each pass's recording is timed, two clock reads a pass: a frame whose recording is slow says
   // which pass it was in (`pass_cpu_ns`), which a total cannot.
   i64 mark = time::monotonic_ns();
+  // The pass labels (R219): the extension's commands, where the instance has them. A label opens
+  // before the pass's barriers so a capture charges the pass its own waits.
+  const bool labels =
+      labels_ && vkCmdBeginDebugUtilsLabelEXT != nullptr && vkCmdEndDebugUtilsLabelEXT != nullptr;
+  stats_.labels = 0;
   for (u32 p = 0; p < passes_.size(); ++p) {
     Pass& pass = passes_[p];
+    if (labels) {
+      VkDebugUtilsLabelEXT label{};
+      label.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+      label.pLabelName = pass.name;
+      vkCmdBeginDebugUtilsLabelEXT(cb, &label);
+      ++stats_.labels;
+    }
     if (serialize_) {
       VkMemoryBarrier2 all{};
       all.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
@@ -610,6 +622,7 @@ void RenderGraph::execute(CommandList commands) {
     if (raster) begin_rendering(commands, pass);
     pass.execute(commands, *this, pass.context);
     if (raster) vkCmdEndRendering(cb);
+    if (labels) vkCmdEndDebugUtilsLabelEXT(cb);
     const i64 now = time::monotonic_ns();
     pass.cpu_ns = now - mark;
     mark = now;

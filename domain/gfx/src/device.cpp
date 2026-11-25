@@ -577,6 +577,8 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   if (debug_utils) {
     vkCreateDebugUtilsMessengerEXT(h.instance, &messenger_info, nullptr, &h.messenger);
   }
+  impl->features.debug_labels = debug_utils && vkCmdBeginDebugUtilsLabelEXT != nullptr &&
+                                vkCmdEndDebugUtilsLabelEXT != nullptr;
 
   // ---- physical device: match the chosen adapter by ids and name ----
   u32 count = 0;

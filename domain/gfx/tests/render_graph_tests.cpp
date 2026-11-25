@@ -669,3 +669,80 @@ TEST_CASE("render graph: passes that declare only a write still see the pass bef
   gfx::destroy_buffer(device, data);
   device.destroy();
 }
+
+// R219: with labels on, every pass is recorded inside one command-buffer label of its name — the
+// count is the pass count, and a device without VK_EXT_debug_utils records none — and the work is
+// the work without them: the same words read back. Off, no label is recorded.
+TEST_CASE("render graph: pass labels, one a pass, and none when off") {
+  gfx::Device device;
+  std::string error;
+  if (!gfx_test::open_device(device)) return;
+  constexpr u32 k_count = 256;
+  constexpr u64 bytes = u64{k_count} * sizeof(u32);
+  gfx::FrameContext frames;
+  REQUIRE(frames.create(device, 2, &error));
+  gfx::BufferResource data;
+  REQUIRE(gfx::create_buffer(device, bytes,
+                             gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc, false,
+                             data, &error));
+  gfx::BufferResource readback;
+  REQUIRE(gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst, true, readback, &error));
+
+  const bool supported = device.features().debug_labels;
+  u32 labels[2] = {~0u, ~0u};
+  u32 passes[2] = {0, 0};
+  u32 wrong[2] = {~0u, ~0u};
+  for (u32 on = 0; on < 2; ++on) {
+    gfx::RenderGraph graph(device);
+    graph.set_labels(on != 0);
+    CHECK(graph.labels() == (on != 0));
+    const gfx::RgBuffer rg_data = graph.import_buffer("data", data);
+    const gfx::RgBuffer rg_host = graph.import_buffer("readback", readback);
+    graph.add_pass(
+        "clear", gfx::PassKind::Transfer,
+        [&](gfx::PassBuilder& b) { b.write(rg_data, gfx::Access::TransferWrite); },
+        [&](gfx::CommandList commands, gfx::RenderGraph& g) {
+          commands.fill_buffer(g.buffer(rg_data).buffer, 0, bytes, 0u);
+        });
+    graph.add_pass(
+        "stamp", gfx::PassKind::Transfer,
+        [&](gfx::PassBuilder& b) { b.write(rg_data, gfx::Access::TransferWrite); },
+        [&](gfx::CommandList commands, gfx::RenderGraph& g) {
+          commands.fill_buffer(g.buffer(rg_data).buffer, 0, bytes / 2, 0x5a5a5a5au);
+        });
+    graph.add_pass(
+        "readback", gfx::PassKind::Transfer,
+        [&](gfx::PassBuilder& b) {
+          b.read(rg_data, gfx::Access::TransferRead);
+          b.write(rg_host, gfx::Access::TransferWrite);
+        },
+        [&](gfx::CommandList commands, gfx::RenderGraph& g) {
+          commands.copy_buffer(g.buffer(rg_data).buffer, g.buffer(rg_host).buffer,
+                               gfx::BufferCopy{0, 0, bytes});
+        });
+    REQUIRE_MESSAGE(graph.compile(&error), error);
+    std::memset(readback.mapped, 0xff, static_cast<usize>(bytes));
+    gfx::CommandList commands = frames.begin_frame();
+    graph.execute(commands);
+    REQUIRE(frames.wait(frames.end_frame()));
+    labels[on] = graph.stats().labels;
+    passes[on] = graph.stats().passes;
+    const auto* words = static_cast<const u32*>(readback.mapped);
+    wrong[on] = 0;
+    for (u32 i = 0; i < k_count; ++i) {
+      if (words[i] != (i < k_count / 2 ? 0x5a5a5a5au : 0u)) ++wrong[on];
+    }
+  }
+  INFO("debug labels on this device: " << supported);
+  CHECK(passes[0] == 3);
+  CHECK(passes[1] == 3);
+  CHECK(labels[0] == 0);
+  CHECK(labels[1] == (supported ? passes[1] : 0u));
+  CHECK(wrong[0] == 0);
+  CHECK(wrong[1] == 0);
+
+  frames.destroy();
+  gfx::destroy_buffer(device, readback);
+  gfx::destroy_buffer(device, data);
+  device.destroy();
+}

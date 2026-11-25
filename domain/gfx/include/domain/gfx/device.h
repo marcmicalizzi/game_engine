@@ -76,6 +76,9 @@ struct DeviceFeatures {
   bool full_draw_index_uint32 = false;  // index values past 2^24 - 1: the indexed vertex path
   bool presentation = false;            // VK_KHR_swapchain is enabled
   bool validation = false;              // the validation layer is active
+  // VK_EXT_debug_utils is enabled on the instance (DeviceOptions::debug_messenger, where the loader
+  // has it): command-buffer labels can be recorded (RenderGraph::set_labels, R219).
+  bool debug_labels = false;
   bool memory_budget = false;  // VK_EXT_memory_budget: Device::memory_budget() reports real
                                // numbers rather than heap sizes alone
   // The largest geometry index a cluster acceleration structure may carry
