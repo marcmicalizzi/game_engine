@@ -62,11 +62,12 @@ param(
   [string[]]$EngineArgs = @(),
   [string]$Nsys = '',
   [string]$MetricSet = '',
-  [int]$Frequency = 10000,
+  [int]$Frequency = 2000,
   [int]$Delay = 150,
   [int]$Duration = 60,
   [switch]$Serialize,
-  [switch]$NoLock
+  [switch]$NoLock,
+  [switch]$JsonlOnly   # read: the export (profile.jsonl) is already made; no nsys command runs
 )
 $ErrorActionPreference = 'Stop'
 
@@ -121,108 +122,90 @@ if ($Action -eq 'record') {
 }
 
 # ---- read ----
-$nsys = Find-Nsys
+$nsys = if ($JsonlOnly) { '' } else { Find-Nsys }
 $rep = Join-Path $Out 'profile.nsys-rep'
-if (-not (Test-Path $rep)) { throw "no profile.nsys-rep in $Out" }
+if (-not $JsonlOnly -and -not (Test-Path $rep)) { throw "no profile.nsys-rep in $Out" }
 $jl = Join-Path $Out 'profile.jsonl'
 if (-not (Test-Path $jl)) {
   & $nsys export --type jsonlines --force-overwrite=true -o $jl $rep
   if ($LASTEXITCODE) { throw "nsys export --type jsonlines failed ($LASTEXITCODE)" }
 }
-& $nsys stats --report vulkan_gpu_marker_sum --format csv --force-overwrite=true -o (Join-Path $Out 'stats') $rep | Out-Null
+if (-not $JsonlOnly) { & $nsys stats --report vulkan_gpu_marker_sum --format csv --force-overwrite=true -o (Join-Path $Out 'stats') $rep | Out-Null }
 
-# Pass 1: which tables and columns the export holds. A row names its table by a field the export
-# chooses; the first string-valued key among these is taken as it.
+# One pass over the export: every row's table and columns are noted (for the report of what is
+# missing), and the rows of the four tables the join reads are kept. A row names its table by a
+# field the export chooses; the first of these keys present is taken as it.
 $tableKeys = @('table', 'Table', 'type', 'name_of_table')
 $tables = @{}
+$strings = @{}; $names = @{}; $metricIndex = @{}
+$ts = [Collections.Generic.List[long]]::new(); $ms = [Collections.Generic.List[int]]::new(); $vs = [Collections.Generic.List[double]]::new()
+$labelRows = @{}   # table -> list of [start, end, text, isGpu]
+$tmp = [Text.Json.JsonElement]::new()   # typed, so TryGetProperty's out parameter binds
+function Get-Table($o) { foreach ($k in $tableKeys) { if ($o.TryGetProperty($k, [ref]$script:tmp)) { return $script:tmp.ToString() } }; return '(untagged)' }
+function Has($o, $k) { return $o.TryGetProperty($k, [ref]$script:tmp) }
 $reader = [IO.StreamReader]::new($jl)
-function Get-Table($o) { foreach ($k in $tableKeys) { if ($o.TryGetProperty($k, [ref]$null)) { return $o.GetProperty($k).ToString() } }; return '(untagged)' }
-$n = 0
-while (($line = $reader.ReadLine()) -ne $null -and $n -lt 2000000) {
-  $n++
+while ($null -ne ($line = $reader.ReadLine())) {
   $doc = [Text.Json.JsonDocument]::Parse($line); $o = $doc.RootElement
   $t = Get-Table $o
   if (-not $tables.ContainsKey($t)) { $tables[$t] = @{ count = 0; columns = @($o.EnumerateObject() | ForEach-Object Name) } }
   $tables[$t].count++
+  if ($t -match 'TARGET_INFO_GPU_METRICS' -and (Has $o 'metricId') -and (Has $o 'metricName')) {
+    $names[$o.GetProperty('metricId').ToString()] = $o.GetProperty('metricName').ToString()
+  } elseif ($t -match 'GPU_METRICS$' -and (Has $o 'timestamp') -and (Has $o 'metricId') -and (Has $o 'value')) {
+    $id = $o.GetProperty('metricId').ToString()
+    if (-not $metricIndex.ContainsKey($id)) { $metricIndex[$id] = $metricIndex.Count }
+    $ts.Add([long]$o.GetProperty('timestamp').ToString()); $ms.Add($metricIndex[$id]); $vs.Add([double]$o.GetProperty('value').ToString())
+  } elseif ($t -match 'StringIds' -and (Has $o 'id') -and (Has $o 'value')) {
+    $strings[$o.GetProperty('id').ToString()] = $o.GetProperty('value').ToString()
+  } elseif ($t -match 'VULKAN.*(DEBUG|MARKER|LABEL)' -and (Has $o 'start') -and (Has $o 'end')) {
+    $text = ''; foreach ($k in 'textId', 'nameId', 'text', 'name') { if (Has $o $k) { $text = $script:tmp.ToString(); break } }
+    $isGpu = $true; foreach ($k in 'gpu', 'deviceId') { if (Has $o $k) { $isGpu = $script:tmp.ValueKind -ne [Text.Json.JsonValueKind]::Null; break } }
+    if (-not $labelRows.ContainsKey($t)) { $labelRows[$t] = [Collections.Generic.List[object]]::new() }
+    if ($isGpu) { $labelRows[$t].Add(@([long]$o.GetProperty('start').ToString(), [long]$o.GetProperty('end').ToString(), $text)) }
+  }
   $doc.Dispose()
 }
 $reader.Close()
-function Find-Table($pattern, [string[]]$needs) {
-  foreach ($k in $tables.Keys) {
-    if ($k -match $pattern) {
-      $cols = $tables[$k].columns
-      if (@($needs | Where-Object { $_ -notin $cols }).Count -eq 0) { return $k }
-    }
-  }
-  return $null
-}
-$tMetrics = Find-Table 'GPU_METRICS$' @('timestamp', 'metricId', 'value')
-$tNames = Find-Table 'TARGET_INFO_GPU_METRICS' @('metricId', 'metricName')
-$tStrings = Find-Table 'StringIds' @('id', 'value')
-$tLabels = Find-Table 'VULKAN.*(DEBUG|MARKER|LABEL)' @('start', 'end')
 $missing = @()
-if (-not $tMetrics) { $missing += 'GPU metric samples (a GPU_METRICS table with timestamp, metricId, value)' }
-if (-not $tNames) { $missing += 'metric names (TARGET_INFO_GPU_METRICS with metricId, metricName)' }
-if (-not $tStrings) { $missing += 'the string table (StringIds with id, value)' }
-if (-not $tLabels) { $missing += 'the Vulkan debug labels (a VULKAN_*DEBUG*/MARKER* table with start, end)' }
+if ($ts.Count -eq 0) { $missing += 'GPU metric samples (a GPU_METRICS table with timestamp, metricId, value)' }
+if ($names.Count -eq 0) { $missing += 'metric names (TARGET_INFO_GPU_METRICS with metricId, metricName)' }
+if ($labelRows.Count -eq 0) { $missing += 'the Vulkan debug labels on the GPU (a VULKAN_*DEBUG*/MARKER*/LABEL* table with start, end)' }
 if ($missing.Count -gt 0) {
   'The export does not hold what the join needs. Missing: ' + ($missing -join '; ')
   'Tables found (rows, columns):'
   foreach ($k in ($tables.Keys | Sort-Object)) { "  {0} ({1}): {2}" -f $k, $tables[$k].count, ($tables[$k].columns -join ', ') }
   exit 3
 }
-$labelCols = $tables[$tLabels].columns
-$textCol = @('textId', 'nameId') | Where-Object { $_ -in $labelCols } | Select-Object -First 1
-$gpuCol = @('gpu', 'deviceId') | Where-Object { $_ -in $labelCols } | Select-Object -First 1
+# The label table with the most rows is the one read; its text is a string id where StringIds has it.
+$tLabels = $labelRows.Keys | Sort-Object { - $labelRows[$_].Count } | Select-Object -First 1
+"labels from $tLabels ($($labelRows[$tLabels].Count) GPU rows); $($ts.Count) metric samples of $($metricIndex.Count) metrics"
+$ranges = @($labelRows[$tLabels] | ForEach-Object { [pscustomobject]@{ start = $_[0]; end = $_[1]; text = $(if ($strings.ContainsKey($_[2])) { $strings[$_[2]] } else { $_[2] }) } } | Sort-Object start)
+$metricName = @{}; foreach ($kv in $metricIndex.GetEnumerator()) { $metricName[$kv.Value] = $(if ($names.ContainsKey($kv.Key)) { $names[$kv.Key] } else { "metric $($kv.Key)" }) }
 
-# Pass 2: strings, metric names, label ranges (GPU rows only where the table says which rows are
-# the GPU's), metric samples.
-$strings = @{}; $names = @{}; $ranges = [Collections.Generic.List[object]]::new()
-$samples = [Collections.Generic.List[object]]::new()
-$reader = [IO.StreamReader]::new($jl)
-while (($line = $reader.ReadLine()) -ne $null) {
-  $doc = [Text.Json.JsonDocument]::Parse($line); $o = $doc.RootElement; $t = Get-Table $o
-  switch ($t) {
-    { $_ -eq $tStrings } { $strings[[string]$o.GetProperty('id')] = $o.GetProperty('value').GetString() }
-    { $_ -eq $tNames } { $names[[string]$o.GetProperty('metricId')] = $o.GetProperty('metricName').ToString() }
-    { $_ -eq $tLabels } {
-      $isGpu = $true
-      if ($gpuCol) { $g = $o.GetProperty($gpuCol); $isGpu = $g.ValueKind -ne [Text.Json.JsonValueKind]::Null }
-      if ($isGpu) {
-        $ranges.Add([pscustomobject]@{ start = [int64]$o.GetProperty('start').ToString(); end = [int64]$o.GetProperty('end').ToString()
-            text = if ($textCol) { [string]$o.GetProperty($textCol) } else { '' } })
-      }
-    }
-    { $_ -eq $tMetrics } {
-      $samples.Add([pscustomobject]@{ t = [int64]$o.GetProperty('timestamp').ToString(); m = [string]$o.GetProperty('metricId'); v = [double]$o.GetProperty('value').ToString() })
-    }
-  }
-  $doc.Dispose()
-}
-$reader.Close()
-if (-not $gpuCol) { "note: the label table names no GPU column; every label row was taken, CPU rows included, which the times below will show" }
-foreach ($r in $ranges) { $r.text = if ($strings.ContainsKey($r.text)) { $strings[$r.text] } else { $r.text } }
-$ranges = @($ranges | Sort-Object start)
-$samples = @($samples | Sort-Object t)
-
-# The join: every sample to every label range holding it (a sweep over both, sorted by time).
-$acc = @{}   # pass -> metric -> list of values
+# The join: every sample to every label range holding it, sweeping both in time order; the pass set
+# is found once per sample time, since every metric is sampled at the same instant.
+$order = [int[]](0..($ts.Count - 1)); $keys = $ts.ToArray(); [Array]::Sort($keys, $order)
+$acc = @{}   # pass -> metric index -> list of values
 $time = @{}  # pass -> summed GPU ns
 foreach ($r in $ranges) { $time[$r.text] = $time[$r.text] + ($r.end - $r.start) }
-$open = [Collections.Generic.List[object]]::new(); $ri = 0
-foreach ($s in $samples) {
-  while ($ri -lt $ranges.Count -and $ranges[$ri].start -le $s.t) { $open.Add($ranges[$ri]); $ri++ }
-  for ($k = $open.Count - 1; $k -ge 0; $k--) { if ($open[$k].end -lt $s.t) { $open.RemoveAt($k) } }
-  $passes = if ($open.Count) { @($open | ForEach-Object text | Select-Object -Unique) } else { @('(none)') }
+$open = [Collections.Generic.List[object]]::new(); $ri = 0; $lastT = [long]::MinValue; $passes = @()
+for ($i = 0; $i -lt $order.Length; $i++) {
+  $t = $keys[$i]
+  if ($t -ne $lastT) {
+    while ($ri -lt $ranges.Count -and $ranges[$ri].start -le $t) { $open.Add($ranges[$ri]); $ri++ }
+    for ($k = $open.Count - 1; $k -ge 0; $k--) { if ($open[$k].end -le $t) { $open.RemoveAt($k) } }   # a range is [start, end)
+    $passes = if ($open.Count) { @($open | ForEach-Object text | Select-Object -Unique) } else { @('(none)') }
+    $lastT = $t
+  }
+  $m = $ms[$order[$i]]; $v = $vs[$order[$i]]
   foreach ($p in $passes) {
     if (-not $acc.ContainsKey($p)) { $acc[$p] = @{} }
-    $mn = $names[$s.m]; if (-not $mn) { $mn = "metric $($s.m)" }
-    if (-not $acc[$p].ContainsKey($mn)) { $acc[$p][$mn] = [Collections.Generic.List[double]]::new() }
-    $acc[$p][$mn].Add($s.v)
+    if (-not $acc[$p].ContainsKey($m)) { $acc[$p][$m] = [Collections.Generic.List[double]]::new() }
+    $acc[$p][$m].Add($v)
   }
 }
 function Get-Pct($list, $q) { if (-not $list -or $list.Count -eq 0) { return [double]::NaN }; $a = $list.ToArray(); [Array]::Sort($a); return $a[[int][math]::Floor($q * ($a.Length - 1))] }
-function Get-Metric($p, $pattern) { $k = $acc[$p].Keys | Where-Object { $_ -match $pattern } | Select-Object -First 1; if ($k) { return $acc[$p][$k] } }
+function Get-Metric($p, $pattern) { $k = $acc[$p].Keys | Where-Object { $metricName[$_] -match $pattern } | Select-Object -First 1; if ($null -ne $k) { return , $acc[$p][$k] } }
 
 # The engine's own per-pass times from the same flight, to hold the labels' GPU times against.
 $engine = @{}
@@ -243,7 +226,7 @@ foreach ($p in ($acc.Keys | Sort-Object { - $time[$_] })) {
   $issue = Get-Metric $p 'SM Issue'; $warps = Get-Metric $p 'Warps in Flight|Warp Occupancy'
   $unal = Get-Metric $p 'Unallocated Warps'; $act = Get-Metric $p 'SMs? Active'
   $dr = Get-Metric $p 'DRAM Read'; $dw = Get-Metric $p 'DRAM Write'
-  $n = ($acc[$p].Values | Select-Object -First 1).Count
+  $n = @($acc[$p].Values)[0].Count
   '{0} | {1:P1} | {2} | {3:F1} / {4:F1} | {5:F1} / {6:F1} | {7:F1} | {8:F1} | {9:F1} / {10:F1}' -f $p,
     ($(if ($total) { $time[$p] / $total } else { 0 })), $n, (Get-Pct $issue 0.5), (Get-Pct $issue 0.9),
     (Get-Pct $warps 0.5), (Get-Pct $warps 0.9), (Get-Pct $unal 0.5), (Get-Pct $act 0.5), (Get-Pct $dr 0.5), (Get-Pct $dw 0.5)
