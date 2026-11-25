@@ -664,7 +664,10 @@ void WorldField::gather(const WorldPos& listener) noexcept {
     compute();  // here, now; applied at its tick as a worker's would be
     return;
   }
-  counter_.wait_blocking();  // the last job, even one `apply` ran in its place, has returned
+  // No wait for the last job: one `apply` ran in its place may still sit queued behind the pool's
+  // other work (a load's page reads held a frame 70 ms here, S122's first flight). Every job is a
+  // claimer: whichever takes the queued state first computes the snapshot of that moment, and
+  // a stale one finding nothing queued returns. The counter counts them for `finish`.
   state_.store(1u, std::memory_order_release);
   counter_.add(1);
   jobs_->schedule(jobs::Pool::Efficiency, jobs::Job{&WorldField::run_job, this, &counter_});
@@ -800,6 +803,7 @@ void WorldField::compute() noexcept {
   refresh_water(listener);  // running water and the surf (S113; water_field.cpp)
   res_work_ns_ = static_cast<u64>(time::monotonic_ns() - started);
   state_.store(3u, std::memory_order_release);
+  state_.notify_all();
 }
 
 void WorldField::apply() noexcept {
@@ -813,7 +817,9 @@ void WorldField::apply() noexcept {
     if (state_.compare_exchange_strong(queued, 2u, std::memory_order_acq_rel)) {
       compute();
     } else {
-      counter_.wait_blocking();
+      for (u32 s = state_.load(std::memory_order_acquire); s != 3u;
+           s = state_.load(std::memory_order_acquire))
+        state_.wait(s, std::memory_order_acquire);
     }
     stats_.refresh_wait_ns += static_cast<u64>(time::monotonic_ns() - waited);
   }

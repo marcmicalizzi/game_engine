@@ -237,7 +237,9 @@ TEST_CASE("world refresh: a late worker is counted and its result is the one it 
                                },
                                &release, &held});
     }
-    s.tick(4);  // gathered at tick 0 behind the held worker, applied at tick 3
+    // Gathered at ticks 0 and 7 behind the held worker, applied at 3 and 10, both by this thread:
+    // the second gather does not wait for the first's job, still queued behind the held one.
+    s.tick(11);
     release.store(true);
     if (hold) held.wait_blocking();
     s.tick(200);
@@ -249,7 +251,7 @@ TEST_CASE("world refresh: a late worker is counted and its result is the one it 
   auto jobs = make_jobs();
   WorldStats late{};
   CHECK(render(jobs.get(), true, late) == expected);
-  CHECK(late.refresh_late >= 1u);
+  CHECK(late.refresh_late >= 2u);
   CHECK(late.refresh_started == here.refresh_started);
   CHECK(late.refresh_on_worker >= 1u);  // the later ones went to the worker again
   MESSAGE("late " << late.refresh_late << ", on the worker " << late.refresh_on_worker << " of "
