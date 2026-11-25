@@ -69,8 +69,19 @@ class WorldField {
   // result is the same either way and applied at the same tick. A change waits for a refresh in
   // flight first.
   void set_jobs(jobs::JobSystem* jobs) noexcept;
-  // Waits for a refresh in flight (the stage closing, going silent, or a job system let go).
+  // Waits for a refresh in flight and for every job the field has queued, stale ones included (the
+  // stage closing, reopening, or a job system let go: nothing may call into the field after).
   void finish() noexcept;
+  // Settles the refresh in flight only: a queued one is computed here, one a worker runs is waited
+  // for; a stale job still queued behind the pool's other work is not waited for, since it finds
+  // nothing queued and returns (the stage going silent mid-session; `finish` still waits for it
+  // before the field goes).
+  void settle() noexcept;
+  // No refresh is queued or being computed (S122's cases wait on it before an apply's tick).
+  bool refresh_settled() const noexcept {
+    const u32 s = state_.load(std::memory_order_acquire);
+    return s != 1u && s != 2u;
+  }
   void set_canopy(const CanopySource& canopy) noexcept { canopy_ = canopy; }
   void set_shelter(const ShelterSource& shelter) noexcept { shelter_ = shelter; }
   void set_wind(const WorldWind& wind) noexcept { wind_ = wind; }
@@ -309,7 +320,8 @@ class WorldField {
   u64 res_surf_culled_ = 0;
   u64 res_surf_seen_ = 0;
   u64 res_work_ns_ = 0;
-  bool res_on_worker_ = false;
+  bool res_on_worker_ = false;  // computed on one of the pool's workers
+  bool res_scheduled_ = false;  // given to the job system (not computed in `gather` with none)
   // The schedule: a gather at `ticks_ % refresh_every_ == 0`, its apply `refresh_lag_` ticks on.
   jobs::JobSystem* jobs_ = nullptr;
   jobs::Counter counter_;

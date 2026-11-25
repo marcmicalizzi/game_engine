@@ -324,7 +324,9 @@ struct SoundStage::Impl {
     stopped_why = why;
     stopped_tick = stats.ticks;
     if (output != nullptr) output->close();
-    field.finish();  // nothing ticks the world again: a refresh in flight is let finish (S122)
+    // Nothing ticks the world again: the refresh in flight is settled, and stale jobs queued behind
+    // the pool's other work are left to `close` (S122; never a frame held on them).
+    field.settle();
     ENGINE_LOG_WARN(log_world_sound, "audio stopped; the game's calls are answered as before",
                     log::field("why", std::string_view(stopped_why)));
   }
@@ -671,6 +673,7 @@ void SoundStage::set_surf(const SurfSource& surf) noexcept { impl_->field.set_su
 void SoundStage::set_wind(const WorldWind& wind) noexcept { impl_->field.set_wind(wind); }
 void SoundStage::set_jobs(jobs::JobSystem* jobs) noexcept { impl_->field.set_jobs(jobs); }
 const WorldStats& SoundStage::world_stats() const noexcept { return impl_->field.stats(); }
+bool SoundStage::world_refresh_settled() const noexcept { return impl_->field.refresh_settled(); }
 u32 SoundStage::world_voice_count() const noexcept { return impl_->field.voice_count(); }
 WorldVoiceInfo SoundStage::world_voice(u32 index) const noexcept {
   return impl_->field.voice(index);

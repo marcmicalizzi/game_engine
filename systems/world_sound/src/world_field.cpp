@@ -209,6 +209,30 @@ FieldConfig field_config_from_tunables() noexcept {
 }
 
 void WorldField::open(audio::Mixer* mixer, u32 tick_hz, const FieldConfig& config) {
+  // **A reopened stage starts clean** (S122's mend, L8): a job of the last session is waited out,
+  // and nothing it chose, applied or counted carries over: its result would be applied at a tick of
+  // this session, its hash would skip this session's first refresh, and its voices name the last
+  // mixer's handles.
+  finish();
+  state_.store(0u, std::memory_order_relaxed);
+  pending_ = false;
+  has_result_ = false;
+  last_hash_ = 0;
+  apply_at_ = 0;
+  ticks_ = 0;
+  has_listener_ = false;
+  stats_ = WorldStats{};
+  shelter_share_ = 1.0;
+  for (f64& l : level_sum_)
+    l = 0.0;
+  level_ticks_ = 0;
+  water_over_wind_ = 0;
+  voices_.clear();
+  water_voices_.clear();
+  beds_.clear();
+  beds_next_.clear();
+  chosen_.clear();
+  water_.clear();
   mixer_ = mixer;
   config_ = config;
   tick_hz_ = tick_hz != 0 ? tick_hz : 240;
@@ -490,12 +514,29 @@ void WorldField::finish() noexcept {
   counter_.wait_blocking();
 }
 
+void WorldField::settle() noexcept {
+  if (jobs_ == nullptr) return;
+  u32 queued = 1;
+  if (state_.compare_exchange_strong(queued, 2u, std::memory_order_acq_rel)) {
+    compute();
+    return;
+  }
+  // Claimed: a compute is running and stores 3 when it returns. Stale jobs queued behind the pool's
+  // page reads are left: they find nothing queued, and `finish` waits for them before the field
+  // goes (L7 of S122's review: `stop_audio` waited on them and could hold a frame unbounded).
+  for (u32 s = state_.load(std::memory_order_acquire); s == 2u;
+       s = state_.load(std::memory_order_acquire))
+    state_.wait(s, std::memory_order_acquire);
+}
+
 void WorldField::run_job(void* self) noexcept {
   WorldField& f = *static_cast<WorldField*>(self);
   u32 queued = 1;
   // `apply`, finding the worker late and not yet begun, may have taken the refresh itself.
   if (!f.state_.compare_exchange_strong(queued, 2u, std::memory_order_acq_rel)) return;
-  f.res_on_worker_ = true;
+  // A worker, or the submitter itself when every queue was full (`JobSystem::schedule`'s inline
+  // run, inside `gather` on the tick's thread): that one is the tick's, counted late at `apply`.
+  f.res_on_worker_ = jobs::JobSystem::current_worker() != nullptr;
   f.compute();
 }
 
@@ -660,6 +701,7 @@ void WorldField::gather(const WorldPos& listener) noexcept {
   pending_ = true;
   apply_at_ = ticks_ + refresh_lag_;
   res_on_worker_ = false;
+  res_scheduled_ = jobs_ != nullptr;
   if (jobs_ == nullptr) {
     compute();  // here, now; applied at its tick as a worker's would be
     return;
@@ -822,6 +864,11 @@ void WorldField::apply() noexcept {
         state_.wait(s, std::memory_order_acquire);
     }
     stats_.refresh_wait_ns += static_cast<u64>(time::monotonic_ns() - waited);
+  } else if (res_scheduled_ && !res_on_worker_) {
+    // Given to the job system but computed on the tick's thread all the same: the queues were full
+    // and `schedule` ran it in `gather`, or `finish` took it. Late, and its time the tick's (L6).
+    ++stats_.refresh_late;
+    stats_.refresh_wait_ns += res_work_ns_;
   }
   stats_.refresh_work_ns += res_work_ns_;
   stats_.refresh_work_max_ns =

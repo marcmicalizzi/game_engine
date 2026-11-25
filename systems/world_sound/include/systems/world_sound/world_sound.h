@@ -225,13 +225,14 @@ f64 surf_bound_db(const Surf& surf, const WorldPos& listener) noexcept;
 inline constexpr f64 k_water_airborne_efficiency = 1.75e-7;
 /// **The surf joined into lines** (S122; world_sound.md, "The surf joined into lines"): a host's
 /// records of one body, neighbouring along its shore, joined before the path into line sources —
-/// those in one `k_surf_join_m` square of the world's grid whose shore runs within 22.5 degrees,
-/// that break alike (plunging or spilling, against surging) at one period and whose crests arrive
-/// within an eighth of it. A line runs along the members' power-weighted direction through their
-/// power-weighted place over the span they cover, at their power-weighted height, similarity and
-/// phase, and carries **their power, W' L summed**, spread over its length. A record alone in its
-/// group is kept as it is. Appends to `out` in a deterministic order (the squares', then the
-/// groups' keys); answers the lines appended.
+/// those in one `k_surf_join_m` square of the world's grid whose shore's direction falls in one
+/// 22.5-degree bin, that break alike (plunging or spilling, against surging) at one period and
+/// whose crests' arrival falls in one eighth of it (fixed bins: two records a degree apart across
+/// a bin's edge stay apart, and two 22 degrees apart in one bin join). A line runs along the
+/// members' power-weighted direction through their power-weighted place over the span they cover,
+/// at their power-weighted height, similarity and phase, and carries **their power, W' L summed**,
+/// spread over its length. A record alone in its group is kept as it is. Appends to `out` in a
+/// deterministic order (the squares', then the groups' keys); answers the lines appended.
 inline constexpr f64 k_surf_join_m = 64.0;
 u32 join_surf(const Surf* records, u32 count, Vector<Surf>& out);
 struct SurfSink {
@@ -299,8 +300,9 @@ struct WorldStats {
   // **The refresh off the frame's thread** (S122; world_sound.md): refreshes computed (on a worker,
   // or on the tick's thread with no job system), of them on a worker, refreshes whose snapshot was
   // the last one's (nothing started), results not ready at their tick (the tick's thread waited,
-  // or ran one no worker had begun), the computes' own time summed and the longest, the tick's
-  // thread's time in those late ones, and the last snapshot's size in bytes.
+  // or ran one no worker had begun) or computed on the tick's thread although given to the job
+  // system (its queues full, so `schedule` ran it in place), the computes' own time summed and the
+  // longest, the tick's thread's time in those late ones, and the last snapshot's size in bytes.
   u64 refresh_started = 0;
   u64 refresh_on_worker = 0;
   u64 refresh_skipped = 0;
@@ -391,6 +393,9 @@ class SoundStage {
   /// hands null back before its job system goes.
   void set_jobs(jobs::JobSystem* jobs) noexcept;
   const WorldStats& world_stats() const noexcept;
+  /// No refresh is queued or being computed: what S122's cases wait on (bounded) before an apply's
+  /// tick, so that a case holding the worker's path does not depend on who won a race.
+  bool world_refresh_settled() const noexcept;
   /// The world's voices as last described (tests: the levels the laws are held to). `count` is
   /// the crowns' (`audio.world.crowns`), then the beds' (`audio.world.beds`), then the two ears,
   /// then (S113) the streams' (`audio.world.streams`), the falls' and the surf's.
