@@ -2107,12 +2107,16 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // — the light's luminance at the point times its cosine to the normal, which no eye moves —
     // with ties to the lower index, and the heaviest traced: `cap` of them, or fewer once what the
     // rest could add is at most `light_cap_share` of what they could. The rest are added at the
-    // fill. A point no more lights reach than the cap, and
+    // fill. The cap counts the finite lights: a directional one (a sky's moon, which leads the
+    // array) is traced as below, every pixel. A point no more finite lights reach than the cap, and
     // every pixel with `cap` 0, takes the walk below: R87's bytes.
     const uint cap = min(params->light_cap_rays & 0xffu, k_max_light_cap_rays);
+    uint directional = 0u;
+    while (directional < params->light_count && lights[directional].direction_type.w >= 1.5)
+      directional += 1u;
     if (k_scene_light_cap && cap != 0u &&
         (params->shadow_flags & (k_shadow_lights | k_shadow_cascades)) == k_shadow_lights &&
-        !stop_skips(k_stop_light_shadows) && light_walk_count(walk) > cap) {
+        !stop_skips(k_stop_light_shadows) && light_walk_count(walk) > cap + directional) {
       // Two walks, each light's BSDF once, and the rays in the array's order. The first ranks the
       // candidates by the cheap weight alone (a light facing away from the surface is added as
       // below, unshadowed) — a rank is one word, the weight's half-float bits over the index's
@@ -2141,6 +2145,25 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
           float3 lit = brdf_direct(surface, light_dir, radiance);  // no shadow is asked, as below
           if (foliage) lit = foliage_direct(material, surface, light_dir, radiance, lit);
           color += lit;
+          continue;
+        }
+        if (i < directional) {  // traced as below, uncounted
+          float3 lit = brdf_direct(surface, light_dir, radiance);
+          if (foliage) lit = foliage_direct(material, surface, light_dir, radiance, lit);
+          const float v = weigh && max(lit.r, max(lit.g, lit.b)) <= rest
+                              ? sun_visibility
+                              : shadow_visibility(params, k_shadow_lights, i + 1u, s.position,
+                                                  foliage ? ray_side(s.geometric, light_dir)
+                                                          : s.geometric,
+                                                  ray_bias, light_dir,
+                                                  light_distance - ray_bias - lights[i].spot.z);
+          if (v >= 1.0) {
+            color += lit;
+          } else if (v > 0.0) {
+            float3 shaded = brdf_direct(surface, light_dir, radiance * v);
+            if (foliage) shaded = foliage_direct(material, surface, light_dir, radiance * v, shaded);
+            color += shaded;
+          }
           continue;
         }
         const float w = light_cap_weight(radiance, surface.normal, light_dir);
@@ -2183,6 +2206,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
                       : dot(surface.normal, light_dir) > 0.0)) {
           continue;  // added in the first walk
         }
+        if (i < directional) continue;  // traced in the first walk
         const float w = light_cap_weight(radiance, surface.normal, light_dir);
         float3 lit = brdf_direct(surface, light_dir, radiance);
         if (foliage) lit = foliage_direct(material, surface, light_dir, radiance, lit);
