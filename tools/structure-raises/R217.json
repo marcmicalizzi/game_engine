@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R217",
+  "reason": "R217's paragraph under Lights by reach: no grid built that would be dropped, the light array made again in place, their measured cost, and the tests that hold the skip both ways and the frame's decision",
+  "date": "2026-11-24",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 2019
+  }
+}

@@ -7,7 +7,7 @@
 .DESCRIPTION
   tools/frame-budget.ps1 [-Preset msvc-release] [-Budget content/budgets/frame-budgets.json]
                          [-Run <id>,...] [-WaitQuiet 600] [-Out <dir>] [-Exe <engine-view>]
-                         [-FromSummaries <dir>] [-AnyDevice]
+                         [-FromSummaries <dir>] [-AnyDevice] [-FrameCpu auto|free|<n>]
                          [-Rebaseline -Reason "<why>" [-By <who>] [-AllowBusy]]
 
   For every run of the budget file (or those -Run names) it takes the machine-wide GPU lock, runs
@@ -16,14 +16,26 @@
   "The GPU lock"), releases the lock, and compares the summary's `gpu_ms` medians and p99s (and
   `cpu_ms`, where a run budgets it) with the budget plus the file's tolerance
   (tools/lib/FrameBudget.psm1 has the rule). The per-frame `.jsonl`, `report.md` and
-  `report.json` go in -Out (default build/<preset>/frame-budget/<time>/).
+  `report.json` go in -Out (default build/<preset>/frame-budget/<time>/). Each run's line also
+  says the frame thread's slow share and its two modes' medians (`report.json`'s `Modes`, as
+  numbers), read from the per-frame records; they decide nothing (bench.md, "The frame thread's
+  two modes").
+
+  -FrameCpu auto|free|<n> (default auto): each flight's frame thread, engine-view's main thread, is
+  pinned to one logical CPU from outside the process before its first frame and looked at every
+  two seconds, so the frame thread's slow mode (bench.md, "The frame thread pinned") does not reach
+  the median; `auto` is the first logical CPU of the third physical core, from this machine's own
+  counts, `free` flies it free as before T221, <n> names one. A pin that cannot be applied or does
+  not hold makes the run inconclusive (exit 4) unless it is already over on a quiet machine.
 
   The budgets hold on one machine, the file's `machine.device`: elsewhere the script measures
   nothing and exits 3 (nvidia-smi names the adapter before anything runs; the summary's `device`
   is checked after each run too). -AnyDevice compares anyway, to read a number, never to gate.
 
   -FromSummaries <dir> compares the `<id>.jsonl` files a previous run left in <dir> instead of
-  flying anything: re-reading a run against a changed budget, or a tolerance, costs no GPU.
+  flying anything: re-reading a run against a changed budget, or a tolerance, costs no GPU. It
+  reads them where they are and writes `report.md` and `report.json` to -Out when one is named
+  (so a kept flight is judged again without writing beside it), and into <dir> when none is.
 
   A run holds a budget per Windows session state, `budgets.locked` and `budgets.unlocked` (T161):
   a locked session idles the card's clocks, so a flight is compared only with the set of the state
@@ -62,7 +74,8 @@ param(
   [switch]$Rebaseline,
   [string]$Reason = '',
   [string]$By = '',
-  [switch]$AllowBusy
+  [switch]$AllowBusy,
+  [string]$FrameCpu = 'auto'
 )
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -94,6 +107,11 @@ if (-not $FromSummaries) {
       exit 3
     }
   }
+  # The frame thread's CPU for every flight (T221; tools/lib/FrameBudget.psm1, "The flight's frame
+  # thread, pinned"): the rule over this machine's counts, a CPU -FrameCpu names, or free.
+  $counts = if ($IsWin) { Get-CpuCounts } else { [pscustomobject]@{ Cores = 1; Logical = 1 } }
+  $pinCpu = Resolve-FrameCpu -Value $FrameCpu -Cores $counts.Cores -Logical $counts.Logical -CanPin $IsWin
+  Write-Host ("frame-budget: {0}" -f $(if ($pinCpu -ge 0) { "the frame thread pinned to logical CPU $pinCpu of $($counts.Logical) ($($counts.Cores) cores; -FrameCpu $FrameCpu)" } else { "the frame thread free (-FrameCpu $FrameCpu)" }))
 }
 
 function Get-Measured($summary, [string]$stat) { if ($summary.gpu_ms.total) { [double]$summary.gpu_ms.total.$stat } else { 0.0 } }
@@ -108,7 +126,9 @@ $env:ENGINE_DEFAULT_MATERIALS = '0'
 $results = @()
 $summaries = @{}
 foreach ($r in $runs) {
-  $jsonl = Join-Path $Out "$($r.id).jsonl"
+  # A re-reading reads the records where they are and writes its report to -Out (T221: a kept
+  # flight is judged again without writing into the directory that keeps it).
+  $jsonl = Join-Path $(if ($FromSummaries) { $FromSummaries } else { $Out }) "$($r.id).jsonl"
   if (-not $FromSummaries) {
     Write-Host "== $($r.id)" -ForegroundColor Cyan
     # A run whose scene names files the tree does not commit says how to write them: `prepare` is
@@ -130,9 +150,29 @@ foreach ($r in $runs) {
     # waiting for the card gets it between two runs rather than after all of them.
     $session = Open-MachineLockSession -Kind gpu -Purpose "frame budget $($r.id)"
     $started = Get-Date
+    $pin = $null
     try {
-      $output = @(& $Exe @argv 2>&1 | ForEach-Object { "$_" })
-      $code = $LASTEXITCODE
+      if ($pinCpu -lt 0) {
+        $output = @(& $Exe @argv 2>&1 | ForEach-Object { "$_" })
+        $code = $LASTEXITCODE
+      } else {
+        # Started as a process the tool holds, so its first thread is pinned before its first frame
+        # and looked at every two seconds while it flies (Set-FrameThreadPin, Test-FrameThreadPin).
+        $so = Join-Path $Out "$($r.id).stdout"
+        $se = Join-Path $Out "$($r.id).stderr"
+        $quoted = @($argv | ForEach-Object { '"' + ("$_" -replace '"', '\"') + '"' })
+        $proc = Start-Process -FilePath $Exe -ArgumentList $quoted -PassThru -NoNewWindow -RedirectStandardOutput $so -RedirectStandardError $se
+        $null = $proc.Handle  # kept, so the exit code is there after the exit
+        $pin = Set-FrameThreadPin -Process $proc -Cpu $pinCpu
+        try {
+          while (-not $proc.WaitForExit(2000)) { Test-FrameThreadPin -Pin $pin -Process $proc }
+          $proc.WaitForExit()
+        } finally { Close-FrameThreadPin $pin }
+        $code = $proc.ExitCode
+        $output = @(@(Get-Content $so -ErrorAction SilentlyContinue) + @(Get-Content $se -ErrorAction SilentlyContinue) | ForEach-Object { "$_" })
+        Remove-Item $so, $se -ErrorAction SilentlyContinue
+        Write-Host "   $(Format-FramePin $pin)"
+      }
     } finally {
       Close-MachineLockSession -Session $session
     }
@@ -159,11 +199,15 @@ foreach ($r in $runs) {
     continue
   }
   $summaries[$r.id] = $summary
-  $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary
+  # The frame records beside the summary, for the frame thread's modes, which the verdict says and
+  # never judges (T221; tools/lib/FrameBudget.psm1, Get-CpuModes).
+  $frames = Read-FrameCpu -Path $jsonl
+  if ($FromSummaries) { $pin = $null }
+  $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary -Frames $frames -Pin $pin
   if ($AnyDevice -and $result.Verdict -eq 'device') {
     $saved = $plan.machine.device
     $plan.machine.device = $result.Device
-    $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary
+    $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary -Frames $frames -Pin $pin
     $plan.machine.device = $saved
   }
   $results += $result
@@ -182,6 +226,8 @@ foreach ($r in $runs) {
   $line = '   {0}: {1}; total {2:N3} / {3:N3} ms (median / p99) against {4:N3} / {5:N3}, {6}; {7}' -f $r.id, $result.Verdict,
     (Get-Measured $summary 'median'), (Get-Measured $summary 'p99'), [double]$set.gpu_ms.total.median, [double]$set.gpu_ms.total.p99, $result.Compared, $result.MachineState
   Write-Host $line -ForegroundColor $(if ($result.Verdict -eq 'pass') { 'Green' } elseif ($result.Verdict -eq 'busy') { 'Yellow' } else { 'Red' })
+  # The frame thread's modes, said beside the verdict and deciding nothing (T221).
+  if ($null -ne $result.Modes) { Write-Host "     $(Format-CpuModes $result.Modes)" }
   foreach ($row in $overRows) {
     Write-Host ('     over: {0} {1} {2:N3} ms, budget {3:N3}, limit {4:N3}' -f $row.Line, $row.Stat, $row.Measured, $row.Budget, $row.Limit) -ForegroundColor Red
   }

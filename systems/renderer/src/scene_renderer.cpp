@@ -165,10 +165,12 @@ u32 write_light_grid(const FrameLighting& lighting, Vector<u32>& cells, u8* reso
   grid_cells = 0;
   grid_refs = 0;
   gfx::LightGrid grid;
-  if (!light_grid_on.get() ||
-      !gfx::build_light_grid(
-          std::span<const gfx::ResolveLight>(lighting.lights, lighting.light_count),
-          std::span<u32>(cells.data(), cells.size()), grid)) {
+  // Every light reaching the eye: the grid would hold them all in the eye's cell and be dropped
+  // below, so it is not built (R217: the stand-in's two lights, every frame of a scene with no
+  // sky).
+  const std::span<const gfx::ResolveLight> lights(lighting.lights, lighting.light_count);
+  if (!light_grid_on.get() || gfx::light_grid_reaches_all(lights, Vec3{}) ||
+      !gfx::build_light_grid(lights, std::span<u32>(cells.data(), cells.size()), grid)) {
     return 0;
   }
   // A grid that leaves no light out where the eye stands (the frame's origin) culls little that a
@@ -3690,7 +3692,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // display's curve, 1 for the stand-in), and the sun's light for the passes.
   f32 frame_knee = 1.0f;
   Vec3 frame_sun_light{1.0f, 1.0f, 1.0f};
-  FrameLighting lighting;
+  FrameLighting& lighting = frame_lighting_;  // made again below, in place (R217)
   if (sky_on) {
     sky_.evaluate(sky_time_s, frame_sky_);
     frame_lighting(data, frame_sky_, lighting, frame.camera.position);

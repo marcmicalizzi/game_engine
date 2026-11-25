@@ -9,6 +9,7 @@
 
 #include <core/math/world.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/light_grid.h>
 #include <foundation/io/vfs.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
@@ -27,6 +28,7 @@
 #include <cstring>
 #include <span>
 #include <string>
+#include <vector>
 
 using namespace engine;
 using namespace engine::renderer;
@@ -180,6 +182,40 @@ TEST_CASE("lamp: the light array takes every lamp, in order, behind what it has"
   roomy.light_count = k_stand_in_lights + k_max_fires;
   CHECK(add_lamp_lights(std::span<const FrameFire>(lamps, k_max_lamps + 3), eye, roomy) ==
         k_max_lamps - 1);
+}
+
+TEST_CASE("lamp: no light grid where every light reaches the eye, and one where a lamp does not") {
+  // The frame's decision without a device (R217): `write_light_grid` builds no grid when
+  // `gfx::light_grid_reaches_all` says every light of the frame's array reaches the eye, which is
+  // the frame's origin, and otherwise builds one and keeps it where it culls at the eye. A scene
+  // with no sky lights the stand-in's two lights, whose reach of four scene radii covers every eye
+  // within the scene; a lamp out of the eye's reach makes the grid worth its build.
+  SceneData scene;
+  scene.center = WorldPos{10.0, 0.0, -20.0};
+  scene.radius = 400.0f;
+  std::vector<u32> cells(gfx::k_light_grid_words);
+  const WorldPos eyes[] = {WorldPos{10.0, 1.7, -20.0}, WorldPos{390.0, 40.0, -20.0},
+                           WorldPos{10.0, -300.0, 260.0}};
+  for (const WorldPos& eye : eyes) {
+    CAPTURE(eye.x);
+    FrameLighting lighting;
+    frame_lighting(scene, 0, LightingOptions{}, lighting, eye);
+    REQUIRE(lighting.light_count == k_stand_in_lights);
+    CHECK(gfx::light_grid_reaches_all(
+        std::span<const gfx::ResolveLight>(lighting.lights, lighting.light_count), Vec3{}));
+    FrameFire lamp;
+    // Far enough that no cell of a grid sized by the stand-in's 1.6 km reaches holds both.
+    lamp.base = WorldPos{eye.x + 400.0, eye.y, eye.z};
+    lamp.intensity = 10.0f;
+    lamp.color = Vec3{1.0f, 0.9f, 0.8f};
+    lamp.reach_m = 7.0f;
+    REQUIRE(add_lamp_lights(std::span<const FrameFire>(&lamp, 1), eye, lighting) == 1);
+    const std::span<const gfx::ResolveLight> lit(lighting.lights, lighting.light_count);
+    CHECK_FALSE(gfx::light_grid_reaches_all(lit, Vec3{}));
+    gfx::LightGrid grid;
+    REQUIRE(gfx::build_light_grid(lit, std::span<u32>(cells.data(), cells.size()), grid));
+    CHECK(gfx::light_grid_culls_at(grid, std::span<const u32>(cells.data(), cells.size()), Vec3{}));
+  }
 }
 
 TEST_CASE("lamp: a prop's lamp stands where each placed instance stands, counted past the room") {

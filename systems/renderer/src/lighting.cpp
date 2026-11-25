@@ -110,9 +110,26 @@ LightingOptions lighting_options(const RenderSettings& settings, f64 sun_time_s)
   return out;
 }
 
+namespace {
+// `out` made again for a frame, in place (R217): every field, and the lights this file writes,
+// but not the rest of the array — 322 lights, 20 KiB since R87 — which every reader reads only up
+// to `light_count` and which `out = FrameLighting{}` zeroed twice a frame (the temporary, then the
+// copy). A field added to FrameLighting is reset here.
+void reset_frame_lighting(FrameLighting& out) noexcept {
+  out.sky = Vec4{};
+  out.sun = Vec4{};
+  out.ground = Vec4{};
+  for (u32 i = 0; i < k_stand_in_lights; ++i)
+    out.lights[i] = gfx::ResolveLight{};
+  out.light_count = 0;
+  out.shadow_bias = 0.0f;
+  out.shadow_bias_steps = 0.0f;
+}
+}  // namespace
+
 void frame_lighting(const SceneData& scene, u64 frame_index, const LightingOptions& options,
                     FrameLighting& out, const WorldPos& eye) {
-  out = FrameLighting{};
+  reset_frame_lighting(out);
   out.sky = k_sky;
   out.sun = Vec4{options.sun, options.sun_intensity};
   out.ground = Vec4{scene.ground_albedo, 0.0f};
@@ -141,7 +158,7 @@ void frame_lighting(const SceneData& scene, u64 frame_index, const LightingOptio
 
 void frame_lighting(const SceneData& scene, const FrameSky& sky, FrameLighting& out,
                     const WorldPos& eye) {
-  out = FrameLighting{};
+  reset_frame_lighting(out);
   out.sky = k_sky;
   out.sun = Vec4{normalize(sky.state.sun), 1.0f};
   out.ground = Vec4{scene.ground_albedo, 0.0f};

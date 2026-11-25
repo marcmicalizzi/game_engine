@@ -93,4 +93,13 @@ bool light_grid_cell(const LightGrid& grid, Vec3 position, u32& cell) noexcept;
 // choice moves a cost and never a byte.
 bool light_grid_culls_at(const LightGrid& grid, std::span<const u32> cells, Vec3 position) noexcept;
 
+// Whether every light past the leading directional ones reaches `position` by its own reach,
+// before any margin: then the cell holding `position` holds every one of them in any grid
+// `build_light_grid` makes, so `light_grid_culls_at` there is false and the grid would be thrown
+// away. The renderer asks it at the eye before building (R217): the stand-in's two point lights,
+// whose reach is four times the scene's radius, reach every eye, and building their grid only to
+// drop it was 8 microseconds of every frame on the desert overlook. False when there is no light
+// with a reach, or a position or a reach that is not a finite number (the build decides those).
+bool light_grid_reaches_all(std::span<const ResolveLight> lights, Vec3 position) noexcept;
+
 }  // namespace engine::gfx
