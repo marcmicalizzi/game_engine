@@ -286,6 +286,9 @@ struct FrameStats {
   // frame as set), from the frame's own index, so an analysis reads them instead of deriving them.
   u32 resolve_stop = 0;
   u32 sun_ray_rule = 0;
+  // The pixels whose lights' shadow rays stopped at the cap with its bound unmet (R213;
+  // `Stats::light_cap_pixels`, the record's `light_cap_pixels`).
+  u32 light_cap_pixels = 0;
   // What the accumulation took from its history this frame (R194 leg 2; `AccumulationPass::Census`,
   // the record's `history_*`): zero without it.
   u32 history_pixels = 0;
@@ -662,6 +665,11 @@ struct Stats {
   // every pixel walked the whole array.
   u32 light_grid_cells = 0;
   u32 light_grid_refs = 0;
+  // **The cap on the shadow rays a pixel traces** (renderer.md; R213), one frame late like the
+  // visible counts: the pixels of every view that traced `renderer.shadow.light_rays` rays with
+  // lights still untraced whose irradiance was over `renderer.shadow.light_cap_share` of what the
+  // traced ones delivered — the pixels whose error the cap does not bound by that share.
+  u32 light_cap_pixels = 0;
   f64 cpu_ns = 0.0;  // wall time inside submit_frame, summed
   // Sampled by sample_gpu_memory(), not by a frame: it is a driver query and the frame path
   // stays free of them.
@@ -1357,6 +1365,8 @@ class SceneRenderer {
   // The scene's fires (fire.h): its own and its placed props', found again when the tail changes,
   // and this frame's burnt at the world's clock (reserved once: a frame allocates nothing).
   FireSet fires_;
+  // R213: the resolve's pipelines were made with the capped walk compiled in (`scene_light_cap`).
+  bool light_cap_ = false;
   // **The far forest's hand-off** (renderer.md, "The far forest"): which of the load's far tiles
   // are drawn, moved with every tail handed over (`set_dynamic_instances`).
   FarForestHandOff far_forest_;

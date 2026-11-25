@@ -137,6 +137,7 @@ ResolveVariant predict_resolve_variant(const SceneDesc& desc, const ResolvedSett
   // What only the generators know: a generated mesh that names no role takes the pack's default
   // ones (the rocks', the banks'), so a pack with a stochastic role is read as reaching a scene
   // that generates meshes. A guess, said on renderer.md with the cases it gets wrong.
+  v.light_cap = scene_light_cap(desc.fires, desc.lamps, desc.props);  // R213
   const bool generates = !desc.recipes.empty() || !desc.streamed.empty() ||
                          desc.placed_instances > 0 || desc.placed_buildings > 0;
   if (generates && pack != nullptr) {
@@ -183,6 +184,7 @@ bool EarlyPipelines::start(const gfx::Device& device, const ResolveVariant& vari
   stats_.key.hash = module_->hash;
   stats_.key.color_format = variant.color_format;
   stats_.key.foliage = variant.foliage;
+  stats_.key.light_cap = variant.light_cap;
   stats_.key.layout = bindless_.capacity();
   stats_.started = true;
   ENGINE_LOG_INFO(log_renderer, "early pipeline started", log::field("shader", module_->name),
@@ -198,7 +200,7 @@ bool EarlyPipelines::start(const gfx::Device& device, const ResolveVariant& vari
     desc.fragment_entry = "fs_resolve";
     desc.layout = bindless_.pipeline_layout();
     desc.color_format = stats_.key.color_format;
-    desc.specialization = resolve_specialization(stats_.key.foliage);
+    desc.specialization = resolve_specialization(stats_.key.foliage, stats_.key.light_cap);
     gfx::PipelineHandle made;
     std::string failure;
     const i64 begin = time::monotonic_ns();
@@ -237,6 +239,7 @@ bool EarlyPipelines::take(const ResolveKey& key, gfx::PipelineHandle& out) {
       if (key.hash != stats_.key.hash) add("hash");
       if (key.color_format != stats_.key.color_format) add("format");
       if (key.foliage != stats_.key.foliage) add("foliage");
+      if (key.light_cap != stats_.key.light_cap) add("light_cap");
       if (!(key.layout == stats_.key.layout)) add("layout");
       stats_.reason =
           "asked for " + key.module + ", started " + stats_.key.module + "; differs in " + differs;

@@ -504,6 +504,12 @@ inline constexpr u32 k_material_foliage_mask = 0xFF000000u;
 // above. Every foliage line of the resolve, its half pass, the water's reflected hits and the
 // cache's bounce then drops out at the driver's compile. Unset, it is 1.
 inline constexpr u32 k_spec_scene_foliage = 177u;
+// **The cap on the lights' shadow rays, compiled in** (R213; renderer.md, "A cap on the shadow rays
+// a pixel traces"): the specialization constant visibility_resolve.slang's `k_scene_light_cap` is,
+// which a pipeline sets to 0 where the scene cannot light more lights than the cap; the capped walk
+// and its ranking's registers then drop out at the driver's compile, and the resolve is R87's.
+// Unset, it is 1.
+inline constexpr u32 k_spec_scene_light_cap = 213u;
 // **The backlit sun as a quality tier** (R177; renderer.md, "Foliage lit from both sides", "The
 // backlit sun's tier"): set, a foliage pixel whose sun is behind its sheet asks no shadow ray and
 // takes the sun at the visibility the frame's world-space cache measured there (what the scene let
@@ -1287,7 +1293,28 @@ struct ResolveParams {
   // and every pixel then walks all `light_count` lights as it always did. The same picture either
   // way. It took the row's pad word, so the block's size is unchanged.
   u32 light_grid = 0;
+  // **A cap on the lights' shadow rays** (renderer.md, "A cap on the shadow rays a pixel traces";
+  // R213): with the lights' shadows traced, a pixel reached by more than `light_cap_rays & 0xff`
+  // lights ranks them by their unshadowed irradiance there (ties to the lower index), traces them
+  // in that order, and stops at that many rays or as soon as the irradiance of the lights it has
+  // not traced is at most `light_cap_share` of what the traced lights were found to deliver; the
+  // rest are added at the fill `(light_cap_rays >> 8) & 3` names (`k_light_cap_fill_*`). A pixel
+  // that stops at the cap with its bound unmet adds one to the u32 at `light_cap_count` (0: not
+  // counted). `light_cap_rays` 0 traces every light, the picture R87 drew. A new 16-byte row: the
+  // block grew from 608 to 624 bytes.
+  u64 light_cap_count = 0;
+  u32 light_cap_rays = 0;
+  f32 light_cap_share = 0.0f;
 };
+// The most `ResolveParams::light_cap_rays` can name: the resolve's ranking is this many registers.
+inline constexpr u32 k_max_light_cap_rays = 8;
+// What the lights past the cap are added at (`ResolveParams::light_cap_rays` bits 8 and 9): the
+// traced lights' visibility weighted by their irradiance (Ward's estimate from the pixel's own
+// tests), unshadowed, or not at all. Each moves the pixel by at most the untraced lights' light.
+inline constexpr u32 k_light_cap_fill_estimate = 0;
+inline constexpr u32 k_light_cap_fill_unshadowed = 1;
+inline constexpr u32 k_light_cap_fill_dark = 2;
+inline constexpr u32 k_light_cap_fill_shift = 8;
 // `ResolveParams::water_open_instance` when the scene has no open water.
 inline constexpr u32 k_no_water_open = 0xffffffffu;
 // The water's period, seconds (`ResolveParams::water_time_s`): long enough that no repeat is seen,
@@ -1298,7 +1325,7 @@ inline f32 water_clock(f64 time_s) noexcept {
   const f64 t = std::fmod(time_s, k_water_period_s);
   return static_cast<f32>(t < 0.0 ? t + k_water_period_s : t);
 }
-static_assert(sizeof(ResolveParams) == 608);
+static_assert(sizeof(ResolveParams) == 624);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // ---- the sun's masks by region and by distance (renderer.md; R139) -----------------------------

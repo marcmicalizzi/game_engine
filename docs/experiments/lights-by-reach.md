@@ -22,6 +22,9 @@ that pops, and for the nearest few to be shadowed.
 | Harada, McKee and Yang, "Forward+: Bringing Deferred Lighting to the Next Level", Eurographics 2012 (short) | The authors' project page (takahiroharada.github.io/forward+); **the paper not read** | Screen tiles of about 16 × 16 pixels after a depth prepass; lights culled per tile on the GPU either by a group per tile testing every light (gather) or a thread per light writing light-tile pairs that are then sorted (scatter); the shading pass reads the tile's list. |
 | Filament's documentation, "Physically based rendering in Filament" (google.github.io/filament), sections on punctual lights and clustered forward rendering | Read through the fetch tool, whole | The punctual light's falloff windowed to zero at a radius of influence, E = I / max(d², 0.01²) · ⟨1 − d⁴/r⁴⟩², credited to Karis 2013: "window the inverse square function in such a way that the majority of the light's influence remains unaffected". Lights assigned to **froxels**: 80 × 80-pixel tiles by 16 exponential depth slices (the first slice set by hand, 0.1 to 5 m), at most 32 lights a froxel in an index list ended by a sentinel, assigned on the GPU by compute, or **on the CPU by rasterizing each light into the froxels it touches**, which the text says culls more tightly. |
 | Karis, "Real Shading in Unreal Engine 4", SIGGRAPH 2013 course notes | **Not read** (the fetched PDF had no readable text; tried again in R87's mend from two hosts, the same); its falloff through Filament's citation above. **What it bears on: the falloff's window**, `(1 − (d/r)⁴)²` over the squared distance, whose exact zero at the radius is what makes the cull invisible; the engine's form drops Karis's `+1` in the denominator and floors both `r²` and `d²` at 1e-8 (`brdf.slang`), which gives a light of radius zero a reach of 1e-4 m, so the grid takes no reach under that (R87's mend) | The windowed inverse square the engine already uses. |
+| Ward, "Adaptive Shadow Testing for Ray Tracing", Eurographics Rendering Workshop 1991 (R213) | Read through the fetch tool, whole, from the author's Radiance pages (floyd.lbl.gov/radiance/papers/erw91) | Sort the sources in front of a point by their potential contribution, test them in decreasing order, and stop when the untested remainder is below a tolerance of what the tested ones gave; add each untested source at an estimated visibility — the running ratio of hit to tested shadow rays over the render so far, overall and per source — "not randomly accepted or rejected", so the result is biased but not noisy. A certainty parameter weighs how much of the remainder the stop counts. Measured: at a 20% tolerance and 50% certainty about 80% fewer shadow tests with an average pixel error under 5%; render time roughly in proportion to the share of sources tested; the estimate is crudest early in a render and worst on fully lit surfaces, and the visibilities are assumed independent ("an approximation"). |
+| Walter, Fernandez, Arbree, Bala, Donikian and Greenberg, "Lightcuts: A Scalable Approach to Illumination", SIGGRAPH 2005 (R213) | **The paper not read** (both of the authors' PDF hosts arrive as compressed bytes with no readable text); its project page's abstract, and the 2% threshold and ray counts through a search of the authors' course slides (Cornell CS6620, 2009; the 2012 many-lights course notes) | Lights in a binary tree; at each point a cut through it whose clusters each carry an upper bound on their error (visibility bounded by 1), refined until every cluster's bound is under a relative threshold of the total — **2%, from Weber's law** (a contrast below about 2% of the signal is not seen); "a few hundred shadow rays" for thousands of lights (the kitchen: 259 a pixel for 4,608 area lights). The bound is the same shape as the cap's: what is not traced is bounded by its unshadowed contribution. |
+| Bitterli, Wyman, Pharr, Shirley, Lefohn and Jarosz, "Spatiotemporal Reservoir Resampling for Real-Time Ray Tracing with Dynamic Direct Lighting" (ReSTIR), SIGGRAPH 2020 (R213) | NVIDIA's publication page through the fetch tool; **the paper not read** | Millions of dynamic emissive triangles under 50 ms a frame with at most 8 rays a pixel, by resampling light samples **from neighbouring pixels and from earlier frames**: a stochastic pick that is noisy by itself and settles through that reuse. |
 | Lagarde and de Rousiers, "Moving Frostbite to PBR", SIGGRAPH 2014 course notes | **Not read**; the search results show Unity's render pipeline citing it for `SmoothDistanceAttenuation`, a window of the squared distance over the squared radius, called a non-physical limit to the light's influence | The same choice: a finite radius is a limit put on a light so it can be culled, and the window keeps the inverse square everywhere but near the radius. |
 
 ## What was taken
@@ -108,7 +111,7 @@ choice that is not a function of the point alone pops; the design that would kee
 ranking by each light's unshadowed contribution at the point with ties to the lower index, a few
 kept, the rest at the visibility the pixel's own tested lights found (Ward's estimate, which the
 faint-light rule already uses). It is left for when a scene measures more rays at a pixel than the
-frame can pay for. On lantern-street at most **5** of its 64 lamps reach one point and at most
+frame can pay for — which the fires below did, and R213 built it ([the cap](#the-cap)). On lantern-street at most **5** of its 64 lamps reach one point and at most
 **16** of the 256 (counted over a 2.5 cm lattice of a lamp cell at heights 0 to 3 m, the ground
 and the walls, by the 8 m spheres; R87's mend). The fires below are the case that measures more.
 
@@ -229,3 +232,159 @@ every resolve variant grows by **141 instructions** (2,940 bytes); the forest's
 (`visibility_resolve_rt_water_terrain_stochastic`) 326,306 → 326,447. No module crosses
 `cmake/shader-costs.txt`'s heavy line either way, so no row of it moves (`build.shader_pool` passes
 in the row's `test -Affected`).
+## The cap
+
+R213 (2026-11-24, batch 75). The renderer's page has the rule
+([renderer](../subsystems/renderer.md#a-cap-on-the-shadow-rays-a-pixel-traces)); this section has what
+it was taken from and what it measured.
+
+**What the published methods bound, and what they need.** Ward (1991) is the shape: rank the
+sources at a point by what they could add, test them in that order, stop when the untested rest is
+under a tolerance of what the tested gave, and add the rest at an estimated visibility rather than
+by a coin, so the result is biased and not noisy. Lightcuts (2005) bounds the same way, cluster by
+cluster — an untraced group's error is at most its unshadowed contribution, visibility bounded by
+1 — and stops at 2% of the total, Weber's fraction. Clustered and tiled shading bound the *lights* a
+cell or tile holds (Filament's 32 a froxel, above), not the rays a pixel traces; with every light of
+a cell shadowed that bound is the cell's count, which a fire's 71 to 82 m reach makes the frame's.
+Stochastic light sampling (ReSTIR, 2020) traces a few rays a pixel by picking lights in proportion
+to their contribution and settles the noise by reusing picks across neighbours and frames. **The
+engine's rule decides between them**: a picture is judged with no temporal pass behind it, so the
+frame has to be right by itself and the same point has to pick the same lights every frame. That
+rules out a stochastic pick and leaves Ward's order with Lightcuts' bound.
+
+**What was taken.** Ward's ranking, by each candidate's unshadowed **irradiance** at the point (its
+luminance there times `|n·l|`) rather than its BSDF-weighted radiance, because the irradiance does
+not move with the eye and the radiance's specular lobe does: a point's traced set is then a function
+of the point, its normal and the lights. Ties go to the lower index, as R87's page asked. A stop
+in Lightcuts' form, against what the traced lights could deliver (Ward's own, against what they did,
+was the first form and is below), with a tenth of Lightcuts' 2% as the default share
+(`renderer.shadow.light_cap_share`, 0.002; below), and a hard cap of rays
+(`renderer.shadow.light_rays`, 8) because a fragment shader keeps its ranking in registers. Ward's estimate for the rest, taken from the
+pixel's own tests instead of the render's history, which a pixel drawn by itself does not have.
+
+**The error of each fill.** With the untraced candidates' unshadowed light U at a pixel and their
+true visibilities v_i in [0, 1], the estimate (the traced candidates' visibility weighted by their
+irradiance, v̂) moves the pixel by Σ U_i |v̂ − v_i| ≤ U·max(v̂, 1 − v̂); lit unshadowed (fill 1) by
+Σ U_i (1 − v_i) ≤ U; left out (fill 2) by Σ U_i v_i ≤ U. All three are bounded by U, and where the
+cut fell before the cap U's irradiance is at most the share of the traced lights' unshadowed
+irradiance (below, why not of what they delivered). The estimate is exact where every light is seen (v̂ = 1 and every v_i = 1), which is
+what the renderer's case holds; it is worst where the traced and the untraced lights' visibilities
+differ, which a walled street makes common (below).
+
+**The form it took.** Ward's stop compares the rest with what the traced lights *delivered*, which
+needs their rays first and so a trace in rank order; on the GPU that made each lane of a wave load
+and trace a different light, and it cost more than the rays it saved where the cap saved few. So
+the cut is read off the ranking with no ray, against what the traced lights *could* deliver
+(Lightcuts' form), and the rays are traced in the array's order. Four forms were flown on
+lantern-street at 8 fires, where the cap saves no ray and the difference is the capped walk's own
+price (resolve medians, main's binary 1.415 to 1.420 ms the same hours):
+
+| form | 8 fires | 16 fires | 32 fires |
+|---|---:|---:|---:|
+| main (R87: every ray) | 1.415 – 1.420 | 2.160 – 2.165 | 3.693 – 3.698 |
+| first: rank in two registers, BSDF twice, Ward's stop, rank-order rays, compiled into every pipeline | 1.737 | — | — |
+| three walks, rank in one word, rank-order rays | 1.688 | 2.100 | 2.819 |
+| two walks, cut off the ranking, array-order rays, the moon counted | 1.653 | — | — |
+| the same, the moon traced in the ranking walk | 1.497 | — | — |
+| **the built form**: the moon traced in the second walk (one call of the shadow query), share 2% | **1.487** | **1.934** | **2.479** |
+| the same at the 0.2% share (the default) | — | 1.950 | 2.513 |
+| **the mend's form** (R213's mend): the ranking decides, one walk adds every light, 0.2% | **1.512** | **1.955** | **2.540** |
+
+**The mend** (2026-11-25, after the row's review): the second walk had its own copy of the light's
+arithmetic and skipped the faint-light rule (R115) for a light above the cut, and was entered by the
+lights the grid *listed*, so the grid could change the picture with the cap on. The ranking now only
+decides and R87's walk adds every light, the cut and the fill inside it; the renderer's page has the
+rule and the cases. Its flights: the tip alone (the main side's figures above stand), one flight a
+lease, 02:30 to 02:41, a quiet machine (the harness's `quiet`, other processes 0.5 to 5% of the CPU,
+the GPU idle at each start, free physical memory 44.8 GB). **The plain walk's cost at the cap's
+edge moved** by +0.025 ms at 8 fires (1.487 → 1.512, on a quieter machine than the first flight, so
+not load): the one walk carries the cut's test where the plain walk alone ran before. That is the
+pipeline that carries the capped walk; **the forest staging compiles it out** (one campfire and the
+moon), where `capped` is the constant false and the driver folds the test away, so its pair is
+unchanged and was not flown again. The 32 fires' picture against every ray, from the mend's own two
+flights (frame 300, as below): 3,009,497 pixels differ, 71,531 past 2 of 255, the worst 12 — the
+built form's row to the pixel, since the street's faint fires are not where its cut falls. And
+**with the cap at 0 the one walk is main's to the byte** where it is compiled in: 32 fires, frame 300,
+main's gated binary against the tip at `renderer.shadow.light_rays=0`, 0 of 8,294,400 pixels differ
+(and the tip at 0 twice, 0).
+
+**Compiled out where it cannot be taken.** The first form's branch cost a resolve that never took
+it 0.06 to 0.07 ms (no fire: 0.814 → 0.877; four fires: 1.076 → 1.142 with the cap off and 1.146
+with it on, so the shader's registers and not the visible list's declared write). With the walk
+behind a specialization constant that a scene of few lights sets to 0, they are main's: no fire
+0.812 → 0.819, four fires 1.078 → 1.083 (one flight each; R87's page has the walk's own +0.006 to
++0.018 with no light). **What is left is at the cap's edge**: at 8 fires the eight finite lights do
+not pass the cap, the plain walk runs, but in a pipeline that carries the capped walk too: +0.07 ms.
+
+**The table** (the row's item 4): lantern-street's fire variants at night, 3840 × 2160, `--raster
+rt --shadows rt`, the owner's settings (the bounce with `renderer.gi.guide` and
+`renderer.gi.memory`, `renderer.reconstruction.accumulation=on`, `renderer.shadow.micromaps=true`),
+`--no-cache` on both sides, the held path's frames 240 to 480 (241 frames a flight). Base: main's
+binary as gated (`0ac9fbaf`, copied out); tip: the branch built in `msvc-release`. RTX 5090,
+2026-11-24 22:40 to 2026-11-25 01:00, under the GPU lock, one flight a lease with two minutes
+between (the night's resume rule), base and tip interleaved; **machine state**: the harness's
+warning on every flight, other processes 4 to 76% of the CPU at the starts (six other rows building
+and testing), the GPU 0 to 6% busy at each start, free commit 70 to 78 GB, free physical memory
+21 to 44 GB; so upper bounds. Resolve median (p99), milliseconds; the capped pixels are the frame
+record's `light_cap_pixels`, median over the frames:
+
+| fires | base resolve | tip resolve | base − tip | tip's capped pixels |
+|---:|---|---|---:|---:|
+| 0 | 0.812 (0.828) | 0.819 (0.833) | −0.007 | 0 |
+| 4 | 1.078 (1.231) | 1.083 (1.401) | −0.005 | 0 |
+| 8 | 1.417 (1.439) | 1.487 (1.512) | −0.070 | 0 |
+| 16 | 2.160 (2.187) | 1.950 (1.982) | +0.210 | 3,176,499 |
+| 32 | 3.693 (3.742) | 2.513 (2.557) | +1.180 | 3,380,567 |
+
+So **past the cap a fire costs about a third of what it did** (0.035 ms of resolve a fire between
+16 and 32 fires, where main paid 0.096): the ranking walk still visits every light that reaches a
+pixel, so the cost does not stop growing, but the rays, which were most of it, stop at eight. The
+cap off on the branch is main to the millisecond's third place (32 fires 3.699 against 3.698).
+
+**The picture's error, measured**: the same variants, the tip's binary, the bounce and the
+accumulation off (with them the last frame is not the same bytes run to run), frame 300 captured
+with the cap on against the same flight with `renderer.shadow.light_rays=0` (every ray traced),
+counted by the largest channel difference of the 8-bit picture; 8,294,400 pixels. The first rows
+are the first form's (Ward's stop on what the traced lights delivered, in rank order); the last
+three the built one's. The row's log kept only the over-2 counts and the worst for the built rows;
+their "pixels that differ" come from the same comparisons' output, and the 0.2% row's were drawn
+again in the mend (its log: 3,009,497, 71,531, 12, the same).
+
+| fires | form | cap | share | fill | pixels that differ | over 2 of 255 | worst |
+|---:|---|---:|---:|---|---:|---:|---:|
+| 8 | first | 8 | — | estimate | 26,173 | 0 | 2 |
+| 16 | first | 8 | 2% | estimate | 1,191,424 | 4,205 (0.05%) | 7 |
+| 16 | first | 4 | 2% | estimate | 2,437,999 | 151,032 (1.8%) | 20 |
+| 32 | first | 8 | 2% | estimate | 3,773,181 | 50,717 (0.61%) | 9 |
+| 32 | first | 4 | 2% | estimate | 3,779,385 | 782,343 (9.4%) | 18 |
+| 32 | first | 8 | 2% | unshadowed | 3,920,602 | 636,697 (7.7%) | 28 |
+| 32 | first | 8 | 2% | left out | 500,343 | 13,407 (0.16%) | 10 |
+| 16 | built | 8 | 2% | estimate | 1,678,734 | 71,855 (0.87%) | 14 |
+| 32 | built | 8 | 2% | estimate | 3,147,400 | 76,938 (0.93%) | 37 |
+| 32 | built | 8 | 0.2% | estimate | 3,009,497 | 71,531 (0.86%) | 12 |
+
+So **8 rays and not 4** (four put 2 to 9% of the picture past 2 of 255), **a 0.2% share and not
+2%** (at 2% the cut against what the traced lights could deliver fell early at two pixels in three,
+and the worst pixel was 37 codes off; at 0.2% it is 12, for 0.03 ms), and **the built form is
+cheaper than the first and less exact**: Ward's stop, on what was delivered, keeps tracing where the
+traced lights are hidden, which is where the estimate is worst. **The fills are the street's
+lesson**: the eight nearest fires are mostly in view of a point and the far ones mostly behind the
+walls, so the traced lights' visibility over-states the rest's; lit unshadowed is far worse, and left
+out is better than the estimate here — and would be worse in an open square, where the far fires
+are seen. The estimate stays the default because it is exact where everything is seen and its bound
+is the tightest of the three. **The capped pixels**: about 3.2 to 3.4 million of the 8.3 million
+stop at the cap with the share unmet, the street's whole floor and walls — their error is bounded by
+the untraced fires' light and not by the share.
+
+**A scene with few lights costs what it cost: the forest staging**, which names one campfire and
+the moon under `--no-lights` (the walk compiled out). Standing, the owner's top setting (3840 ×
+2160, `--raster rt --shadows rt`, micromaps, the bounce with its guide and memory, the
+accumulation), 300 frames, the resolve's median over frames 100 to 299: **base 9.671 ms, tip 9.694
+ms** (+0.023, inside the row's 0.05); the tip's first load, a cold compile of the resolve (401 s,
+peak 20.4 GiB of private commit), not a side of the pair (9.464 there). Base's load 128 s, peak
+18.4 GiB. 2026-11-25 00:42 to 00:57 under the GPU lock; the harness's warning (other processes 21%
+of the CPU), free commit 78 GB at each start; upper bounds.
+
+**Proposed next**: a fill that knows the walls — the untraced lights' visibility estimated from the
+traced ones nearest them in direction rather than from all of them — and a weight that sees a
+glossy lobe without seeing the eye (the BSDF's peak over the view, which bounds a highlight).

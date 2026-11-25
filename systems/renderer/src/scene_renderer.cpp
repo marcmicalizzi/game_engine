@@ -70,10 +70,25 @@ namespace {
 constexpr u32 k_view_lights = k_frame_lights;  // the warm and cool point lights (lighting.h)
 // Per view: three indirect blocks of three u32, then the vertex path's indexed draw's cursor
 // and fallback count for each of its two runs (gfx::VertexDrawHeader).
-constexpr u32 k_stat_words = 15;
+constexpr u32 k_stat_words = 16;
 // View 0's words 13 and 14: the frame's appends its runs had no room for, the camera runs' and the
 // cascades' (GpuScene::run_drops_offset; W51-5). Every other view leaves them zero.
 constexpr u32 k_run_drop_word = 13;
+// View 0's word 15: the pixels whose lights' shadow rays stopped at the cap with its bound unmet
+// (R213, `gfx::ResolveParams::light_cap_count`), counted behind the visible list's drop counts.
+constexpr u32 k_light_cap_word = 15;
+u64 light_cap_offset(const GpuScene& scene) noexcept {
+  return scene.run_drops_offset() + 2 * sizeof(u32);
+}
+// The cap on the lights' shadow rays in a view's resolve params (R213; renderer.md): the frame's
+// word (`shadow_light_cap_tunable`, read once a frame), the share, and the pixels counted behind
+// the visible list's drop counts (`k_light_cap_word`), which the frame zeroes and reads back.
+void set_light_cap(gfx::ResolveParams& resolve, u32 word, bool cull,
+                   const GpuScene& scene) noexcept {
+  resolve.light_cap_rays = word;
+  resolve.light_cap_share = shadow_light_cap_share_tunable();
+  resolve.light_cap_count = cull ? scene.visible.address + light_cap_offset(scene) : 0;
+}
 // The deformed-vertex pool's allocation record, copied in behind every view's block: it is one
 // record for the frame, not one per view, because the pool's budget is the frame's.
 constexpr u32 k_alloc_words = sizeof(gfx::DeformAlloc) / sizeof(u32);
@@ -346,10 +361,23 @@ const char* resolve_module_name(bool shadows, bool water, bool terrain, bool sto
 }
 
 // R177: one SPIR-V, the foliage lines folded out by the driver where the scene has none.
-gfx::Specialization resolve_specialization(bool foliage) noexcept {
+gfx::Specialization resolve_specialization(bool foliage, bool light_cap) noexcept {
   gfx::Specialization spec;
   if (!foliage) spec.set(gfx::k_spec_scene_foliage, 0u);
+  if (!light_cap) spec.set(gfx::k_spec_scene_light_cap, 0u);  // R213
   return spec;
+}
+bool scene_light_cap(std::span<const FireDesc> fires, std::span<const FireDesc> lamps,
+                     std::span<const SceneProp> props) noexcept {
+  bool props_light = false;
+  for (const SceneProp& prop : props)
+    props_light = props_light || prop.fire.has_value() || prop.lamp.has_value();
+  return shadow_light_cap_compiled(fires.size(), lamps.size(), props_light);
+}
+bool scene_light_cap(const SceneData& data) noexcept {
+  return scene_light_cap(std::span<const FireDesc>(data.fires.data(), data.fires.size()),
+                         std::span<const FireDesc>(data.lamps.data(), data.lamps.size()),
+                         std::span<const SceneProp>(data.props.data(), data.props.size()));
 }
 
 // **The retired set is freed on a worker** (R128; renderer.md, "A resize is swapped in, not waited
@@ -627,6 +655,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   scene_ = &scene;
   // The scene's fires (fire.h): its own, and the props' that a tail may place.
   fires_.reset(scene.data());
+  light_cap_ = scene_light_cap(scene.data());  // R213: the cap compiled into the resolve or not
   far_forest_.reset(&scene.data().far_forest);
   frame_fires_.clear();
   frame_fires_.reserve(k_max_fires);
@@ -1069,7 +1098,7 @@ bool SceneRenderer::create_frame_pass_pipelines(std::string* error) {
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
   resolve_desc.color_format = k_frame_pass_format;
-  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials());
+  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials(), light_cap_);
   gfx::GraphicsPipelineDesc encode_desc;
   encode_desc.vertex = encode->module;
   encode_desc.vertex_entry = "vs_encode";
@@ -1553,7 +1582,8 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     if (!gfx::create_compute_pipeline(
             device, half->module, "half_sun_main",
             std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1), sizeof(u64),
-            resolve_specialization(scene_->has_foliage_materials()), pipelines_.half_sun, error)) {
+            resolve_specialization(scene_->has_foliage_materials(), light_cap_),
+            pipelines_.half_sun, error)) {
       return false;
     }
   }
@@ -1570,7 +1600,8 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     if (!gfx::create_compute_pipeline(
             device, gi->module, "gi_sample_main",
             std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1),
-            sizeof(gfx::GiStepPush), resolve_specialization(scene_->has_foliage_materials()),
+            sizeof(gfx::GiStepPush),
+            resolve_specialization(scene_->has_foliage_materials(), light_cap_),
             pipelines_.gi_sample, error) ||
         !gfx::create_compute_pipeline(
             device, gi->module, "gi_fold_main",
@@ -1734,15 +1765,16 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
   resolve_desc.color_format = desc_.color_format;
-  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials());
+  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials(), light_cap_);
   // The one draw's pipeline, unless the renderer is made to draw by class (R151): the same module
   // twice in one batch is the driver compiling it twice. Started on a worker when the scene file
   // was read (early_pipelines.h; R205): taken after the batch, so the rest compiles beside it.
   const bool one_draw = resolve_one_draw_built(resolve_class_mode_for(resolve_classes_tunable(),
                                                                       scene_->has_masked())) ||
                         resolved_.direct;
-  const ResolveKey key{resolve->name, resolve->hash, desc_.color_format,
-                       scene_->has_foliage_materials(), bindless.capacity()};
+  const ResolveKey key{resolve->name,      resolve->hash,
+                       desc_.color_format, scene_->has_foliage_materials(),
+                       light_cap_,         bindless.capacity()};
   const bool early = one_draw && desc_.early != nullptr && desc_.early->has(key);
   // Asked only where a compile was started and not taken: another key is then a wrong guess, and
   // is counted as one (a re-create after the take, or nothing started, is not).
@@ -2297,6 +2329,7 @@ void SceneRenderer::fold_visible(u32 slot) {
   stats_.run_high = high;
   stats_.run_drops = stats[k_run_drop_word];
   stats_.cascade_run_drops = stats[k_run_drop_word + 1];
+  stats_.light_cap_pixels = stats[k_light_cap_word];  // R213
   const u32 dropped = stats_.run_drops + stats_.cascade_run_drops;
   // Each submitted frame once, as the chain's sums (G133): a waited frame is folded when it finishes
   // and again when its slot comes round, which counted a redrawn attempt twice (W156-2).
@@ -2531,6 +2564,7 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.history_whole = census.whole;
   }
   last.resolve_stop = resolve_stop_tunable(last.frame);
+  last.light_cap_pixels = stats_.light_cap_pixels;  // R213
   last.sun_ray_rule = shadow_ray_rule(last.frame, resolved_.shadow_opaque_coverage).index;
   last.rt_cache_evicted = static_cast<u32>(stats_.rt.cache_evictions - rt_evictions_folded_);
   rt_evictions_folded_ = stats_.rt.cache_evictions;
@@ -3991,6 +4025,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     gi_frame_ += gi_steps;
   }
   const u32 gi_shell_columns = gfx::gi_shell_columns(gi_shell_rays);
+  // R213: the cap's word, read once a frame for every view's params and the resolve's declaration.
+  const u32 light_cap_word = shadow_light_cap_tunable();
 
   for (u32 v = 0; v < views; ++v) {
     const View& view = views_[v];
@@ -4401,6 +4437,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // A light too faint to test (R115; renderer.md): read by the resolve only while the lights'
     // shadows are traced, and 0 traces every light.
     resolve.light_tolerance = shadow_light_tolerance_tunable();
+    set_light_cap(resolve, light_cap_word, settings.cull, scene);  // R213
     resolve.water_white_tier = water_white_tier_tunable();  // W139
     if (resolved_.hybrid) {
       // **Rays near, maps far** (R102): every light is traced as above within the ray distance of
@@ -5326,7 +5363,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             cb.fill_buffer(scene.sw_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
           }
           // The frame's two drop counts behind the list's last entry (GpuScene::run_drops_offset).
-          cb.fill_buffer(scene.visible.buffer, scene.run_drops_offset(), sizeof(u32) * 2, 0);
+          // And the resolve's capped pixels behind them (R213).
+          cb.fill_buffer(scene.visible.buffer, scene.run_drops_offset(), sizeof(u32) * 3, 0);
         }
         // Each cascade's block, in the shape its draw reads: the vertex path's
         // {vertexCount, instanceCount = 0, ...} or the mesh path's {groups = 0, 1, 1}.
@@ -6920,7 +6958,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
           read_scene(b, gfx::Access::FragmentRead, true);
           if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the shadow rays
-          b.read(rg_visible, gfx::Access::FragmentRead);  // a masked candidate's pair (R186 A1)
+          // A masked candidate's pair (R186 A1), and the capped pixels' count behind the list
+          // (R213), which the cap's atomics read and write.
+          if (shadows && light_cap_ && (light_cap_word & 0xffu) != 0u) {
+            b.write(rg_visible, gfx::Access::FragmentReadWrite);
+          } else {
+            b.read(rg_visible, gfx::Access::FragmentRead);
+          }
           if (rg_normals.valid()) b.read(rg_normals, gfx::Access::FragmentRead);  // D2
           if (shadows) {  // the shadow rays traverse them from the fragment stage
             b.read(rt.tlas, gfx::Access::FragmentRayQueryRead);
@@ -7157,9 +7201,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               cb.copy_buffer(scene.vertex_headers.buffer, stat_target->buffer, overflow);
             }
           }
-          {  // the frame's drop counts, camera runs and cascades, into view 0's last two words
+          {  // the frame's drop counts and the resolve's capped pixels, into view 0's last three
             const gfx::BufferCopy drops{scene.run_drops_offset(), sizeof(u32) * k_run_drop_word,
-                                        sizeof(u32) * 2};
+                                        sizeof(u32) * 3};
             cb.copy_buffer(scene.visible.buffer, stat_target->buffer, drops);
           }
           if (deform_on) {

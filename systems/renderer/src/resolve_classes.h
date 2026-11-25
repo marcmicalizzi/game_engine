@@ -13,8 +13,10 @@
 #include <domain/gfx/resolve_classes.h>
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/shader_library.h>
+#include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
 
+#include <span>
 #include <string>
 
 namespace engine::renderer {
@@ -33,7 +35,14 @@ std::string resolve_manifest_path(const std::string& named);
 // The specialization every pipeline of the resolve's family is made with (R177; renderer.md,
 // "Foliage lit from both sides"): `gfx::k_spec_scene_foliage` false where the scene has no foliage
 // material, so its foliage lines drop out at the driver's compile; nothing set where it has one.
-gfx::Specialization resolve_specialization(bool foliage) noexcept;
+// And `gfx::k_spec_scene_light_cap` false where the scene cannot light more lights than the cap on
+// the shadow rays (R213, `scene_light_cap`), so the capped walk drops out the same way.
+gfx::Specialization resolve_specialization(bool foliage, bool light_cap) noexcept;
+// R213: whether a scene of these fires, lamps and props can light more lights than the cap
+// (`shadow_light_cap_compiled`, settings.h).
+bool scene_light_cap(std::span<const FireDesc> fires, std::span<const FireDesc> lamps,
+                     std::span<const SceneProp> props) noexcept;
+bool scene_light_cap(const SceneData& data) noexcept;
 
 struct ResolveClassPlan {
   u32 classes = 0;  // gfx::ResolveClass bits the resolve draws; 0: the one fullscreen draw
