@@ -8,7 +8,7 @@
   performance counters to all users" in the NVIDIA control panel, or the registry key behind it).
   On 2026-11-24 that switch reset the owner's display driver about fifty times and did not stay
   set. GPU metrics on Windows are read by an elevated process instead: run this script ONCE, from
-  an administrator PowerShell 7 that the owner opened himself, and hand the output folder back.
+  an administrator PowerShell 7 that the owner opened themselves, and hand the output folder back.
   No agent runs it, and no agent asks for the counters (docs/experiments/frame-waits-on-the-card.md).
 
   Two actions:
