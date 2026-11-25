@@ -274,6 +274,23 @@ TEST_CASE("frame loop: the desert overlook accumulating allocates nothing in its
   CHECK(flown.buffers == 0);
 }
 
+// Roadmap S122 (world_sound.md, "The refresh off the frame's thread"): the same flight heard, the
+// world's sound on the null backend in a hand wind, its refresh gathered on the frame's thread,
+// computed on `page_jobs`' Efficiency pool and applied at its tick. The frame's thread allocates
+// nothing in the second flight with the sound on.
+TEST_CASE("frame loop: the desert overlook heard allocates nothing in its second flight" *
+          doctest::skip()) {
+  const test::TempDir tmp("engine_view_frame_loop_heard");
+  const std::string file = overlook_scene(tmp);
+  if (file.empty()) return;
+  const Flown flown = fly(tmp, "desert-overlook heard", file,
+                          committed_dir("desert-overlook") + "/camera-path.json",
+                          {"--audio", "null", "--tunable", "renderer.wind.speed_m_s=6"});
+  if (!flown.ran) return;
+  CHECK_MESSAGE(flown.allocations == 0, flown.first << '\n' << flown.allocation_sites);
+  CHECK(flown.buffers == 0);
+}
+
 TEST_CASE("frame loop: the erg's walk on its rings allocates nothing in its second pass" *
           doctest::skip()) {
   const test::TempDir tmp("engine_view_frame_loop_erg");

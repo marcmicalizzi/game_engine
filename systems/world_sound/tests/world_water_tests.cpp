@@ -122,7 +122,7 @@ TEST_CASE("world water: a stretch's level is the power it gives up, rho g Q h, a
   Tunable path("audio.world.path", "false");  // the law alone: spreading, no air or ground
   Session s(Water{channel(0.5, 0.02), {}});
   s.ears = WorldPos{k_far + 5.0, 1.7, k_far + 5.0};
-  s.tick(2);
+  s.tick(4);  // the first refresh applied at its tick, the fourth (S122)
   // The stretch beside the listener (x 0 to 10 m, its level 0 to -0.2 m; the ears 5 m off its
   // middle, 1.7 m up) is the loudest: W' = eta rho g Q h / L, and its angle from the listener.
   const WorldVoiceInfo v = s.loudest(WorldVoiceKind::Stream);
@@ -141,7 +141,7 @@ TEST_CASE("world water: a stretch's level is the power it gives up, rho g Q h, a
   // Twice the flow on the same reach: twice the power, 3.01 dB.
   Session twice(Water{channel(1.0, 0.02), {}});
   twice.ears = s.ears;
-  twice.tick(2);
+  twice.tick(4);
   CHECK(static_cast<f64>(twice.loudest(WorldVoiceKind::Stream).level_db - v.level_db) ==
         doctest::Approx(10.0 * std::log10(2.0)).epsilon(1e-4));
   // A still reach gives up nothing and holds no voice.
@@ -163,7 +163,7 @@ TEST_CASE("world water: a fall of twice the height is 3.01 dB louder, and its po
     f.fall = true;
     f.lands_on_water = on_water;
     Session s(Water{{f}, {}});
-    s.tick(2);
+    s.tick(4);
     return s.loudest(WorldVoiceKind::Fall);
   };
   const WorldVoiceInfo ten = fall(10.0, 0.2, true);
@@ -232,7 +232,7 @@ TEST_CASE("world water: a lake's lap at 0.1 m is heard on its shore") {
   lap.period_s = 1.2f;
   Session s(Water{{}, {lap}});
   // Averaged over whole periods the envelope is the law's mean: 72 ticks, one second and a fifth.
-  s.tick(1);
+  s.tick(4);
   f64 mean = 0.0;
   for (u32 i = 0; i < 72; ++i) {
     s.tick();
@@ -269,7 +269,7 @@ TEST_CASE("world water: the surf's bound is over what its path delivers, at ever
           su.period_s = 1.2f;
           Session s(Water{{}, {su}});
           s.ears = WorldPos{k_far + 7.0 + 0.6 * off, 1.7, k_far + 0.8 * off};
-          s.tick(1);
+          s.tick(4);
           f64 mean = 0.0;
           for (u32 i = 0; i < 72; ++i) {  // whole periods: the envelope's mean
             s.tick();
@@ -324,7 +324,7 @@ TEST_CASE("world water: the surf's cull skips only what could not be heard, and 
     Tunable t("audio.world.surf_cull", cull);
     Session s(w);
     s.ears = ears;
-    s.tick(2);
+    s.tick(4);
     return std::pair<f64, WorldStats>{s.water_power(), s.stage.world_stats()};
   };
   const auto on = heard("true");
@@ -355,7 +355,7 @@ TEST_CASE("world water: the far ones are the beds', their power kept across a pr
   const auto heard = [&w](const char* streams) {
     Tunable t("audio.world.streams", streams);
     Session s(w);
-    s.tick(2);
+    s.tick(4);
     return std::pair<f64, u32>{s.water_power(), s.stage.world_stats().stream_voices};
   };
   const auto none = heard("0");

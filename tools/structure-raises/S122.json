@@ -1,0 +1,15 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S122",
+  "reason": "S122: the session's world sound computes its refresh on each loop's page_jobs, handed for the loop's life by one scope guard a loop (and its one-line stub without the capability); apps.md says the surf's records are joined into lines; world_sound.md takes the refresh off the frame's thread and the surf's join, with the staging pair, past the default page ceiling. S122's mend: world_sound.md says what the review found and what was mended (the cases by construction, a compute on the tick's thread counted late, a reopened stage clean, a stop that settles, the snapshot's bound, a line's real span, the line law held in the stage, the join's time)",
+  "date": "2026-11-24",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 3,
+    "engine_view.run_view.lines": 1,
+    "engine_view.run_offscreen.lines": 1,
+    "page:docs/subsystems/apps.md": 54,
+    "page:docs/subsystems/audio.md": -4,
+    "page:docs/subsystems/world_sound.md": 5205
+  }
+}

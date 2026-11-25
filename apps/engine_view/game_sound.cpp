@@ -539,7 +539,12 @@ void GameSoundHost::attach_surf(const renderer::SurfTable& table,
   const i64 started = time::monotonic_ns();
   surf_.clear();
   surf_cells_.clear();
+  // **Joined into lines** (S122, `world_sound::join_surf`): each instance's records, neighbours
+  // along its shore, become line sources before the path, their power kept.
+  Vector<world_sound::Surf> run;
+  u32 records = 0;
   for (const gfx::InstanceDesc& in : scene.instances) {
+    run.clear();
     if (in.mesh >= table.count.size() || in.mesh >= table.first.size()) continue;
     const u32 first = table.first[in.mesh];
     const u32 count = table.count[in.mesh];
@@ -560,8 +565,10 @@ void GameSoundHost::attach_surf(const renderer::SurfTable& table,
       s.surf_similarity = r.surf_similarity;
       s.period_s = r.period_s;
       s.arrival_s = r.arrival_s;
-      surf_.push_back(s);
+      run.push_back(s);
     }
+    records += static_cast<u32>(run.size());
+    world_sound::join_surf(run.data(), static_cast<u32>(run.size()), surf_);
   }
   surf_half_max_ = 0.0;
   for (const world_sound::Surf& s : surf_)
@@ -575,8 +582,9 @@ void GameSoundHost::attach_surf(const renderer::SurfTable& table,
   surf_ns_ = table.scan_ns + placed;
   if (!surf_.empty()) {
     std::fprintf(stderr,
-                 "engine-view: sound: %u of surf from %u records (scan %.1f ms, placing %.1f ms)\n",
-                 static_cast<u32>(surf_.size()), static_cast<u32>(table.records.size()),
+                 "engine-view: sound: %u lines of surf joined from %u placed of %u records (scan "
+                 "%.1f ms, placing %.1f ms)\n",
+                 static_cast<u32>(surf_.size()), records, static_cast<u32>(table.records.size()),
                  static_cast<f64>(table.scan_ns) / 1.0e6, static_cast<f64>(placed) / 1.0e6);
   }
 }
@@ -928,6 +936,7 @@ bool g_solo_summarised = false;  // print_solo_summary's lines are a run's once
 f64 g_flight_sky_start_s = 0.0;
 f64 g_flight_sun_rate = 0.0;
 f64 g_flight_world_rate = 1.0;
+jobs::JobSystem* g_sound_jobs = nullptr;  // the loop's `page_jobs` while it runs (S122)
 
 GameSoundHost* solo_world() noexcept {
   return g_solo && g_host != nullptr && g_host->world() ? g_host : nullptr;
@@ -936,8 +945,14 @@ GameSoundHost* solo_world() noexcept {
 }  // namespace
 
 void set_session_sound(GameSoundHost* host, bool solo) noexcept {
+  if (g_host != nullptr && g_host != host) g_host->stage().set_jobs(nullptr);
   g_host = host;
   g_solo = host != nullptr && solo;
+  if (g_host != nullptr) g_host->stage().set_jobs(g_sound_jobs);
+}
+void set_session_sound_jobs(jobs::JobSystem* jobs) noexcept {
+  g_sound_jobs = jobs;
+  if (g_host != nullptr) g_host->stage().set_jobs(jobs);
 }
 bool open_solo_sound(GameSoundHost& host, std::string_view audio, const AudioRun& run,
                      const std::string& wav_out, const std::string& scene, u32 tick_hz,
