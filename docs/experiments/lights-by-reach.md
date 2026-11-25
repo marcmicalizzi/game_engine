@@ -288,6 +288,22 @@ price (resolve medians, main's binary 1.415 to 1.420 ms the same hours):
 | the same, the moon traced in the ranking walk | 1.497 | — | — |
 | **the built form**: the moon traced in the second walk (one call of the shadow query), share 2% | **1.487** | **1.934** | **2.479** |
 | the same at the 0.2% share (the default) | — | 1.950 | 2.513 |
+| **the mend's form** (R213's mend): the ranking decides, one walk adds every light, 0.2% | **1.512** | **1.955** | **2.540** |
+
+**The mend** (2026-11-25, after the row's review): the second walk had its own copy of the light's
+arithmetic and skipped the faint-light rule (R115) for a light above the cut, and was entered by the
+lights the grid *listed*, so the grid could change the picture with the cap on. The ranking now only
+decides and R87's walk adds every light, the cut and the fill inside it; the renderer's page has the
+rule and the cases. Its flights: the tip alone (the main side's figures above stand), one flight a
+lease, 02:30 to 02:41, a quiet machine (the harness's `quiet`, other processes 0.5 to 5% of the CPU,
+the GPU idle at each start, free physical memory 44.8 GB). **The plain walk's cost at the cap's
+edge moved** by +0.025 ms at 8 fires (1.487 → 1.512, on a quieter machine than the first flight, so
+not load): the one walk carries the cut's test where the plain walk alone ran before. That is the
+pipeline that carries the capped walk; **the forest staging compiles it out** (one campfire and the
+moon), where `capped` is the constant false and the driver folds the test away, so its pair is
+unchanged and was not flown again. The 32 fires' picture against every ray, from the mend's own two
+flights (frame 300, as below): 3,009,497 pixels differ, 71,531 past 2 of 255, the worst 12 — the
+built form's row to the pixel, since the street's faint fires are not where its cut falls.
 
 **Compiled out where it cannot be taken.** The first form's branch cost a resolve that never took
 it 0.06 to 0.07 ms (no fire: 0.814 → 0.877; four fires: 1.076 → 1.142 with the cap off and 1.146
@@ -327,7 +343,9 @@ accumulation off (with them the last frame is not the same bytes run to run), fr
 with the cap on against the same flight with `renderer.shadow.light_rays=0` (every ray traced),
 counted by the largest channel difference of the 8-bit picture; 8,294,400 pixels. The first rows
 are the first form's (Ward's stop on what the traced lights delivered, in rank order); the last
-three the built one's.
+three the built one's. The row's log kept only the over-2 counts and the worst for the built rows;
+their "pixels that differ" come from the same comparisons' output, and the 0.2% row's were drawn
+again in the mend (its log: 3,009,497, 71,531, 12, the same).
 
 | fires | form | cap | share | fill | pixels that differ | over 2 of 255 | worst |
 |---:|---|---:|---:|---|---:|---:|---:|
