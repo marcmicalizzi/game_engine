@@ -307,6 +307,16 @@ i64 solo_sound_ns() noexcept;       // the record's `sound_ms` without a module
 void attach_solo_scene(const renderer::SceneData& scene);
 // The surf the GPU scene scanned at its upload (S113): to the session's host, module or none.
 void attach_session_surf(const renderer::SurfTable& table, const renderer::SceneData& scene);
+// The job system the session's world sound computes its refresh on (S122: its Efficiency pool,
+// main.cpp's `page_jobs`); null hands it back, waiting for a refresh in flight, so a loop hands
+// null back before its job system goes (`SessionSoundJobs`).
+void set_session_sound_jobs(jobs::JobSystem* jobs) noexcept;
+struct SessionSoundJobs {
+  explicit SessionSoundJobs(jobs::JobSystem& jobs) noexcept { set_session_sound_jobs(&jobs); }
+  ~SessionSoundJobs() { set_session_sound_jobs(nullptr); }
+  SessionSoundJobs(const SessionSoundJobs&) = delete;
+  SessionSoundJobs& operator=(const SessionSoundJobs&) = delete;
+};
 void attach_solo_session(FlySession& session, f64 sky_start_s, f64 sun_rate,
                          f64 world_rate) noexcept;
 void attach_solo_tiles(void* placements) noexcept;  // a world::PlacementTiles*

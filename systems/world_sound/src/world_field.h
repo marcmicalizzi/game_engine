@@ -7,8 +7,11 @@
 // module: the stage owns one and hands it the listener, the mixer's frame and the tick.
 
 #include <core/containers/vector.h>
+#include <core/jobs/job_system.h>
 #include <domain/audio/mixer.h>
 #include <systems/world_sound/world_sound.h>
+
+#include <atomic>
 
 namespace engine::world_sound {
 
@@ -54,9 +57,20 @@ f64 surf_envelope_mean() noexcept;
 
 class WorldField {
  public:
+  WorldField() = default;
+  ~WorldField() { finish(); }
+  WorldField(const WorldField&) = delete;
+  WorldField& operator=(const WorldField&) = delete;
   // Sizes every array; nothing after allocates. `mixer` outlives the field.
   void open(audio::Mixer* mixer, u32 tick_hz, const FieldConfig& config);
   bool is_open() const noexcept { return mixer_ != nullptr; }
+  // **The refresh off the frame's thread** (S122): the job system whose Efficiency pool computes a
+  // refresh from its snapshot (null: computed on the tick's own thread when it is taken). The
+  // result is the same either way and applied at the same tick. A change waits for a refresh in
+  // flight first.
+  void set_jobs(jobs::JobSystem* jobs) noexcept;
+  // Waits for a refresh in flight (the stage closing, going silent, or a job system let go).
+  void finish() noexcept;
   void set_canopy(const CanopySource& canopy) noexcept { canopy_ = canopy; }
   void set_shelter(const ShelterSource& shelter) noexcept { shelter_ = shelter; }
   void set_wind(const WorldWind& wind) noexcept { wind_ = wind; }
@@ -153,7 +167,17 @@ class WorldField {
   static constexpr u32 k_cover_sectors = 16;
   static constexpr u32 k_cover_rings = 15;
 
-  void refresh(const WorldPos& listener) noexcept;
+  // **A refresh in three parts** (S122; world_sound.md, "The refresh off the frame's thread"):
+  // `gather` on the tick's thread takes what the host's tables send and the shelter into the
+  // snapshot and starts `compute` (on a worker, or here with no job system) unless the snapshot is
+  // the last one's; `compute` reads the snapshot and nothing else the tick writes, and writes the
+  // result; `apply`, on the tick's thread at the gather's tick plus `refresh_lag_`, puts the
+  // result on the voices and the beds, waiting (counted) only when the worker is late.
+  void gather(const WorldPos& listener) noexcept;
+  void compute() noexcept;
+  void apply() noexcept;
+  static void run_job(void* self) noexcept;
+  u64 snapshot_hash() const noexcept;
   // A crown's power at the listener per (U10 / 5)^3, band by band after the path, and its tone's
   // power before the path; the sum of `band` is what choosing ranks by. False past the reach.
   bool crown_power(const Crown& c, const WorldPos& listener, f64 law, f64 (&band)[8],
@@ -164,6 +188,7 @@ class WorldField {
   // The share of a path along the ground from the listener to `dx`, `dz` that runs under canopy,
   // in metres, from the refresh's cover.
   f64 canopy_path_m(f64 dx, f64 dz) const noexcept;
+  // Into the beds `compute` makes (`beds_next_`), which `apply` makes the tick's.
   void add_to_bed(const Crown& c, const WorldPos& listener, f64 law, const f64 (&band)[8],
                   const f64 (&path)[8], f64 tone, f64 sign) noexcept;
   // A crown sent by the canopy table: kept while there is room, then only in place of a farther
@@ -179,6 +204,11 @@ class WorldField {
   // listener through its path, everything into its sector's bed, then the loudest of each kind
   // chosen (3 dB of hysteresis) and taken out of its bed again by the same arithmetic.
   void refresh_water(const WorldPos& listener) noexcept;
+  // The snapshot's stretch and surf record as `refresh_water` costs them (the sinks' bodies).
+  void cost_stretch(const Stretch& st, const WorldPos& listener) noexcept;
+  void cost_surf(const Surf& su, const WorldPos& listener) noexcept;
+  // On the tick's thread at `apply`: the water's voices given the sources `compute` chose.
+  void apply_water() noexcept;
   void take_water(const WaterSource& s) noexcept;
   void add_water_to_bed(const WaterSource& s, const WorldPos& listener, f64 sign) noexcept;
   // **The path's eight bands** (S114) from a source `dx`, `dy`, `dz` from the listener at `height`
@@ -249,6 +279,48 @@ class WorldField {
   f64 level_sum_[k_level_kinds] = {};
   u64 level_ticks_ = 0;
   u64 water_over_wind_ = 0;
+
+  // ---- the refresh off the frame's thread (S122) ----------------------------------------------
+  // **The snapshot**: what `compute` reads besides the crowns `gather` took (`crowns_`,
+  // `crown_key_`, `crown_dist_`) and the field's constants. Written only by `gather`, read only by
+  // `compute`; `apply` comes before the next `gather`, so the two never meet.
+  static constexpr u32 k_max_crown_voices = 32;
+  static constexpr u32 k_max_water_voices = 16;  // a kind
+  struct Snapshot {
+    WorldPos listener{};
+    f64 z0 = 0.03;
+    f64 shelter = 1.0;
+    u64 chosen[k_max_crown_voices] = {};    // the crowns chosen now, for the hysteresis
+    u64 water[3][k_max_water_voices] = {};  // each water kind's voices' sources now
+    Vector<Stretch> stretches;              // as the flow table sent them
+    Vector<Surf> surf;                      // as the surf table sent them
+    u64 hash = 0;
+  };
+  Snapshot snap_;
+  // **The result**: the crowns and water sources chosen, each picked crown and its path, the beds
+  // (`beds_next_`, swapped in at `apply`), and what the refresh counted.
+  u64 next_crowns_[k_max_crown_voices] = {};
+  Crown next_crown_[k_max_crown_voices] = {};
+  f64 next_path_[k_max_crown_voices][8] = {};
+  u64 next_water_[3][k_max_water_voices] = {};
+  u32 next_water_index_[3][k_max_water_voices] = {};  // into `water_`, kept to the next compute
+  Vector<Bed> beds_next_;
+  u64 res_water_dropped_ = 0;
+  u64 res_surf_culled_ = 0;
+  u64 res_surf_seen_ = 0;
+  u64 res_work_ns_ = 0;
+  bool res_on_worker_ = false;
+  // The schedule: a gather at `ticks_ % refresh_every_ == 0`, its apply `refresh_lag_` ticks on.
+  jobs::JobSystem* jobs_ = nullptr;
+  jobs::Counter counter_;
+  // 0 nothing in flight, 1 queued, 2 claimed (by the worker, or by `apply` when it was late and
+  // the worker had not started), 3 the result written.
+  std::atomic<u32> state_{0};
+  bool pending_ = false;  // a result waits for its tick
+  bool has_result_ = false;
+  u32 refresh_lag_ = 1;
+  u64 apply_at_ = 0;
+  u64 last_hash_ = 0;
 };
 
 }  // namespace engine::world_sound

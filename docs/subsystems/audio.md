@@ -419,7 +419,7 @@ It links `gfx` for the wind's header (`WindLive`, `wind_at`, `wind_gust`, `sea_s
 
 **Far sources merge by power.** Sources that are not coherent add in power band by band, so everything not chosen as a voice of its own, of every kind, is summed into its sector's bed: eight band powers, placed at the power-weighted direction with a spread. A source enters or leaves the chosen set across a 3 dB band of hysteresis, and as its own voice ramps up its share leaves the bed, so the power heard does not step. A tile past `audio.world.near_m` (96) contributes one aggregate made when it activates (leaf area by class at its centroid); nearer tiles are walked by instance. Nothing past `audio.world.reach_m` (2000) is summed. **That is the capability's LOD policy**: voices by level at the listener, beds by sector, aggregates by tile.
 
-The chosen voices are re-described every tick (a gust is tick-fast); the choice and the beds at `audio.world.refresh_hz` (8) on the job system's Efficiency pool, taken at the next tick from fixed arrays, so the frame loop allocates nothing. World voices are loops at priorities under a game's default, individual voices lowest, then beds, then the ears' wind: a game's one-shot takes a crown before it takes a bed.
+The chosen voices are re-described every tick (a gust is tick-fast); the choice and the beds at `audio.world.refresh_hz` (8) on the job system's Efficiency pool, taken half a refresh's period after its snapshot (S122: a fixed tick, [world_sound](world_sound.md#the-refresh-off-the-frames-thread-s122)) from fixed arrays, so the frame loop allocates nothing. World voices are loops at priorities under a game's default, individual voices lowest, then beds, then the ears' wind: a game's one-shot takes a crown before it takes a bed.
 
 ### Distance
 
@@ -448,7 +448,7 @@ Unchanged. Every world voice is a source with a spatial block and nothing is pan
 |---|---|---|
 | The audio thread at the defaults | 200 µs a 10 ms block, 2 % of one core | 64 clip voices measure 70 µs; 27 shaped-noise voices were estimated at 80 µs and **measure 109 µs** (S112's `audio.mix.noise/27`, a busy machine: "Performance notes") |
 | `SoundStage::tick` on the frame's thread | 50 µs | the gust at 15 places, 27 commands at most |
-| A refresh, off the frame's thread | 1 ms, eight a second | tile aggregates and a few thousand near instances; **at S112-2 still on the frame's thread, held to it by its allowance** (`audio.world.walk_instances`, `near_crowns`, the far field by 512 m cell: [world_sound](world_sound.md#the-wind-in-the-trees-and-at-the-ears-s112), "What a refresh costs"), and no frame's `sound_ms` over 1 ms but for the `--audio-out` WAV's once-a-second flush, the listening tool's own |
+| A refresh, off the frame's thread | 1 ms, eight a second | tile aggregates and a few thousand near instances; **off it since S122**: the frame's thread walks the tables into a snapshot, the Efficiency pool costs it ([world_sound](world_sound.md#the-refresh-off-the-frames-thread-s122)); its walk held by `audio.world.walk_instances`, `near_crowns` |
 | Memory, clips aside | 1 MB | voice state, the fields' fixed arrays |
 | Clips | a game's `audio.clip_budget_mb`; engine-view's default for a game 64 | launch memory is a budget; a clip over the threshold streams |
 | Unused | no mixer, no thread, no allocation, no leaves measured | `--audio off` (engine-view's default offscreen); a stage that hears the world builds its mixer with or without a `sound` block |

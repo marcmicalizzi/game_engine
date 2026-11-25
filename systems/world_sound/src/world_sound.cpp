@@ -324,6 +324,7 @@ struct SoundStage::Impl {
     stopped_why = why;
     stopped_tick = stats.ticks;
     if (output != nullptr) output->close();
+    field.finish();  // nothing ticks the world again: a refresh in flight is let finish (S122)
     ENGINE_LOG_WARN(log_world_sound, "audio stopped; the game's calls are answered as before",
                     log::field("why", std::string_view(stopped_why)));
   }
@@ -653,6 +654,7 @@ bool SoundStage::close(std::string* error) {
   // The device stops pulling; the mixer and its counters stay for the summary, and go with the
   // stage (the output first: its thread calls into the mixer).
   if (s.output != nullptr) s.output->close();
+  s.field.finish();  // a refresh in flight finishes before the session's tables go (S122)
   s.open = false;
   return ok;
 }
@@ -667,6 +669,7 @@ void SoundStage::set_shelter(const ShelterSource& shelter) noexcept {
 void SoundStage::set_flow(const FlowSource& flow) noexcept { impl_->field.set_flow(flow); }
 void SoundStage::set_surf(const SurfSource& surf) noexcept { impl_->field.set_surf(surf); }
 void SoundStage::set_wind(const WorldWind& wind) noexcept { impl_->field.set_wind(wind); }
+void SoundStage::set_jobs(jobs::JobSystem* jobs) noexcept { impl_->field.set_jobs(jobs); }
 const WorldStats& SoundStage::world_stats() const noexcept { return impl_->field.stats(); }
 u32 SoundStage::world_voice_count() const noexcept { return impl_->field.voice_count(); }
 WorldVoiceInfo SoundStage::world_voice(u32 index) const noexcept {
@@ -752,6 +755,21 @@ JsonValue SoundStage::summary_json() const {
     world.set("held_ticks", JsonValue(w.held_ticks));
     world.set("place_retries", JsonValue(w.place_retries));
     world.set("shelter", JsonValue(static_cast<f64>(w.shelter)));
+    // The refresh off the frame's thread (S122): started, on a worker, skipped, late, the
+    // computes' own time and the tick's thread's waits.
+    JsonValue refresh = JsonValue::object();
+    refresh.set("started", JsonValue(w.refresh_started));
+    refresh.set("on_worker", JsonValue(w.refresh_on_worker));
+    refresh.set("skipped", JsonValue(w.refresh_skipped));
+    refresh.set("late", JsonValue(w.refresh_late));
+    refresh.set("work_ms_mean",
+                JsonValue(w.refresh_started != 0 ? static_cast<f64>(w.refresh_work_ns) / 1.0e6 /
+                                                       static_cast<f64>(w.refresh_started)
+                                                 : 0.0));
+    refresh.set("work_ms_max", JsonValue(static_cast<f64>(w.refresh_work_max_ns) / 1.0e6));
+    refresh.set("wait_ms", JsonValue(static_cast<f64>(w.refresh_wait_ns) / 1.0e6));
+    refresh.set("snapshot_bytes", JsonValue(w.snapshot_bytes));
+    world.set("refresh", std::move(refresh));
     out.set("world", std::move(world));
   }
   out.set("stopped", JsonValue(s.stopped));

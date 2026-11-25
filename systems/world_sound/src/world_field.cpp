@@ -5,11 +5,13 @@
 #include "world_field.h"
 
 #include <core/hash/hash.h>
+#include <core/time/time.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/world_sound/path.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace engine::world_sound {
 
@@ -219,6 +221,14 @@ void WorldField::open(audio::Mixer* mixer, u32 tick_hz, const FieldConfig& confi
   far_heap_.reserve(config_.max_crowns);
   chosen_.resize(config_.crowns, 0);
   beds_.resize(config_.beds);
+  beds_next_.resize(config_.beds);
+  // The snapshot's tables (S122): room for what a refresh keeps; a table that sends more grows
+  // them once, to its high-water mark.
+  snap_.stretches.reserve(config_.max_water);
+  snap_.surf.reserve(config_.max_water);
+  // A refresh is applied half its period after its snapshot (at least the next tick): time for a
+  // worker, and always the same tick whatever the worker does.
+  refresh_lag_ = refresh_every_ / 2 != 0 ? refresh_every_ / 2 : 1u;
   // Crowns, beds, the two ears, then (S113) the streams, the falls and the surf.
   water_first_ = config_.crowns + config_.beds + 2u;
   const u32 water_voices = config_.streams + config_.falls + config_.surfs;
@@ -371,7 +381,7 @@ void WorldField::add_to_bed(const Crown& c, const WorldPos& listener, f64 law, c
   if (azimuth < 0.0) azimuth += 2.0 * k_pi;
   u32 s = static_cast<u32>(azimuth / (2.0 * k_pi) * sectors);
   if (s >= sectors) s = sectors - 1;
-  Bed& b = beds_[s];
+  Bed& b = beds_next_[s];
   BedRing& ring = b.ring[d < k_bed_ring_m[0] ? 0u : d < k_bed_ring_m[1] ? 1u : 2u];
   for (u32 k = 0; k < 8; ++k) {
     ring.band[k] += sign * band[k];
@@ -462,10 +472,109 @@ void WorldField::take(const Crown& c) noexcept {
   std::push_heap(far_heap_.begin(), far_heap_.end(), farther);
 }
 
-void WorldField::refresh(const WorldPos& listener) noexcept {
+// ---- the refresh off the frame's thread (S122; world_sound.md, "The refresh off the frame's
+// thread") ---------------------------------------------------------------------------------------
+
+void WorldField::set_jobs(jobs::JobSystem* jobs) noexcept {
+  if (jobs == jobs_) return;
+  finish();
+  jobs_ = jobs;
+}
+
+void WorldField::finish() noexcept {
+  // A job still queued is claimed here and left to return at once; one running is waited for. Its
+  // result stays pending and is applied at its tick if the field ticks again.
+  if (jobs_ == nullptr) return;
+  u32 queued = 1;
+  if (state_.compare_exchange_strong(queued, 2u, std::memory_order_acq_rel)) compute();
+  counter_.wait_blocking();
+}
+
+void WorldField::run_job(void* self) noexcept {
+  WorldField& f = *static_cast<WorldField*>(self);
+  u32 queued = 1;
+  // `apply`, finding the worker late and not yet begun, may have taken the refresh itself.
+  if (!f.state_.compare_exchange_strong(queued, 2u, std::memory_order_acq_rel)) return;
+  f.res_on_worker_ = true;
+  f.compute();
+}
+
+namespace {
+
+// The snapshot's identity: every value `compute` reads, word by word (never a struct's padding).
+struct SnapHash {
+  u64 h = 0xcbf29ce484222325ull;
+  void word(u64 w) noexcept {
+    h ^= w;
+    h *= 0x100000001b3ull;
+    h ^= h >> 29;
+  }
+  void f64v(f64 v) noexcept {
+    u64 w;
+    std::memcpy(&w, &v, 8);
+    word(w);
+  }
+  void f32v(f32 v) noexcept {
+    u32 w;
+    std::memcpy(&w, &v, 4);
+    word(w);
+  }
+  void pos(const WorldPos& p) noexcept {
+    f64v(p.x);
+    f64v(p.y);
+    f64v(p.z);
+  }
+};
+
+}  // namespace
+
+u64 WorldField::snapshot_hash() const noexcept {
+  SnapHash h;
+  h.pos(snap_.listener);
+  h.f64v(snap_.z0);
+  h.f64v(snap_.shelter);
+  for (const u64 k : snap_.chosen)
+    h.word(k);
+  for (const auto& kind : snap_.water)
+    for (const u64 k : kind)
+      h.word(k);
+  h.word(crowns_.size());
+  for (const Crown& c : crowns_) {
+    h.pos(c.at);
+    h.f32v(c.height_m);
+    h.f32v(c.leaf_area_m2);
+    h.word(static_cast<u64>(c.kind) | (c.merged ? 0x100u : 0u));
+    h.f32v(c.needle_mm);
+    h.f32v(c.extent_m);
+  }
+  h.word(snap_.stretches.size());
+  for (const Stretch& s : snap_.stretches) {
+    h.pos(s.a);
+    h.pos(s.b);
+    h.f32v(s.discharge_m3s);
+    h.f32v(s.drop_m);
+    h.f32v(s.wet_width_m);
+    h.f32v(s.froude);
+    h.word((s.fall ? 1u : 0u) | (s.lands_on_water ? 2u : 0u));
+  }
+  h.word(snap_.surf.size());
+  for (const Surf& s : snap_.surf) {
+    h.pos(s.at);
+    h.f32v(s.along.x);
+    h.f32v(s.along.y);
+    h.f32v(s.length_m);
+    h.f32v(s.power_w_m);
+    h.f32v(s.height_m);
+    h.f32v(s.surf_similarity);
+    h.f32v(s.period_s);
+    h.f32v(s.arrival_s);
+  }
+  return h.h;
+}
+
+void WorldField::gather(const WorldPos& listener) noexcept {
   ++stats_.refreshes;
   crowns_.clear();
-  crown_static_.clear();
   crown_key_.clear();
   crown_dist_.clear();
   far_heap_.clear();
@@ -481,12 +590,34 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
     canopy_.visit(canopy_.user, listener, config_.reach_m, CrownSink{&sink, &Sink::emit});
   }
   stats_.crowns_seen = crowns_.size();
+  // The water's tables, as they send it: costing it is `compute`'s.
+  snap_.stretches.clear();
+  snap_.surf.clear();
+  stats_.stretches_seen = 0;
+  struct WaterSink {
+    WorldField* self;
+    static void stretch(void* user, const Stretch& st) noexcept {
+      WorldField& f = *static_cast<WaterSink*>(user)->self;
+      ++f.stats_.stretches_seen;
+      f.snap_.stretches.push_back(st);
+    }
+    static void surf(void* user, const Surf& su) noexcept {
+      static_cast<WaterSink*>(user)->self->snap_.surf.push_back(su);
+    }
+  } water_sink{this};
+  if (flow_.visit != nullptr)
+    flow_.visit(flow_.user, listener, config_.reach_m,
+                StretchSink{&water_sink, &WaterSink::stretch, config_.water_reach_m});
+  if (surf_.visit != nullptr)  // the surf is taken to `water_reach_m` (`cost_surf`)
+    surf_.visit(surf_.user, listener, config_.water_reach_m,
+                SurfSink{&water_sink, &WaterSink::surf});
   Vec2 to;
   f64 z0 = 0.03;
   (void)wind10_at(listener.x, listener.z, to, z0);
   // **Shelter for the ears** (S114): what stands upwind, asked of the host's table at a few
-  // distances, and the wind in its lee as a windbreak's: the deepest lee any of them gives.
-  shelter_share_ = 1.0;
+  // distances, and the wind in its lee as a windbreak's: the deepest lee any of them gives. The
+  // host's table is the tick's thread's, so it is asked here.
+  f64 shelter = 1.0;
   if (shelter_.height_at != nullptr) {
     const f64 tx = static_cast<f64>(to.x);
     const f64 tz = static_cast<f64>(to.y);
@@ -499,11 +630,51 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
             shelter_.user, x, z, static_cast<f32>(-tz / tl), static_cast<f32>(tx / tl)));
         if (!(h > k_shelter_least_m)) continue;
         const f64 share = lee_share(d / h);
-        shelter_share_ = share < shelter_share_ ? share : shelter_share_;
+        shelter = share < shelter ? share : shelter;
       }
     }
   }
-  stats_.shelter = static_cast<f32>(shelter_share_);
+  snap_.listener = listener;
+  snap_.z0 = z0;
+  snap_.shelter = shelter;
+  const u32 want = config_.crowns < k_max_crown_voices ? config_.crowns : k_max_crown_voices;
+  for (u32 j = 0; j < k_max_crown_voices; ++j)
+    snap_.chosen[j] = j < want ? chosen_[j] : 0u;
+  const u32 counts[3] = {config_.streams, config_.falls, config_.surfs};
+  u32 first = water_first_;
+  for (u32 kind = 0; kind < 3; ++kind) {
+    for (u32 j = 0; j < k_max_water_voices; ++j)
+      snap_.water[kind][j] = j < counts[kind] ? voices_[first + j].key : 0u;
+    first += counts[kind];
+  }
+  snap_.hash = snapshot_hash();
+  stats_.snapshot_bytes = sizeof(Snapshot) + crowns_.size() * (sizeof(Crown) + 16u) +
+                          snap_.stretches.size() * sizeof(Stretch) +
+                          snap_.surf.size() * sizeof(Surf);
+  // **A steady world starts no refresh**: the same snapshot gives the same result, already applied.
+  if (has_result_ && snap_.hash == last_hash_) {
+    ++stats_.refresh_skipped;
+    return;
+  }
+  ++stats_.refresh_started;
+  pending_ = true;
+  apply_at_ = ticks_ + refresh_lag_;
+  res_on_worker_ = false;
+  if (jobs_ == nullptr) {
+    compute();  // here, now; applied at its tick as a worker's would be
+    return;
+  }
+  counter_.wait_blocking();  // the last job, even one `apply` ran in its place, has returned
+  state_.store(1u, std::memory_order_release);
+  counter_.add(1);
+  jobs_->schedule(jobs::Pool::Efficiency, jobs::Job{&WorldField::run_job, this, &counter_});
+}
+
+void WorldField::compute() noexcept {
+  const i64 started = time::monotonic_ns();
+  const WorldPos listener = snap_.listener;
+  crown_static_.clear();
+  const f64 z0 = snap_.z0;
   // Each crown's power at the listener per (U10 / 5)^3: what choosing and merging rank by. A crown
   // is heard at its edge when the listener is inside it (`Crown::extent_m`). The class's power and
   // the log law's denominator are the stage's and the refresh's, not a crown's (S112-2: three
@@ -566,7 +737,7 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
   }
   // Each crown's power through its path, into its sector's bed (the chosen ones are taken out of
   // their beds again below), and what choosing ranks by.
-  for (Bed& b : beds_)
+  for (Bed& b : beds_next_)
     b = Bed{};
   for (const Crown& c : crowns_) {
     const f64 h = static_cast<f64>(c.height_m);
@@ -584,13 +755,14 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
     crown_static_.push_back(total);
     add_to_bed(c, listener, lw, band, path, tone, 1.0);
   }
+
   // The crowns of their own: the loudest, a chosen one kept across 3 dB of hysteresis. A merged
   // group is never one of them (L6): it is the beds'.
   const u32 n = static_cast<u32>(crowns_.size());
-  Vector<u64>& chosen = chosen_;
-  u64 next[32] = {};
-  u32 picked[32] = {};
-  const u32 want = config_.crowns < 32 ? config_.crowns : 32;
+  const u32 want = config_.crowns < k_max_crown_voices ? config_.crowns : k_max_crown_voices;
+  u32 picked[k_max_crown_voices] = {};
+  for (u32 slot = 0; slot < k_max_crown_voices; ++slot)
+    next_crowns_[slot] = 0;
   for (u32 slot = 0; slot < want; ++slot) {
     f64 best = 0.0;
     u32 best_i = ~0u;
@@ -600,57 +772,96 @@ void WorldField::refresh(const WorldPos& listener) noexcept {
       const u64 key = crown_key_[i];
       bool taken = false;
       for (u32 j = 0; j < slot; ++j)
-        taken = taken || next[j] == key;
+        taken = taken || next_crowns_[j] == key;
       if (taken) continue;
       for (u32 j = 0; j < want; ++j)
-        if (chosen[j] == key) s *= 2.0;  // 3 dB
+        if (snap_.chosen[j] == key) s *= 2.0;  // 3 dB
       if (s > best) {
         best = s;
         best_i = i;
       }
     }
-    next[slot] = best_i != ~0u ? crown_key_[best_i] : 0u;
+    next_crowns_[slot] = best_i != ~0u ? crown_key_[best_i] : 0u;
     picked[slot] = best_i;
   }
+  // A crown of its own is the beds' no longer: its power, the same arithmetic as it went in, is
+  // taken out of its bed, and its path is kept for its voice (S114).
+  for (u32 j = 0; j < want; ++j) {
+    if (next_crowns_[j] == 0) continue;
+    const Crown& c = crowns_[picked[j]];
+    next_crown_[j] = c;
+    const f64 h = static_cast<f64>(c.height_m);
+    const f64 lw = law(h > 1.0 ? h : 1.0);
+    f64 band[8];
+    f64 tone = 0.0;
+    if (crown_power(c, listener, lw, band, next_path_[j], tone))
+      add_to_bed(c, listener, lw, band, next_path_[j], tone, -1.0);
+  }
+  refresh_water(listener);  // running water and the surf (S113; water_field.cpp)
+  res_work_ns_ = static_cast<u64>(time::monotonic_ns() - started);
+  state_.store(3u, std::memory_order_release);
+}
+
+void WorldField::apply() noexcept {
+  pending_ = false;
+  if (state_.load(std::memory_order_acquire) != 3u) {
+    // **Late**: the worker has not finished. One that has not begun is taken here; one running
+    // is waited for. Either way the result is the one it would have been, at the same tick.
+    ++stats_.refresh_late;
+    const i64 waited = time::monotonic_ns();
+    u32 queued = 1;
+    if (state_.compare_exchange_strong(queued, 2u, std::memory_order_acq_rel)) {
+      compute();
+    } else {
+      counter_.wait_blocking();
+    }
+    stats_.refresh_wait_ns += static_cast<u64>(time::monotonic_ns() - waited);
+  }
+  stats_.refresh_work_ns += res_work_ns_;
+  stats_.refresh_work_max_ns =
+      res_work_ns_ > stats_.refresh_work_max_ns ? res_work_ns_ : stats_.refresh_work_max_ns;
+  stats_.refresh_on_worker += res_on_worker_ ? 1u : 0u;
   // Keep each chosen crown on the voice it had, so a crown that stays chosen is not restarted.
+  const u32 want = config_.crowns < k_max_crown_voices ? config_.crowns : k_max_crown_voices;
   for (u32 slot = 0; slot < want; ++slot) {
     Voice& v = voices_[slot];
     bool kept = false;
     for (u32 j = 0; j < want && !kept; ++j)
-      kept = next[j] != 0 && next[j] == v.key;
+      kept = next_crowns_[j] != 0 && next_crowns_[j] == v.key;
     if (!kept && v.key != 0) {
       silence(v);
       v.key = 0;
     }
   }
   for (u32 j = 0; j < want; ++j) {
-    if (next[j] == 0) continue;
+    if (next_crowns_[j] == 0) continue;
     u32 at = ~0u;
     for (u32 slot = 0; slot < want && at == ~0u; ++slot)
-      at = voices_[slot].key == next[j] ? slot : ~0u;
+      at = voices_[slot].key == next_crowns_[j] ? slot : ~0u;
     for (u32 slot = 0; slot < want && at == ~0u; ++slot) {
       if (voices_[slot].key == 0) {
-        voices_[slot].key = next[j];
+        voices_[slot].key = next_crowns_[j];
         voices_[slot].has_sent = false;
         at = slot;
       }
     }
     if (at == ~0u) continue;
-    // A crown of its own is the beds' no longer: its power, the same arithmetic as it went in, is
-    // taken out of its bed, and its path is kept for its voice (S114).
-    const Crown& c = crowns_[picked[j]];
     Voice& v = voices_[at];
-    v.crown = c;
-    const f64 h = static_cast<f64>(c.height_m);
-    const f64 lw = law(h > 1.0 ? h : 1.0);
-    f64 band[8];
-    f64 tone = 0.0;
-    if (crown_power(c, listener, lw, band, v.path, tone))
-      add_to_bed(c, listener, lw, band, v.path, tone, -1.0);
+    v.crown = next_crown_[j];
+    for (u32 b = 0; b < 8; ++b)
+      v.path[b] = next_path_[j][b];
   }
   for (u32 slot = 0; slot < want; ++slot)
-    chosen[slot] = next[slot];
-  refresh_water(listener);  // running water and the surf (S113; water_field.cpp)
+    chosen_[slot] = next_crowns_[slot];
+  apply_water();  // water_field.cpp
+  beds_.swap(beds_next_);
+  shelter_share_ = snap_.shelter;
+  stats_.shelter = static_cast<f32>(shelter_share_);
+  stats_.water_dropped = res_water_dropped_;
+  stats_.surf_culled = res_surf_culled_;
+  stats_.surf_seen = res_surf_seen_;
+  last_hash_ = snap_.hash;
+  has_result_ = true;
 }
 
 void WorldField::place(Voice& v, const WorldPos& frame) noexcept {
@@ -765,7 +976,9 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
   if (length(velocity) > k_max_head_m_s) velocity = Vec3{};
   last_listener_ = listener;
   has_listener_ = true;
-  if (ticks_ % refresh_every_ == 0) refresh(listener);
+  // A refresh's result at its tick, before the next refresh is gathered (S122).
+  if (pending_ && ticks_ == apply_at_) apply();
+  if (ticks_ % refresh_every_ == 0) gather(listener);
   ++ticks_;
 
   const f64 calm = config_.calm_m_s;
@@ -1017,6 +1230,7 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
 
 void WorldField::stop_all() noexcept {
   if (mixer_ == nullptr) return;
+  finish();
   for (Voice& v : voices_)
     silence(v);
 }

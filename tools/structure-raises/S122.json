@@ -1,0 +1,13 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "S122",
+  "reason": "S122: the session's world sound computes its refresh on each loop's page_jobs, handed for the loop's life by one scope guard a loop (and its one-line stub without the capability)",
+  "date": "2026-11-24",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 3,
+    "engine_view.run_view.lines": 1,
+    "engine_view.run_offscreen.lines": 1,
+    "page:docs/subsystems/audio.md": -4
+  }
+}

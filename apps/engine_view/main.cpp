@@ -53,6 +53,7 @@ inline void attach_solo_tiles(void*) noexcept {}
 inline void set_solo_flight_clock(const auto&) noexcept {}
 inline void solo_flight_frame(const renderer::FlightStep&) noexcept {}
 inline void print_solo_summary() {}
+struct SessionSoundJobs { explicit SessionSoundJobs(auto&) noexcept {} };
 }  // namespace engine::view
 #endif
 #include "time_controls.h"
@@ -3072,6 +3073,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
   renderer::GpuScene scene;
   jobs::JobSystem page_jobs(
       jobs::JobSystemConfig{.performance_workers = 1, .efficiency_workers = 2});
+  view::SessionSoundJobs sound_jobs(page_jobs);  // the world sound's refresh on it (S122)
   renderer::FilePageSource page_source;
   renderer::EarlyPipelines early_resolve;  // R205: started at the scene file, taken at create
   renderer::SceneRenderer view_renderer;
@@ -5961,6 +5963,7 @@ int run_view(int argc, char** argv) {
   // moment anything else in this app wants one.
   jobs::JobSystem page_jobs(
       jobs::JobSystemConfig{.performance_workers = 1, .efficiency_workers = 2});
+  view::SessionSoundJobs sound_jobs(page_jobs);  // the world sound's refresh on it (S122)
   renderer::FilePageSource page_source;
   renderer::SceneRenderer view_renderer;
   view::CollisionCopy collision_copy;  // T138: before the draw and the walker, which read it

@@ -174,7 +174,7 @@ TEST_CASE("world sound: in the default configuration, the path on, both laws hol
   s.frame.live.set = true;
   s.frame.live.mean_m_s = 6.0;
   s.frame.live.to_deg = 90.0;
-  s.tick(2);
+  s.tick(4);  // the first refresh applied at its tick, the fourth (S122)
   const f64 calm_gust = s.total_db(WorldVoiceKind::Bed);
   f64 phase = 0.0;
   for (u32 t = 0; t < 660; ++t) {
@@ -220,7 +220,7 @@ TEST_CASE(
   s.frame.live.set = true;
   s.frame.live.mean_m_s = 6.0;
   s.frame.live.to_deg = 90.0;
-  s.tick(2);
+  s.tick(4);  // the first refresh applied at its tick, the fourth (S122)
   const f64 calm_gust = s.total_db(WorldVoiceKind::Bed);
   const f64 g = gfx::wind_gust_factor(0.03);  // 1.46 over grassland
   // Held: the phase rises over 10 s; the level follows mean (1 + level (G - 1)) cubed.
@@ -260,7 +260,7 @@ TEST_CASE("world sound: a gust's front raises a crown on the tick it raises the 
   s.frame.live.set = true;
   s.frame.live.mean_m_s = 6.0;
   s.frame.live.to_deg = 90.0;
-  s.tick(3, 0.0);  // the sky's clock held: only the gust moves
+  s.tick(4, 0.0);  // the sky's clock held: only the gust moves (the first refresh applied: S122)
   const f32 before = s.first(WorldVoiceKind::Crown).level_db;
   const f32 wind_before = s.first(WorldVoiceKind::Crown).wind_m_s;
   s.frame.live.gust = gfx::wind_gust_level(gfx::wind_gust_phase_step(0.0, true, 0.5));
@@ -278,7 +278,8 @@ TEST_CASE("world sound: a held sky still gusts, on the world's clock, and the sk
     Session s(6.0, true);
     s.frame.sky_time_s = sky_s;
     s.frame.world_time_s = world_s;
-    s.tick(3, 0.0);  // both clocks held: three ticks to settle the voices
+    s.tick(4,
+           0.0);  // both clocks held: four ticks to settle the voices (the first refresh's, S122)
     return s.first(kind).wind_m_s;
   };
   for (const WorldVoiceKind kind : {WorldVoiceKind::Crown, WorldVoiceKind::EarLeft}) {
@@ -296,7 +297,7 @@ TEST_CASE("world sound: a held sky still gusts, on the world's clock, and the sk
 
 TEST_CASE("world sound: a needle crown's movable band sits at 0.2 U / d, a blade crown has none") {
   Session needle(6.0, false, {}, CanopyClass::Needle);
-  needle.tick(3);
+  needle.tick(4);
   bool seen_needle = false;
   bool seen_blade = false;
   for (u32 i = 0; i < needle.stage.world_voice_count(); ++i) {
@@ -322,7 +323,7 @@ TEST_CASE("world sound: a needle crown's movable band sits at 0.2 U / d, a blade
 
 TEST_CASE("world sound: an unchanged world sends nothing, calm holds no voice, counts are capped") {
   Session s(6.0, true);
-  s.tick(2, 0.0);  // the sky's clock held: the same wind every tick
+  s.tick(4, 0.0);  // the sky's clock held: the same wind every tick (the first refresh applied)
   const u64 after_start = s.stage.world_stats().commands;
   CHECK(after_start > 0u);
   s.tick(120, 0.0);  // four refreshes of the same crowns

@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace engine::world_sound {
 
@@ -174,6 +175,130 @@ f64 surf_bound_db(const Surf& surf, const WorldPos& listener) noexcept {
   return p > 0.0 ? 10.0 * std::log10(p) : -1000.0;
 }
 
+u32 join_surf(const Surf* records, u32 count, Vector<Surf>& out) {
+  // **Neighbouring records along one shore, one line** (S122; world_sound.md, "The surf joined
+  // into lines"). A group is a `k_surf_join_m` square of the world's grid, the shore's direction in
+  // eighths of a half turn (a shore has no sign), the breaker's class (a surging one gives a
+  // quarter of its power, `k_surging_share`, so the two never share a line), the period, and the
+  // crest's arrival in eighths of it. Records are taken in the order of those keys and then of
+  // their index, so the lines and their order are a function of the records alone.
+  struct Key {
+    i64 x = 0, z = 0;
+    u32 sector = 0, surging = 0, octant = 0;
+    u32 period_bits = 0;
+    u32 index = 0;
+  };
+  Vector<Key> keys;
+  keys.reserve(count);
+  for (u32 i = 0; i < count; ++i) {
+    const Surf& s = records[i];
+    Key k;
+    k.index = i;
+    k.x = static_cast<i64>(std::floor(s.at.x / k_surf_join_m));
+    k.z = static_cast<i64>(std::floor(s.at.z / k_surf_join_m));
+    f64 a = std::atan2(static_cast<f64>(s.along.y), static_cast<f64>(s.along.x));
+    if (a < 0.0) a += k_pi;
+    if (a >= k_pi) a -= k_pi;
+    k.sector = static_cast<u32>(a / (k_pi / 8.0)) % 8u;
+    k.surging = s.surf_similarity > 2.0f ? 1u : 0u;
+    const f64 t = static_cast<f64>(s.period_s);
+    f64 phase = t > 0.0 ? static_cast<f64>(s.arrival_s) / t : 0.0;
+    phase -= std::floor(phase);
+    k.octant = static_cast<u32>(phase * 8.0) % 8u;
+    std::memcpy(&k.period_bits, &s.period_s, 4);
+    keys.push_back(k);
+  }
+  const auto same = [](const Key& a, const Key& b) noexcept {
+    return a.x == b.x && a.z == b.z && a.sector == b.sector && a.surging == b.surging &&
+           a.octant == b.octant && a.period_bits == b.period_bits;
+  };
+  std::sort(keys.begin(), keys.end(), [](const Key& a, const Key& b) noexcept {
+    if (a.x != b.x) return a.x < b.x;
+    if (a.z != b.z) return a.z < b.z;
+    if (a.sector != b.sector) return a.sector < b.sector;
+    if (a.surging != b.surging) return a.surging < b.surging;
+    if (a.period_bits != b.period_bits) return a.period_bits < b.period_bits;
+    if (a.octant != b.octant) return a.octant < b.octant;
+    return a.index < b.index;
+  });
+  u32 lines = 0;
+  for (u32 g = 0; g < keys.size();) {
+    u32 e = g + 1;
+    while (e < keys.size() && same(keys[g], keys[e]))
+      ++e;
+    ++lines;
+    if (e == g + 1) {
+      out.push_back(records[keys[g].index]);
+      g = e;
+      continue;
+    }
+    // The members' power, W' L, weights their place, direction, height, similarity and phase.
+    const Surf& lead = records[keys[g].index];
+    const f64 lx = static_cast<f64>(lead.along.x), lz = static_cast<f64>(lead.along.y);
+    f64 power = 0.0, cx = 0.0, cy = 0.0, cz = 0.0, dx = 0.0, dz = 0.0;
+    f64 height = 0.0, xi = 0.0, ps = 0.0, pc = 0.0;
+    const f64 period = static_cast<f64>(lead.period_s);
+    for (u32 m = g; m < e; ++m) {
+      const Surf& s = records[keys[m].index];
+      const f64 w = static_cast<f64>(s.power_w_m) * static_cast<f64>(s.length_m);
+      f64 ax = static_cast<f64>(s.along.x), az = static_cast<f64>(s.along.y);
+      if (ax * lx + az * lz < 0.0) {  // one sense along the shore
+        ax = -ax;
+        az = -az;
+      }
+      power += w;
+      cx += w * s.at.x;
+      cy += w * s.at.y;
+      cz += w * s.at.z;
+      dx += w * ax;
+      dz += w * az;
+      height += w * static_cast<f64>(s.height_m);
+      xi += w * static_cast<f64>(s.surf_similarity);
+      f64 phase = period > 0.0 ? static_cast<f64>(s.arrival_s) / period : 0.0;
+      phase -= std::floor(phase);
+      ps += w * std::sin(2.0 * k_pi * phase);
+      pc += w * std::cos(2.0 * k_pi * phase);
+    }
+    if (!(power > 0.0)) {  // nothing to carry: the records as they are
+      for (u32 m = g; m < e; ++m)
+        out.push_back(records[keys[m].index]);
+      lines += e - g - 1;
+      g = e;
+      continue;
+    }
+    cx /= power;
+    cy /= power;
+    cz /= power;
+    const f64 dl = std::sqrt(dx * dx + dz * dz);
+    const f64 ux = dl > 1e-9 ? dx / dl : lx, uz = dl > 1e-9 ? dz / dl : lz;
+    // The span the members cover along that direction, each its own length about its place.
+    f64 lo = 0.0, hi = 0.0;
+    for (u32 m = g; m < e; ++m) {
+      const Surf& s = records[keys[m].index];
+      const f64 along = (s.at.x - cx) * ux + (s.at.z - cz) * uz;
+      const f64 half = 0.5 * static_cast<f64>(s.length_m);
+      lo = m == g || along - half < lo ? along - half : lo;
+      hi = m == g || along + half > hi ? along + half : hi;
+    }
+    const f64 span = hi - lo;
+    const f64 mid = 0.5 * (lo + hi);
+    Surf line;
+    line.at = WorldPos{cx + ux * mid, cy, cz + uz * mid};
+    line.along = Vec2{static_cast<f32>(ux), static_cast<f32>(uz)};
+    line.length_m = static_cast<f32>(span);
+    line.power_w_m = static_cast<f32>(power / span);  // W' L summed, over the line's length
+    line.height_m = static_cast<f32>(height / power);
+    line.surf_similarity = static_cast<f32>(xi / power);
+    line.period_s = lead.period_s;
+    f64 phase = std::atan2(ps, pc) / (2.0 * k_pi);
+    phase -= std::floor(phase);
+    line.arrival_s = static_cast<f32>(phase * period);
+    out.push_back(line);
+    g = e;
+  }
+  return lines;
+}
+
 f64 surf_power_w_m(f64 height_m, f64 period_s) noexcept {
   if (!(height_m > 0.0) || !(period_s > 0.0)) return 0.0;
   return k_rho * k_g * k_g * height_m * height_m * period_s / (64.0 * k_pi);
@@ -201,7 +326,7 @@ void WorldField::take_water(const WaterSource& s) noexcept {
   }
   // Full: one source is dropped whichever it is — this one, or the farthest kept, which this one
   // replaces — so the count is the sources sent past the cap, the same either way.
-  ++stats_.water_dropped;
+  ++res_water_dropped_;
   if (config_.max_water == 0) return;
   // Full: the farthest kept goes if this one is nearer (a total order: distance, then key).
   const auto farther = [this](u32 a, u32 b) noexcept {
@@ -233,7 +358,7 @@ void WorldField::add_water_to_bed(const WaterSource& s, const WorldPos& listener
   if (azimuth < 0.0) azimuth += 2.0 * k_pi;
   u32 sector = static_cast<u32>(azimuth / (2.0 * k_pi) * sectors);
   if (sector >= sectors) sector = sectors - 1;
-  Bed& b = beds_[sector];
+  Bed& b = beds_next_[sector];
   for (u32 k = 0; k < 8; ++k)
     b.water[k] += sign * s.band[k];
   b.water_total += sign * s.total;
@@ -244,154 +369,143 @@ void WorldField::add_water_to_bed(const WaterSource& s, const WorldPos& listener
   }
 }
 
+// A stretch or a fall from the snapshot: its power, its spreading and its path, as one source.
+void WorldField::cost_stretch(const Stretch& st, const WorldPos& listener) noexcept {
+  const f64 eff = k_water_airborne_efficiency;
+  const f64 q = st.discharge_m3s > 0.0f ? static_cast<f64>(st.discharge_m3s) : 0.0;
+  const f64 h = st.drop_m > 0.0f ? static_cast<f64>(st.drop_m) : 0.0;
+  if (!(q > 0.0) || !(h > 0.0)) return;  // no flow, or still water: nothing given up
+  // A stream past `audio.world.water_reach_m` is not taken (a fall is, to the whole reach): the
+  // forest staging's walk sent 39,142 stretches a refresh within 2 km, at 10 ms.
+  if (!st.fall) {
+    const f64 mx = 0.5 * (st.a.x + st.b.x) - listener.x, mz = 0.5 * (st.a.z + st.b.z) - listener.z;
+    const f64 hx = 0.5 * (st.b.x - st.a.x), hz = 0.5 * (st.b.z - st.a.z);
+    const f64 far = std::sqrt(mx * mx + mz * mz) - std::sqrt(hx * hx + hz * hz);
+    if (far > config_.water_reach_m) return;
+  }
+  WaterSource s;
+  s.kind = st.fall ? WorldVoiceKind::Fall : WorldVoiceKind::Stream;
+  f64 shape[8];
+  f64 intensity = 0.0;
+  f64 r = 0.0;
+  f64 height = 0.0;
+  if (st.fall) {
+    const f64 width = st.wet_width_m > 0.1f ? static_cast<f64>(st.wet_width_m) : 0.1;
+    const f64 held = q < k_fall_unit_cap_m2_s * width ? q : k_fall_unit_cap_m2_s * width;
+    const f64 watts = eff * k_rho * k_g * held * h;
+    s.at = st.b;  // the foot
+    const f64 dx = s.at.x - listener.x, dy = s.at.y - listener.y, dz = s.at.z - listener.z;
+    r = std::sqrt(dx * dx + dy * dy + dz * dz);
+    r = r > k_fall_min_m ? r : k_fall_min_m;
+    intensity = watts / (2.0 * k_pi * r * r);  // a point over the ground: the half space
+    bubble_shape(k_hinze_hz / std::cbrt(1.0 + q), shape);
+    f64 sum = 0.0;
+    for (u32 b = 0; b < 8; ++b) {
+      if (st.lands_on_water && b >= 2 && b <= 5) shape[b] *= pow10(k_fall_water_db);
+      if (!st.lands_on_water && b >= 6) shape[b] *= pow10(k_fall_rock_db);
+      sum += shape[b];
+    }
+    for (f64& p : shape)
+      p /= sum;
+    height = k_fall_height_m;
+    s.spread = 0.0f;
+  } else {
+    const f64 watts = eff * k_rho * k_g * q * h;
+    const f64 lx = st.b.x - st.a.x, ly = st.b.y - st.a.y, lz = st.b.z - st.a.z;
+    const f64 len = std::sqrt(lx * lx + ly * ly + lz * lz);
+    const f64 half = 0.5 * static_cast<f64>(st.wet_width_m);
+    const f64 least = half > k_water_min_m ? half : k_water_min_m;
+    f64 angle = 0.0;
+    line_from(st.a, st.b, listener, least, s.at, r, angle);
+    intensity = len > 1e-6 && angle > 0.0 ? (watts / len) * angle / (2.0 * k_pi * r)
+                                          : watts / (2.0 * k_pi * r * r);
+    s.spread = static_cast<f32>(angle / k_pi < 1.0 ? angle / k_pi : 1.0);
+    bubble_shape(k_hinze_hz, shape);
+    height = k_stream_height_m;
+    const f64 share = (k_trickle_none_m3_s - q) / (k_trickle_none_m3_s - k_trickle_full_m3_s);
+    s.trickle = share < 0.0 ? 0.0 : (share > 1.0 ? 1.0 : share);
+    const f64 rate = k_bubbles_per_m3 * q;
+    s.bubbles_hz = s.trickle > 0.0 ? (rate < k_bubbles_max_hz ? rate : k_bubbles_max_hz) : 0.0;
+  }
+  const f64 power = intensity / k_intensity_ref;
+  // A stretch 20 dB under the floor before its path is not taken: a thousand of them summed in a
+  // bed would still be at the floor.
+  if (!(power > cull_power_)) return;
+  const f64 dx = s.at.x - listener.x, dy = s.at.y - listener.y, dz = s.at.z - listener.z;
+  s.dist = std::sqrt(dx * dx + dz * dz);
+  if (dx * dx + dy * dy + dz * dz > config_.reach_m * config_.reach_m) return;
+  path_terms(dx, dy + height, dz, height, s.path);
+  s.total = 0.0;
+  for (u32 b = 0; b < 8; ++b) {
+    s.band[b] = power * shape[b] * s.path[b];
+    s.total += s.band[b];
+  }
+  // Identity: where the stretch starts and ends (a fall: its foot), so a stretch keeps its voice
+  // across refreshes while the listener moves along it.
+  s.key = key_of(st.a, key_of(st.b, st.fall ? 0xfa11ull : 0x5eull));
+  take_water(s);
+}
+
+// A stretch of surf (since S122 a line the host's records were joined into, `join_surf`).
+void WorldField::cost_surf(const Surf& su, const WorldPos& listener) noexcept {
+  const f64 eff = k_water_airborne_efficiency;
+  if (!(su.power_w_m > 0.0f) || !(su.length_m > 0.0f) || !(su.period_s > 0.0f)) return;
+  const f64 sx = su.at.x - listener.x, sz = su.at.z - listener.z;
+  if (std::sqrt(sx * sx + sz * sz) - 0.5 * static_cast<f64>(su.length_m) > config_.water_reach_m)
+    return;
+  // The streams' cull before the closed forms, on a bound of what it could deliver after its
+  // path: one under the floor less 20 dB is skipped, counted and never costed.
+  if (config_.surf_cull && !(surf_bound_power(su, listener, eff) > cull_power_)) {
+    ++res_surf_culled_;
+    return;
+  }
+  const f64 xi = static_cast<f64>(su.surf_similarity);
+  const f64 watts_m = eff * static_cast<f64>(su.power_w_m) * (xi > 2.0 ? k_surging_share : 1.0);
+  const f64 half = 0.5 * static_cast<f64>(su.length_m);
+  const f64 ax = static_cast<f64>(su.along.x), az = static_cast<f64>(su.along.y);
+  const f64 al = std::sqrt(ax * ax + az * az);
+  const f64 ux = al > 1e-9 ? ax / al : 1.0, uz = al > 1e-9 ? az / al : 0.0;
+  const WorldPos a{su.at.x - ux * half, su.at.y, su.at.z - uz * half};
+  const WorldPos b{su.at.x + ux * half, su.at.y, su.at.z + uz * half};
+  WaterSource s;
+  s.kind = WorldVoiceKind::Surf;
+  f64 r = 0.0;
+  f64 angle = 0.0;
+  line_from(a, b, listener, k_fall_min_m, s.at, r, angle);
+  const f64 intensity = watts_m * angle / (2.0 * k_pi * r);
+  s.spread = static_cast<f32>(angle / k_pi < 1.0 ? angle / k_pi : 1.0);
+  const f64 hb = static_cast<f64>(su.height_m);
+  const f64 octaves = hb <= 1.0 ? 0.0 : (hb >= 2.0 ? 1.0 : hb - 1.0);
+  f64 shape[8];
+  bubble_shape(k_surf_peak_hz * std::pow(k_surf_peak_big_hz / k_surf_peak_hz, octaves), shape);
+  const f64 power = intensity / k_intensity_ref;
+  const f64 dx = s.at.x - listener.x, dy = s.at.y - listener.y, dz = s.at.z - listener.z;
+  s.dist = std::sqrt(dx * dx + dz * dz);
+  if (dx * dx + dy * dy + dz * dz > config_.reach_m * config_.reach_m) return;
+  path_terms(dx, dy + k_surf_height_m, dz, k_surf_height_m, s.path);
+  s.total = 0.0;
+  for (u32 i = 0; i < 8; ++i) {
+    s.band[i] = power * shape[i] * s.path[i];
+    s.total += s.band[i];
+  }
+  s.period_s = static_cast<f64>(su.period_s);
+  s.arrival_s = static_cast<f64>(su.arrival_s);
+  s.key = key_of(su.at, 0x5afull);
+  ++res_surf_seen_;
+  take_water(s);
+}
+
 void WorldField::refresh_water(const WorldPos& listener) noexcept {
+  // `compute`'s (S122): the snapshot's stretches and surf, as the tables sent them at the gather.
   water_.clear();
   water_heap_.clear();
-  stats_.water_dropped = 0;
-  stats_.surf_culled = 0;
-  const f64 eff = k_water_airborne_efficiency;
-  struct Sink {
-    WorldField* self;
-    WorldPos listener;
-    f64 eff;
-    // A stretch or a fall: its power, its spreading and its path, as one source.
-    static void stretch(void* user, const Stretch& st) noexcept {
-      Sink& k = *static_cast<Sink*>(user);
-      WorldField& f = *k.self;
-      const f64 q = st.discharge_m3s > 0.0f ? static_cast<f64>(st.discharge_m3s) : 0.0;
-      const f64 h = st.drop_m > 0.0f ? static_cast<f64>(st.drop_m) : 0.0;
-      ++f.stats_.stretches_seen;
-      if (!(q > 0.0) || !(h > 0.0)) return;  // no flow, or still water: nothing given up
-      // A stream past `audio.world.water_reach_m` is not taken (a fall is, to the whole reach):
-      // the forest staging's walk sent 39,142 stretches a refresh within 2 km, at 10 ms.
-      if (!st.fall) {
-        const f64 mx = 0.5 * (st.a.x + st.b.x) - k.listener.x,
-                  mz = 0.5 * (st.a.z + st.b.z) - k.listener.z;
-        const f64 hx = 0.5 * (st.b.x - st.a.x), hz = 0.5 * (st.b.z - st.a.z);
-        const f64 far = std::sqrt(mx * mx + mz * mz) - std::sqrt(hx * hx + hz * hz);
-        if (far > f.config_.water_reach_m) return;
-      }
-      WaterSource s;
-      s.kind = st.fall ? WorldVoiceKind::Fall : WorldVoiceKind::Stream;
-      f64 shape[8];
-      f64 intensity = 0.0;
-      f64 r = 0.0;
-      f64 height = 0.0;
-      if (st.fall) {
-        const f64 width = st.wet_width_m > 0.1f ? static_cast<f64>(st.wet_width_m) : 0.1;
-        const f64 held = q < k_fall_unit_cap_m2_s * width ? q : k_fall_unit_cap_m2_s * width;
-        const f64 watts = k.eff * k_rho * k_g * held * h;
-        s.at = st.b;  // the foot
-        const f64 dx = s.at.x - k.listener.x, dy = s.at.y - k.listener.y,
-                  dz = s.at.z - k.listener.z;
-        r = std::sqrt(dx * dx + dy * dy + dz * dz);
-        r = r > k_fall_min_m ? r : k_fall_min_m;
-        intensity = watts / (2.0 * k_pi * r * r);  // a point over the ground: the half space
-        bubble_shape(k_hinze_hz / std::cbrt(1.0 + q), shape);
-        f64 sum = 0.0;
-        for (u32 b = 0; b < 8; ++b) {
-          if (st.lands_on_water && b >= 2 && b <= 5) shape[b] *= pow10(k_fall_water_db);
-          if (!st.lands_on_water && b >= 6) shape[b] *= pow10(k_fall_rock_db);
-          sum += shape[b];
-        }
-        for (f64& p : shape)
-          p /= sum;
-        height = k_fall_height_m;
-        s.spread = 0.0f;
-      } else {
-        const f64 watts = k.eff * k_rho * k_g * q * h;
-        const f64 lx = st.b.x - st.a.x, ly = st.b.y - st.a.y, lz = st.b.z - st.a.z;
-        const f64 len = std::sqrt(lx * lx + ly * ly + lz * lz);
-        const f64 half = 0.5 * static_cast<f64>(st.wet_width_m);
-        const f64 least = half > k_water_min_m ? half : k_water_min_m;
-        f64 angle = 0.0;
-        line_from(st.a, st.b, k.listener, least, s.at, r, angle);
-        intensity = len > 1e-6 && angle > 0.0 ? (watts / len) * angle / (2.0 * k_pi * r)
-                                              : watts / (2.0 * k_pi * r * r);
-        s.spread = static_cast<f32>(angle / k_pi < 1.0 ? angle / k_pi : 1.0);
-        bubble_shape(k_hinze_hz, shape);
-        height = k_stream_height_m;
-        const f64 share = (k_trickle_none_m3_s - q) / (k_trickle_none_m3_s - k_trickle_full_m3_s);
-        s.trickle = share < 0.0 ? 0.0 : (share > 1.0 ? 1.0 : share);
-        const f64 rate = k_bubbles_per_m3 * q;
-        s.bubbles_hz = s.trickle > 0.0 ? (rate < k_bubbles_max_hz ? rate : k_bubbles_max_hz) : 0.0;
-      }
-      const f64 power = intensity / k_intensity_ref;
-      // A stretch 20 dB under the floor before its path is not taken: a thousand of them summed in
-      // a bed would still be at the floor.
-      if (!(power > f.cull_power_)) return;
-      const f64 dx = s.at.x - k.listener.x, dy = s.at.y - k.listener.y, dz = s.at.z - k.listener.z;
-      s.dist = std::sqrt(dx * dx + dz * dz);
-      if (dx * dx + dy * dy + dz * dz > f.config_.reach_m * f.config_.reach_m) return;
-      f.path_terms(dx, dy + height, dz, height, s.path);
-      s.total = 0.0;
-      for (u32 b = 0; b < 8; ++b) {
-        s.band[b] = power * shape[b] * s.path[b];
-        s.total += s.band[b];
-      }
-      // Identity: where the stretch starts and ends (a fall: its foot), so a stretch keeps its
-      // voice across refreshes while the listener moves along it.
-      s.key = key_of(st.a, key_of(st.b, st.fall ? 0xfa11ull : 0x5eull));
-      f.take_water(s);
-    }
-    static void surf(void* user, const Surf& su) noexcept {
-      Sink& k = *static_cast<Sink*>(user);
-      WorldField& f = *k.self;
-      if (!(su.power_w_m > 0.0f) || !(su.length_m > 0.0f) || !(su.period_s > 0.0f)) return;
-      const f64 sx = su.at.x - k.listener.x, sz = su.at.z - k.listener.z;
-      if (std::sqrt(sx * sx + sz * sz) - 0.5 * static_cast<f64>(su.length_m) >
-          f.config_.water_reach_m)
-        return;
-      // The streams' cull before the closed forms, on a bound of what it could deliver after its
-      // path: one under the floor less 20 dB is skipped, counted and never costed.
-      if (f.config_.surf_cull && !(surf_bound_power(su, k.listener, k.eff) > f.cull_power_)) {
-        ++f.stats_.surf_culled;
-        return;
-      }
-      const f64 xi = static_cast<f64>(su.surf_similarity);
-      const f64 watts_m =
-          k.eff * static_cast<f64>(su.power_w_m) * (xi > 2.0 ? k_surging_share : 1.0);
-      const f64 half = 0.5 * static_cast<f64>(su.length_m);
-      const f64 ax = static_cast<f64>(su.along.x), az = static_cast<f64>(su.along.y);
-      const f64 al = std::sqrt(ax * ax + az * az);
-      const f64 ux = al > 1e-9 ? ax / al : 1.0, uz = al > 1e-9 ? az / al : 0.0;
-      const WorldPos a{su.at.x - ux * half, su.at.y, su.at.z - uz * half};
-      const WorldPos b{su.at.x + ux * half, su.at.y, su.at.z + uz * half};
-      WaterSource s;
-      s.kind = WorldVoiceKind::Surf;
-      f64 r = 0.0;
-      f64 angle = 0.0;
-      line_from(a, b, k.listener, k_fall_min_m, s.at, r, angle);
-      const f64 intensity = watts_m * angle / (2.0 * k_pi * r);
-      s.spread = static_cast<f32>(angle / k_pi < 1.0 ? angle / k_pi : 1.0);
-      const f64 hb = static_cast<f64>(su.height_m);
-      const f64 octaves = hb <= 1.0 ? 0.0 : (hb >= 2.0 ? 1.0 : hb - 1.0);
-      f64 shape[8];
-      bubble_shape(k_surf_peak_hz * std::pow(k_surf_peak_big_hz / k_surf_peak_hz, octaves), shape);
-      const f64 power = intensity / k_intensity_ref;
-      const f64 dx = s.at.x - k.listener.x, dy = s.at.y - k.listener.y, dz = s.at.z - k.listener.z;
-      s.dist = std::sqrt(dx * dx + dz * dz);
-      if (dx * dx + dy * dy + dz * dz > f.config_.reach_m * f.config_.reach_m) return;
-      f.path_terms(dx, dy + k_surf_height_m, dz, k_surf_height_m, s.path);
-      s.total = 0.0;
-      for (u32 i = 0; i < 8; ++i) {
-        s.band[i] = power * shape[i] * s.path[i];
-        s.total += s.band[i];
-      }
-      s.period_s = static_cast<f64>(su.period_s);
-      s.arrival_s = static_cast<f64>(su.arrival_s);
-      s.key = key_of(su.at, 0x5afull);
-      ++f.stats_.surf_seen;
-      f.take_water(s);
-    }
-  } sink{this, listener, eff};
-  stats_.stretches_seen = 0;
-  stats_.surf_seen = 0;
-  if (flow_.visit != nullptr)
-    flow_.visit(flow_.user, listener, config_.reach_m,
-                StretchSink{&sink, &Sink::stretch, config_.water_reach_m});
-  if (surf_.visit != nullptr)  // the surf is taken to `water_reach_m` (`Sink::surf`)
-    surf_.visit(surf_.user, listener, config_.water_reach_m, SurfSink{&sink, &Sink::surf});
+  res_water_dropped_ = 0;
+  res_surf_culled_ = 0;
+  res_surf_seen_ = 0;
+  for (const Stretch& st : snap_.stretches)
+    cost_stretch(st, listener);
+  for (const Surf& su : snap_.surf)
+    cost_surf(su, listener);
   // Everything into its sector's bed, by power (the surf at its mean over a period).
   for (const WaterSource& s : water_)
     add_water_to_bed(s, listener, 1.0);
@@ -400,12 +514,12 @@ void WorldField::refresh_water(const WorldPos& listener) noexcept {
   const WorldVoiceKind kinds[3] = {WorldVoiceKind::Stream, WorldVoiceKind::Fall,
                                    WorldVoiceKind::Surf};
   const u32 counts[3] = {config_.streams, config_.falls, config_.surfs};
-  u32 first = water_first_;
   const u32 n = static_cast<u32>(water_.size());
   for (u32 kind = 0; kind < 3; ++kind) {
-    const u32 want = counts[kind] < 16 ? counts[kind] : 16;
-    u64 next[16] = {};
-    u32 picked[16] = {};
+    const u32 want = counts[kind] < k_max_water_voices ? counts[kind] : k_max_water_voices;
+    u64(&next)[k_max_water_voices] = next_water_[kind];
+    for (u64& k : next)
+      k = 0;
     for (u32 slot = 0; slot < want; ++slot) {
       f64 best = 0.0;
       u32 best_i = ~0u;
@@ -418,16 +532,26 @@ void WorldField::refresh_water(const WorldPos& listener) noexcept {
         if (taken) continue;
         f64 level = s.total;
         for (u32 j = 0; j < want; ++j)
-          if (voices_[first + j].key == s.key) level *= 2.0;  // 3 dB
+          if (snap_.water[kind][j] == s.key) level *= 2.0;  // 3 dB
         if (level > best) {
           best = level;
           best_i = i;
         }
       }
       next[slot] = best_i != ~0u ? water_[best_i].key : 0u;
-      picked[slot] = best_i;
+      next_water_index_[kind][slot] = best_i;
+      if (best_i != ~0u) add_water_to_bed(water_[best_i], listener, -1.0);
     }
-    // A voice whose source is still chosen keeps it; the others go quiet, then take the new ones.
+  }
+}
+
+void WorldField::apply_water() noexcept {
+  // A voice whose source is still chosen keeps it; the others go quiet, then take the new ones.
+  const u32 counts[3] = {config_.streams, config_.falls, config_.surfs};
+  u32 first = water_first_;
+  for (u32 kind = 0; kind < 3; ++kind) {
+    const u32 want = counts[kind] < k_max_water_voices ? counts[kind] : k_max_water_voices;
+    const u64(&next)[k_max_water_voices] = next_water_[kind];
     for (u32 slot = 0; slot < want; ++slot) {
       Voice& v = voices_[first + slot];
       bool kept = false;
@@ -454,9 +578,7 @@ void WorldField::refresh_water(const WorldPos& listener) noexcept {
         }
       }
       if (at == ~0u) continue;
-      const WaterSource& s = water_[picked[j]];
-      water_voices_[first + at - water_first_].source = s;
-      add_water_to_bed(s, listener, -1.0);
+      water_voices_[first + at - water_first_].source = water_[next_water_index_[kind][j]];
     }
     first += counts[kind];
   }
