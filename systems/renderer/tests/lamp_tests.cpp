@@ -719,6 +719,9 @@ void shadow_ray_cap(ShadowMode shadows, const char* name) {
   };
   CapturedFrame every, three, three_wide, none_lit;
   u32 every_capped = 0, three_capped = 0, wide_capped = 0;
+  // The first frame sizes the ray tracing chain's capacity from nothing and may leave casters out
+  // of its structures (renderer.md, "The ray tracing chain's memory"): every side is a later frame.
+  draw("renderer.shadow.light_rays=0", every, every_capped);
   draw("renderer.shadow.light_rays=0", every, every_capped);
   draw("renderer.shadow.light_rays=3", three, three_capped);
   draw("renderer.shadow.light_cap_share=1", three_wide, wide_capped);
@@ -750,29 +753,56 @@ void shadow_ray_cap(ShadowMode shadows, const char* name) {
   CHECK(wide_capped <= three_capped);
   u32 seen_all = 0, differ = 0, over = 0;
   f64 worst_seen = 0.0, worst_bound = 0.0;
+  const auto at = [](const CapturedFrame& f, u32 i) { return static_cast<f64>(f.light[i]); };
+  // A pixel whose every channel is lit as with no lamp shadowed: it sees every lamp.
+  Vector<u8> sees;
+  sees.resize(size_t{k_width} * k_height);
+  for (u32 px = 0; px < sees.size(); ++px) {
+    bool all = true;
+    for (u32 ch = 0; ch < 3; ++ch) {
+      const u32 i = px * 3 + ch;
+      const f64 open_light = at(unshadowed, i) - at(unshadowed_base, i);
+      const f64 ref = at(every, i) - at(none_lit, i);
+      all = all && open_light > 1e-4 && std::fabs(ref - open_light) <= 1e-5 * open_light;
+    }
+    sees[px] = all ? 1 : 0;
+  }
   for (u32 i = 0; i < every.light.size(); ++i) {
-    const f64 base = static_cast<f64>(none_lit.light[i]);
-    const f64 ref = static_cast<f64>(every.light[i]) - base;
-    const f64 got = static_cast<f64>(three.light[i]) - base;
-    const f64 open_light =
-        static_cast<f64>(unshadowed.light[i]) - static_cast<f64>(unshadowed_base.light[i]);
+    const f64 base = at(none_lit, i);
+    const f64 ref = at(every, i) - base;
+    const f64 got = at(three, i) - base;
+    const f64 open_light = at(unshadowed, i) - at(unshadowed_base, i);
     differ += three.light[i] != every.light[i];
     if (open_light <= 1e-4) continue;
     // Within the untraced lamps' light: no fill moves a pixel by more than every lamp's.
     const f64 bound = std::fabs(got - ref) / (open_light * (1.0 + 1e-3) + 1e-5);
     worst_bound = std::max(worst_bound, bound);
     CHECK(bound <= 1.0);
-    // The floor that sees every lamp: the capped picture is the traced one, to the sum's rounding.
-    if (std::fabs(ref - open_light) <= 1e-5 * open_light) {
-      ++seen_all;
-      const f64 e = std::fabs(got - ref) / open_light;
-      worst_seen = std::max(worst_seen, e);
-      over += e > 1e-4;
+    // The floor that sees every lamp, a pixel from any shadow's edge (where the capped walk's own
+    // arithmetic for a ray's direction may meet an edge the other walk's missed): the capped
+    // picture is the traced one, to the sum's rounding.
+    const u32 px = i / 3, x = px % k_width, y = px / k_width;
+    if (x == 0 || y == 0 || x + 1 >= k_width || y + 1 >= k_height) continue;
+    bool around = true;
+    for (u32 dy = 0; dy < 3; ++dy)
+      for (u32 dx = 0; dx < 3; ++dx)
+        around = around && sees[(y + dy - 1) * k_width + (x + dx - 1)] != 0;
+    if (!around) continue;
+    ++seen_all;
+    // The target is halves: the two sums may round apart by a step of the pixel's whole light.
+    const f64 step = std::ldexp(1.0, std::ilogb(at(every, i)) - 10);
+    const f64 e = std::fabs(got - ref) / (1e-4 * open_light + step);
+    worst_seen = std::max(worst_seen, e);
+    if (e > 1.0 && over < 6) {
+      MESSAGE("pixel " << x << "," << y << " channel " << i % 3 << ": capped " << got
+                       << ", every ray " << ref << ", unshadowed " << open_light << ", base "
+                       << base);
     }
+    over += e > 1.0;
   }
   MESSAGE(std::string(name) << ": " << differ << " light values differ from every ray's; "
                             << seen_all << " see every lamp, worst there " << worst_seen
-                            << " of the light; the worst elsewhere " << worst_bound
+                            << " of a half's step and 1e-4 of the light; the worst elsewhere " << worst_bound
                             << " of the lamps' unshadowed light");
   CHECK(differ > 0);           // three rays of twelve changed the picture where the slab shadows
   CHECK(seen_all > 1000);
