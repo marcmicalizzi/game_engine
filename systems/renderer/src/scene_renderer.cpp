@@ -89,6 +89,12 @@ tunables::Bool graph_serialize{
     "renderer.graph.serialize", false,
     "Record a full barrier before every render graph pass, so nothing runs beside anything: a "
     "picture that differs with it on has a dependency no pass declared (R186's guard check 3)"};
+// **The pass labels** (R219; gfx.md, "Render graph v0"): every render graph
+// pass inside a command-buffer label of its name, so a Vulkan capture can split the frame by pass.
+tunables::Bool graph_labels{
+    "renderer.graph.labels", false,
+    "Wrap every render graph pass in a VK_EXT_debug_utils label of its name, for a Vulkan capture "
+    "(Nsight Systems' Vulkan trace); nothing where the instance lacks the extension (R219)"};
 // **A zone a view, or one a pass** (R195; renderer.md, "Per-view statistics, and what the
 // milliseconds mean"): every zone's two timestamps are written at ALL_COMMANDS, which was taken to
 // hold a pass's views apart on the queue. Off, a pass with more than one view times them as one
@@ -3100,6 +3106,7 @@ u64 SceneRenderer::submit_recorded(const FrameDesc& frame, std::string* error) {
   }
   graph_->reset();
   graph_->set_serialize(graph_serialize.get());  // the pass audit's guard check 3 (R186)
+  graph_->set_labels(graph_labels.get() && device_->features().debug_labels);  // R219
   const gfx::RgImage color_handle = graph_->import_image("color", color);
   if (!record_frame(frame, color_handle, error)) {
     frames_.end_frame();
