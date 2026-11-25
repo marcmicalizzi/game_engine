@@ -149,8 +149,21 @@ GpuScene::MeshUse GpuScene::mesh_use() const noexcept {
   return use;
 }
 
-bool GpuScene::mesh_fits(u32 cluster_count, u32 material_count) const noexcept {
+// **The mesh alone, then the reservations as a total** (R218): the world's residency asks for a
+// mesh beside what nearer meshes being built again have reserved (`world::TileMeshes::room_for`).
+// The mesh is held to the limit one mesh has and to a run of its own; the reservations only to the
+// room's free clusters and materials, since each will take a run of its own when it is admitted —
+// and one that fragmentation leaves without a run is refused then and built again later. Until
+// R218 the caller handed the sum over as one mesh's count, so two large meshes built again (a
+// forest tree is about 1,850 clusters) were past `max_clusters` together and refused a third in an
+// empty room.
+bool GpuScene::mesh_fits(u32 cluster_count, u32 material_count, u64 reserved_clusters,
+                         u64 reserved_materials) const noexcept {
   if (cluster_count == 0 || cluster_count > mesh_room_.max_clusters) return false;
+  if (u64{cluster_count} + reserved_clusters + mesh_use_.clusters > mesh_room_.clusters ||
+      u64{material_count} + reserved_materials + mesh_use_.materials > mesh_room_.materials) {
+    return false;
+  }
   bool room = false;
   for (const Range& run : free_mesh_clusters_)
     room = room || run.count >= cluster_count;

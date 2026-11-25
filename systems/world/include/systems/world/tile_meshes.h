@@ -44,7 +44,11 @@ namespace engine::world {
 // renderer, which then counts the room itself (`TileMeshConfig::clusters`).
 struct TileMeshSink {
   void* context = nullptr;
-  bool (*fits)(void* context, u32 clusters, u32 materials) = nullptr;
+  // A mesh of `clusters` and `materials` fits beside `reserved_*`, what other meshes hold while
+  // they are built again (R218): the mesh is asked of the room alone — its own run, its own limit —
+  // and the reservations only of the room's free total, never of a limit one mesh has.
+  bool (*fits)(void* context, u32 clusters, u32 materials, u64 reserved_clusters,
+               u64 reserved_materials) = nullptr;
   bool (*admit)(void* context, u32 mesh, const renderer::PlacementMeshData& data,
                 std::string* error) = nullptr;
   void (*retire)(void* context, u32 mesh) = nullptr;
@@ -95,6 +99,8 @@ struct TileMeshStats {
   u32 clusters = 0;    // the resident meshes' clusters, of `TileMeshConfig::clusters`
   u64 bytes = 0;       // those clusters' reserved device bytes
   u64 host_bytes = 0;  // the waiting meshes' streams in host memory
+  // Held by shelved meshes being built again, until they are in (W51-5b).
+  u64 reserved_clusters = 0;
   // Over the run.
   u64 builds = 0;    // meshes built or found in the cache, the shelved ones' second builds included
   u64 rebuilds = 0;  // of those, shelved meshes built again because the room could take them
@@ -112,6 +118,13 @@ struct TileMeshStats {
   // texture progress, kept rather than let go when a farther tile's ticket was kept from asking.
   u64 kept_asked = 0;
   u64 kept_textures = 0;
+  // Reservations a nearer mesh took from a farther one (R218): each a build thrown away, finished
+  // or in flight, so a walker pacing between two waiting tiles shows here (in the room's warning).
+  u64 reservations_taken = 0;
+  // Shelved meshes built again that their own admission then refused and shelved again — no free
+  // run of their own, which fragmentation can leave beside a free total: a build thrown away,
+  // counted apart from `rebuilds` (in the room's warning).
+  u64 rebuilds_refused = 0;
   u64 failures = 0;  // meshes that could not be built
   // Their textures (R147), over the run: the ones a commit uploaded and their staged bytes, the
   // ones a mesh found in the scene already, and the meshes that draw their constants because a
@@ -182,6 +195,13 @@ class TileMeshes {
   void withhold(u32 slot);
   // Retires one resident mesh no held tile names, the longest unnamed first. False: there is none.
   bool evict_lingering();
+  // **A nearer mesh takes a farther one's reservation** (R218): the largest reservation of a mesh
+  // not asked this commit — a farther tile's, since a commit asks nearest first, or one of the
+  // asking tile's own later meshes (one build thrown away; the tile needs both) — is let go, and
+  // the mesh shelved again (or, still building, keeps its build). Only when the mesh of `asking`
+  // would fit with no reservation at all: one refused for want of a run of its own takes none.
+  // False: none was let go.
+  bool release_farther_reservation(u32 asking);
   // After the tail has been handed on (nothing names a mesh this retires): every mesh unnamed for
   // `linger` commits goes, and every entry nobody names that never became resident.
   void end_commit();

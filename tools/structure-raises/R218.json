@@ -1,0 +1,12 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R218",
+  "reason": "R218's mend after review: the limit on taking a reservation, the two new counters, the machine's state beside the frame figures, the host memory's bound and the mend's own flight",
+  "date": "2026-11-24",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.gpu_scene_h.lines": 1,
+    "page:docs/subsystems/renderer.md": 1647,
+    "page:docs/subsystems/world.md": 6926
+  }
+}

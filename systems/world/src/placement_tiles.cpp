@@ -1426,7 +1426,13 @@ void PlacementTiles::admit_meshes() {
       TileMeshes::Admit result =
           full && !meshes_.resident(slot) ? TileMeshes::Admit::no_room : meshes_.admit(slot);
       while (result == TileMeshes::Admit::no_room && !full) {
-        if (!meshes_.evict_lingering() && !yield_farthest(rank)) break;
+        // What nobody names, then a farther mesh's reservation (R218: nothing drawn changes; only
+        // when the mesh would fit with none), then a farther tile's resident meshes: the head of
+        // the order waits only for what nearer tiles hold.
+        if (!meshes_.evict_lingering() && !meshes_.release_farther_reservation(slot) &&
+            !yield_farthest(rank)) {
+          break;
+        }
         result = meshes_.admit(slot);
       }
       if (result == TileMeshes::Admit::failed) {
@@ -1498,6 +1504,9 @@ void PlacementTiles::admit_meshes() {
         log::field("room_clusters", meshes_.config().clusters),
         log::field("resident_mib", static_cast<f64>(held.bytes) / (1024.0 * 1024.0)),
         log::field("shelved_meshes", held.shelved),
+        log::field("reserved_clusters", held.reserved_clusters),
+        log::field("reservations_taken", held.reservations_taken),
+        log::field("rebuilds_refused", held.rebuilds_refused),
         log::field("waiting_host_mib", static_cast<f64>(held.host_bytes) / (1024.0 * 1024.0)));
   }
 }
