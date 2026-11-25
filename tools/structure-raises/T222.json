@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T222",
+  "reason": "T222: AGENTS.md's hand-over line names the Linux preset a row runs, linux-clang-debug, and linux-gcc-release as well where a pin or golden moves",
+  "date": "2026-11-24",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:AGENTS.md": 114,
+    "page:docs/ci/what-to-run.md": 311
+  }
+}
