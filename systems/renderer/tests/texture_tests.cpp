@@ -1729,12 +1729,24 @@ TEST_CASE("renderer: a drain moves a sparse chunk's maps, gives it back and chan
   // The even group's picture is the no-ceiling one now: the moves carried the same levels.
   CHECK(differing_pixels(plain_even, capture(h, 0.0f)) == 0);
   // The odd group, then the even group again: each ends on the no-ceiling picture once the asks
-  // have brought its maps back (a capture every ten frames, at most 2,000 frames each).
+  // have brought its maps back **and the trim has taken the group it does not see to its floor**
+  // (a capture every ten frames, at most 2,000 frames each). The picture alone ends nothing: the
+  // asks bring a group back within a few frames, before the other group is past the hold (0.25 s
+  // of the frames' clock) and its demotions are read and admitted, so a phase that stopped at the
+  // first matching picture trimmed nothing whenever the reads landed in fewer frames than the
+  // hold — on the Titan Xp under Linux, and on any card whose frames are slow beside the reader,
+  // where the case counted 4 promotions and not 8 (W171).
   const auto ends_on = [&](f32 x, const CapturedFrame& plain) {
+    const u64 trimmed = h.scene.texture_bound_use().demotions + k_drain_maps / 2;
     for (u32 n = 0; n < 200; ++n) {
       for (u32 j = 0; j < 10; ++j)
         frame(x);
-      if (differing_pixels(plain, capture(h, x)) == 0) return true;
+      const TextureBoundUse& use = h.scene.texture_bound_use();
+      if (use.demotions >= trimmed && differing_pixels(plain, capture(h, x)) == 0) {
+        MESSAGE("at " << x << " m: " << (n + 1) * 10 << " frames, " << use.promotions
+                      << " promotions, " << use.demotions << " demotions");
+        return true;
+      }
     }
     return false;
   };
