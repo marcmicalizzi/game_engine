@@ -236,6 +236,19 @@ and cannot fail it.
 - **A test whose own output holds a line that begins `N/M Testing: `** (a tool test printing a CTest
   log) splits its record when the gate reads it: the real record loses its footer and reads as cut
   off. Fail-safe (a false red).
+- **The budgets' quiet reading is two looks** (T230): other programs' share of the machine is read
+  at a flight's start and end, and 4 to 5 % of the GPU in the desktop's hands reads quiet while it
+  puts 0.3 to 0.7 ms on the p99 of the passes that run beside it, which is the whole p99 allowance.
+  Batch 75's follow-up gate was red by this alone (2026-11-25: one run over on three p99s, its
+  medians on the baseline, and the same tail in the previous batch's binary flown back to back).
+  Fail-safe (a false red). The step is still never flown again into a pass: a red budget is read
+  against the previous gated binary flown beside the tip, both in the record, and a merge past it
+  is the owner's to take.
+- **A console the launching shell redirects stays open until the server leg ends** (T231): the leg
+  `-Server` starts keeps that handle, so a shell waiting on the redirection waits for the server
+  and not for the verdict (three hours, batch 75). Start the gate as a process of its own with its
+  output redirected by the start (`Start-Process ... -RedirectStandardOutput`) and wait on that
+  process, or read the verdict file.
 
 **What the scripts deliberately do not do**: take or wait on the GPU lock (every test takes it,
 ADR-0049); stop a process, theirs included; reset, stack or cherry-pick the gate worktree (the
