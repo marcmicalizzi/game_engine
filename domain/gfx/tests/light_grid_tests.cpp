@@ -334,21 +334,57 @@ TEST_CASE("light grid: lights that all reach a point are a grid that culls nothi
   CHECK_FALSE(light_grid_reaches_all(
       std::vector<ResolveLight>{point({0.0f, 0.0f, 0.0f}, std::numeric_limits<f32>::infinity())},
       Vec3{}));
-  // Random scenes: wherever the skip says yes at a point, the built grid culls nothing there.
+  // The other direction, at its boundary: a light whose reach falls short of the point by a
+  // thousandth of the distance says no, and one that passes it by a thousandth says yes (a
+  // thousandth is far above f32's rounding of a 30 m distance, about 2e-6 m).
+  const f32 d = 30.0f;
+  CHECK_FALSE(light_grid_reaches_all(
+      std::vector<ResolveLight>{point({0.0f, 0.0f, d}, d * 0.999f), stand_in[0]}, Vec3{}));
+  CHECK(light_grid_reaches_all(
+      std::vector<ResolveLight>{point({0.0f, 0.0f, d}, d * 1.001f), stand_in[0]}, Vec3{}));
+  // Random scenes, both directions: wherever the skip says yes at a point every light reaches it
+  // (f64, by hand) and the built grid culls nothing there; wherever it says no a light falls short.
+  // The numbers come from mt19937's own words, which the standard fixes, and never from a
+  // distribution, whose algorithm each standard library chooses (so the scenes, and the counts
+  // below, are the same on every toolchain); each is drawn in its own statement, because the order
+  // a function's arguments are evaluated in is unspecified.
   std::mt19937 rng(217);
-  std::uniform_real_distribution<f32> at(-200.0f, 200.0f);
-  std::uniform_real_distribution<f32> reach(1.0f, 400.0f);
+  const auto uniform = [&rng](f32 lo, f32 hi) {
+    return lo + (hi - lo) * (static_cast<f32>(rng() >> 8) * (1.0f / 16777216.0f));
+  };
   u32 yes = 0;
+  u32 no = 0;
   for (u32 trial = 0; trial < 400; ++trial) {
     std::vector<ResolveLight> lights;
     const u32 n = 1 + trial % 9;
-    for (u32 i = 0; i < n; ++i)
-      lights.push_back(point({at(rng), at(rng) * 0.1f, at(rng)}, reach(rng)));
-    const Vec3 eye{at(rng) * 0.25f, 1.7f, at(rng) * 0.25f};
-    if (!light_grid_reaches_all(lights, eye)) continue;
+    for (u32 i = 0; i < n; ++i) {
+      const f32 x = uniform(-200.0f, 200.0f);
+      const f32 y = uniform(-200.0f, 200.0f) * 0.1f;
+      const f32 z = uniform(-200.0f, 200.0f);
+      const f32 r = uniform(1.0f, 400.0f);
+      lights.push_back(point({x, y, z}, r));
+    }
+    const f32 ex = uniform(-200.0f, 200.0f) * 0.25f;
+    const f32 ez = uniform(-200.0f, 200.0f) * 0.25f;
+    const Vec3 eye{ex, 1.7f, ez};
+    bool all = true;
+    for (const ResolveLight& light : lights) {
+      const f64 dx = static_cast<f64>(light.position_radius.x) - static_cast<f64>(eye.x);
+      const f64 dy = static_cast<f64>(light.position_radius.y) - static_cast<f64>(eye.y);
+      const f64 dz = static_cast<f64>(light.position_radius.z) - static_cast<f64>(eye.z);
+      const f64 reach = static_cast<f64>(light.position_radius.w);
+      all = all && dx * dx + dy * dy + dz * dz <= reach * reach;
+    }
+    const bool said = light_grid_reaches_all(lights, eye);
+    CHECK(said == all);
+    if (!said) {
+      ++no;
+      continue;
+    }
     ++yes;
     REQUIRE(build_light_grid(lights, cells, grid));
     CHECK_FALSE(light_grid_culls_at(grid, cells, eye));
   }
   CHECK(yes > 20);
+  CHECK(no > 20);
 }
