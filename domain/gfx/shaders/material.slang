@@ -1025,6 +1025,15 @@ LightWalk light_walk_begin(uint64_t grid, uint light_count, float3 position) {
   return w;
 }
 
+// How many lights a fresh walk will visit: the leading ones and the cell's set bits (R213, the cap
+// on the shadow rays: a point no more lights reach than the cap takes R87's walk unchanged).
+uint light_walk_count(LightWalk w) {
+  uint n = w.first - w.next;
+  for (uint k = 0; k < w.words; ++k)
+    n += countbits(((uint*)w.cell)[k]);
+  return n;
+}
+
 // The next light to visit, in the array's order; false when the walk is over.
 bool light_walk_next(inout LightWalk w, out uint index) {
   index = 0;

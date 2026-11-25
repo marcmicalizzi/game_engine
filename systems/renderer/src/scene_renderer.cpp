@@ -70,10 +70,16 @@ namespace {
 constexpr u32 k_view_lights = k_frame_lights;  // the warm and cool point lights (lighting.h)
 // Per view: three indirect blocks of three u32, then the vertex path's indexed draw's cursor
 // and fallback count for each of its two runs (gfx::VertexDrawHeader).
-constexpr u32 k_stat_words = 15;
+constexpr u32 k_stat_words = 16;
 // View 0's words 13 and 14: the frame's appends its runs had no room for, the camera runs' and the
 // cascades' (GpuScene::run_drops_offset; W51-5). Every other view leaves them zero.
 constexpr u32 k_run_drop_word = 13;
+// View 0's word 15: the pixels whose lights' shadow rays stopped at the cap with its bound unmet
+// (R213, `gfx::ResolveParams::light_cap_count`), counted behind the visible list's drop counts.
+constexpr u32 k_light_cap_word = 15;
+u64 light_cap_offset(const GpuScene& scene) noexcept {
+  return scene.run_drops_offset() + 2 * sizeof(u32);
+}
 // The deformed-vertex pool's allocation record, copied in behind every view's block: it is one
 // record for the frame, not one per view, because the pool's budget is the frame's.
 constexpr u32 k_alloc_words = sizeof(gfx::DeformAlloc) / sizeof(u32);
@@ -2289,6 +2295,7 @@ void SceneRenderer::fold_visible(u32 slot) {
   stats_.run_high = high;
   stats_.run_drops = stats[k_run_drop_word];
   stats_.cascade_run_drops = stats[k_run_drop_word + 1];
+  stats_.light_cap_pixels = stats[k_light_cap_word];  // R213
   const u32 dropped = stats_.run_drops + stats_.cascade_run_drops;
   // Each submitted frame once, as the chain's sums (G133): a waited frame is folded when it finishes
   // and again when its slot comes round, which counted a redrawn attempt twice (W156-2).
@@ -2523,6 +2530,7 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.history_whole = census.whole;
   }
   last.resolve_stop = resolve_stop_tunable(last.frame);
+  last.light_cap_pixels = stats_.light_cap_pixels;  // R213
   last.sun_ray_rule = shadow_ray_rule(last.frame, resolved_.shadow_opaque_coverage).index;
   last.rt_cache_evicted = static_cast<u32>(stats_.rt.cache_evictions - rt_evictions_folded_);
   rt_evictions_folded_ = stats_.rt.cache_evictions;
@@ -4392,6 +4400,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // A light too faint to test (R115; renderer.md): read by the resolve only while the lights'
     // shadows are traced, and 0 traces every light.
     resolve.light_tolerance = shadow_light_tolerance_tunable();
+    // The cap on the lights' shadow rays (R213; renderer.md): its pixels counted behind the
+    // visible list's drop counts (`k_light_cap_word`), which the frame zeroes and reads back.
+    resolve.light_cap_rays = shadow_light_cap_tunable();
+    resolve.light_cap_share = shadow_light_cap_share_tunable();
+    resolve.light_cap_count = settings.cull ? scene.visible.address + light_cap_offset(scene) : 0;
     resolve.water_white_tier = water_white_tier_tunable();  // W139
     if (resolved_.hybrid) {
       // **Rays near, maps far** (R102): every light is traced as above within the ray distance of
@@ -5317,7 +5330,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             cb.fill_buffer(scene.sw_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
           }
           // The frame's two drop counts behind the list's last entry (GpuScene::run_drops_offset).
-          cb.fill_buffer(scene.visible.buffer, scene.run_drops_offset(), sizeof(u32) * 2, 0);
+          // And the resolve's capped pixels behind them (R213).
+          cb.fill_buffer(scene.visible.buffer, scene.run_drops_offset(), sizeof(u32) * 3, 0);
         }
         // Each cascade's block, in the shape its draw reads: the vertex path's
         // {vertexCount, instanceCount = 0, ...} or the mesh path's {groups = 0, 1, 1}.
@@ -6911,7 +6925,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
           read_scene(b, gfx::Access::FragmentRead, true);
           if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the shadow rays
-          b.read(rg_visible, gfx::Access::FragmentRead);  // a masked candidate's pair (R186 A1)
+          // A masked candidate's pair (R186 A1), and the capped pixels' count behind the list
+          // (R213), which the cap's atomics read and write.
+          if (shadows && (shadow_light_cap_tunable() & 0xffu) != 0u) {
+            b.write(rg_visible, gfx::Access::FragmentReadWrite);
+          } else {
+            b.read(rg_visible, gfx::Access::FragmentRead);
+          }
           if (rg_normals.valid()) b.read(rg_normals, gfx::Access::FragmentRead);  // D2
           if (shadows) {  // the shadow rays traverse them from the fragment stage
             b.read(rt.tlas, gfx::Access::FragmentRayQueryRead);
@@ -7148,9 +7168,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               cb.copy_buffer(scene.vertex_headers.buffer, stat_target->buffer, overflow);
             }
           }
-          {  // the frame's drop counts, camera runs and cascades, into view 0's last two words
+          {  // the frame's drop counts and the resolve's capped pixels, into view 0's last three
             const gfx::BufferCopy drops{scene.run_drops_offset(), sizeof(u32) * k_run_drop_word,
-                                        sizeof(u32) * 2};
+                                        sizeof(u32) * 3};
             cb.copy_buffer(scene.visible.buffer, stat_target->buffer, drops);
           }
           if (deform_on) {

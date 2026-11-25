@@ -614,8 +614,15 @@ void lights_by_reach(ShadowMode shadows, const char* name) {
   channels.color = false;  // the rig's target is linear: its picture is the light channel
   channels.light = true;
   struct Restore {
-    ~Restore() { (void)tunables::apply_overrides("renderer.lights.grid=true"); }
+    ~Restore() {
+      (void)tunables::apply_overrides("renderer.lights.grid=true");
+      (void)tunables::apply_overrides("renderer.shadow.light_rays=8");
+    }
   } restore;
+  // With the cap off (R213): under it a pixel's traced lights are added in their rank's order, so
+  // a point whose cell holds no more lights than the cap and the whole array more would differ in
+  // the summation's last bits.
+  REQUIRE(tunables::apply_overrides("renderer.shadow.light_rays=0"));
   REQUIRE(tunables::apply_overrides("renderer.lights.grid=true"));
   CapturedFrame culled, whole;
   REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, culled, &rig.error), rig.error);
@@ -648,6 +655,130 @@ void lights_by_reach(ShadowMode shadows, const char* name) {
   CHECK(lit > culled.light.size() / 8);
 }
 
+// **The cap on the shadow rays a pixel traces** (renderer.md; R213): twelve lamps whose reach
+// covers the whole floor, some low beside the slab so that it shadows them over parts of it, drawn
+// with every ray traced (`renderer.shadow.light_rays=0`) and with three rays a pixel. Where the
+// floor sees every lamp, the capped picture is the traced one (the traced lamps' visibility, 1, is
+// what the untraced are added at); everywhere it is off by no more than the untraced lamps'
+// unshadowed light, which the frame drawn under the cascaded maps (no lamp shadowed) bounds; the
+// pixels that stopped at the cap are counted, fewer for a larger share; and under the maps, which
+// trace no lamp, the cap changes no byte.
+void shadow_ray_cap(ShadowMode shadows, const char* name) {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(renderer_test::device_options(), &error) ||
+      !device.features().buffer_int64_atomics) {
+    MESSAGE("skipped: no device with 64-bit buffer atomics: " << error);
+    return;
+  }
+  const test::TempDir dir("renderer_shadow_ray_cap");
+  std::string room;
+  REQUIRE(write_room(dir, room));
+  Vector<FireDesc> lamps;
+  for (u32 k = 0; k < 12; ++k) {
+    FireDesc lamp;
+    lamp.lamp = true;
+    lamp.name = "lamp";
+    const f64 a = 0.5236 * k;  // round the slab, at two radii and three heights
+    const f64 r = (k % 2 == 0) ? 1.6 : 3.4;
+    lamp.position = WorldPos{1.3 + r * std::cos(a), 0.45 + 0.6 * (k % 3), r * std::sin(a)};
+    lamp.intensity = 0.6f + 0.15f * static_cast<f32>(k % 4);
+    lamp.color = Vec3{0.8f + 0.04f * static_cast<f32>(k % 5), 1.0f,
+                      0.7f + 0.05f * static_cast<f32>(k % 4)};
+    lamp.color = lamp.color * (1.0f / luminance(lamp.color));
+    lamp.reach_m = 20.0f;
+    lamps.push_back(lamp);
+  }
+  LampRig rig;
+  if (!rig.build(device, room, shadows, nullptr, std::span<const FireDesc>(lamps))) {
+    REQUIRE_MESSAGE(rig.error == "unavailable", rig.error);
+    MESSAGE("skipped: " << std::string(name) << " is not available here");
+    return;
+  }
+  LampRig dark;
+  REQUIRE_MESSAGE(dark.build(device, room, shadows, nullptr), dark.error);
+  FrameDesc frame;
+  frame.camera.position = WorldPos{1.5, 7.0, 3.0};
+  frame.camera.target = WorldPos{1.5, 0.0, 0.0};
+  frame.camera.fov_y = 60.0f * k_pi / 180.0f;
+  frame.camera.znear = 0.05f;
+  CaptureChannels channels;
+  channels.color = false;
+  channels.light = true;
+  struct Restore {
+    ~Restore() {
+      (void)tunables::apply_overrides("renderer.shadow.light_rays=8");
+      (void)tunables::apply_overrides("renderer.shadow.light_cap_share=0.02");
+      (void)tunables::apply_overrides("renderer.shadow.light_cap_fill=0");
+    }
+  } restore;
+  const auto draw = [&](const char* overrides, CapturedFrame& out, u32& capped) {
+    REQUIRE(tunables::apply_overrides(overrides));
+    REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, out, &rig.error), rig.error);
+    capped = rig.renderer.stats().light_cap_pixels;
+  };
+  CapturedFrame every, three, three_wide, none_lit;
+  u32 every_capped = 0, three_capped = 0, wide_capped = 0;
+  draw("renderer.shadow.light_rays=0", every, every_capped);
+  draw("renderer.shadow.light_rays=3", three, three_capped);
+  draw("renderer.shadow.light_cap_share=1", three_wide, wide_capped);
+  REQUIRE_MESSAGE(dark.renderer.capture(frame, channels, none_lit, &dark.error), dark.error);
+  REQUIRE(every.light.size() == size_t{k_width} * k_height * 3);
+  REQUIRE(three.light.size() == every.light.size());
+  CHECK(every_capped == 0);
+  if (shadows != ShadowMode::RayTraced) {
+    // Under the maps no lamp is traced: the cap is not asked, and counts nothing.
+    CHECK(three.light == every.light);
+    CHECK(three_capped == 0);
+    return;
+  }
+  // The lamps unshadowed: the same rig under the cascaded maps, which shadow no lamp.
+  LampRig open;
+  REQUIRE_MESSAGE(open.build(device, room, ShadowMode::Cascaded, nullptr,
+                             std::span<const FireDesc>(lamps)),
+                  open.error);
+  LampRig open_dark;  // its own floor with no lamp, since the two rigs' sun may differ
+  REQUIRE_MESSAGE(open_dark.build(device, room, ShadowMode::Cascaded, nullptr), open_dark.error);
+  CapturedFrame unshadowed, unshadowed_base;
+  REQUIRE(tunables::apply_overrides("renderer.shadow.light_rays=0"));
+  REQUIRE_MESSAGE(open.renderer.capture(frame, channels, unshadowed, &open.error), open.error);
+  REQUIRE_MESSAGE(open_dark.renderer.capture(frame, channels, unshadowed_base, &open_dark.error),
+                  open_dark.error);
+  MESSAGE(std::string(name) << ": " << three_capped << " pixels stopped at three rays with the "
+                            << "2% share unmet, " << wide_capped << " with a share of 1");
+  CHECK(three_capped > 0);
+  CHECK(wide_capped <= three_capped);
+  u32 seen_all = 0, differ = 0, over = 0;
+  f64 worst_seen = 0.0, worst_bound = 0.0;
+  for (u32 i = 0; i < every.light.size(); ++i) {
+    const f64 base = static_cast<f64>(none_lit.light[i]);
+    const f64 ref = static_cast<f64>(every.light[i]) - base;
+    const f64 got = static_cast<f64>(three.light[i]) - base;
+    const f64 open_light =
+        static_cast<f64>(unshadowed.light[i]) - static_cast<f64>(unshadowed_base.light[i]);
+    differ += three.light[i] != every.light[i];
+    if (open_light <= 1e-4) continue;
+    // Within the untraced lamps' light: no fill moves a pixel by more than every lamp's.
+    const f64 bound = std::fabs(got - ref) / (open_light * (1.0 + 1e-3) + 1e-5);
+    worst_bound = std::max(worst_bound, bound);
+    CHECK(bound <= 1.0);
+    // The floor that sees every lamp: the capped picture is the traced one, to the sum's rounding.
+    if (std::fabs(ref - open_light) <= 1e-5 * open_light) {
+      ++seen_all;
+      const f64 e = std::fabs(got - ref) / open_light;
+      worst_seen = std::max(worst_seen, e);
+      over += e > 1e-4;
+    }
+  }
+  MESSAGE(std::string(name) << ": " << differ << " light values differ from every ray's; "
+                            << seen_all << " see every lamp, worst there " << worst_seen
+                            << " of the light; the worst elsewhere " << worst_bound
+                            << " of the lamps' unshadowed light");
+  CHECK(differ > 0);           // three rays of twelve changed the picture where the slab shadows
+  CHECK(seen_all > 1000);
+  CHECK(over == 0);
+}
+
 }  // namespace
 
 TEST_CASE("lamp: a lamp-lit floor is the model's, shadowed by a slab under traced shadows") {
@@ -664,4 +795,12 @@ TEST_CASE("lamp: lights culled by reach draw the bytes of every light, under tra
 
 TEST_CASE("lamp: lights culled by reach draw the bytes of every light, under the cascaded maps") {
   lights_by_reach(ShadowMode::Cascaded, "--shadows csm");
+}
+
+TEST_CASE("lamp: the cap on the shadow rays a pixel traces holds the picture, under traced shadows") {
+  shadow_ray_cap(ShadowMode::RayTraced, "--shadows rt");
+}
+
+TEST_CASE("lamp: the cap on the shadow rays a pixel traces changes nothing under the cascaded maps") {
+  shadow_ray_cap(ShadowMode::Cascaded, "--shadows csm");
 }

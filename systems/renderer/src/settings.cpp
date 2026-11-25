@@ -387,6 +387,21 @@ tunables::Float shadow_light_tolerance{
     "A traced light whose unshadowed contribution is at most this fraction of the pixel's light "
     "from the sun, the ambient and the emission takes the sun ray's answer instead of a ray of its "
     "own; 0 traces every light (renderer.md, A light too faint to test)"};
+// R213: the cap on the lights' shadow rays a pixel traces (renderer.md, "A cap on the shadow rays a
+// pixel traces"; docs/experiments/lights-by-reach.md, "The cap").
+tunables::Int shadow_light_rays{
+    "renderer.shadow.light_rays", 8, 0, static_cast<i64>(gfx::k_max_light_cap_rays),
+    "At most this many of the lights' shadow rays a pixel, spent on the lights of most irradiance "
+    "there; 0 traces every light that reaches it (renderer.md, A cap on the shadow rays a pixel "
+    "traces)"};
+tunables::Float shadow_light_cap_share{
+    "renderer.shadow.light_cap_share", 0.02, 0.0, 1.0,
+    "Under the cap, a pixel stops tracing once the untraced lights' irradiance is at most this "
+    "share of what the traced lights were found to deliver (2%: Weber's fraction, as Lightcuts)"};
+tunables::Int shadow_light_cap_fill{
+    "renderer.shadow.light_cap_fill", 0, 0, 2,
+    "What the lights past the cap are added at: 0 the traced lights' visibility weighted by their "
+    "irradiance, 1 unshadowed, 2 not at all"};
 // W139: the white water's tier (water.md, "Shading"; docs/experiments/white-water.md). The low
 // tier is the white W130 drew, kept whole for low graphics settings; the top tier is the default.
 tunables::Int water_white_tier{
@@ -835,6 +850,13 @@ SunRegionRule sun_region_rule(u64 frame_index) noexcept {
 bool shadow_opaque_rays_tunable() noexcept { return shadow_opaque_rays.get(); }
 f32 shadow_light_tolerance_tunable() noexcept {
   return static_cast<f32>(shadow_light_tolerance.get());
+}
+u32 shadow_light_cap_tunable() noexcept {
+  return static_cast<u32>(shadow_light_rays.get()) |
+         (static_cast<u32>(shadow_light_cap_fill.get()) << gfx::k_light_cap_fill_shift);
+}
+f32 shadow_light_cap_share_tunable() noexcept {
+  return static_cast<f32>(shadow_light_cap_share.get());
 }
 u32 water_white_tier_tunable() noexcept { return static_cast<u32>(water_white_tier.get()); }
 u32 foliage_backlit_tier_tunable() noexcept { return static_cast<u32>(foliage_backlit_tier.get()); }
