@@ -261,11 +261,12 @@ Test-That 'nor one that does not record it' {
   try { Set-FrameBudgetBaseline -Run (New-Budget).runs[0] -Summary (New-Summary -session 'unknown') -By 'me' -Reason 'a reason' | Out-Null; $false } catch { $_.Exception.Message -match 'unknown' }
 }
 
-Write-Host 'the frame thread''s two modes (T221)'
+Write-Host 'the frame thread''s two modes: said, never judged (T221)'
 # A flight's per-frame cpu_ms as this machine draws them: a fast mode spread over 15% above `fast`,
 # and `share` of the frames in stretches of a slow mode 2.5 to 2.85 times dearer (bench.md, "The
-# frame thread's two modes"). Deterministic: the spread is a function of the frame's index.
-function New-Frames([double]$fast, [double]$share, [int]$n = 2000) {
+# frame thread's two modes"). Deterministic: the spread is a function of the frame's index. `add`
+# is a cost on the frames `regressed` names (a frame index to a bool), on top of either mode.
+function New-Frames([double]$fast, [double]$share, [int]$n = 2000, [double]$add = 0.0, [scriptblock]$regressed = { $false }) {
   $slowEvery = if ($share -gt 0) { [int][math]::Round(1.0 / $share * 10) } else { 0 }
   $frames = [double[]]::new($n)
   for ($i = 0; $i -lt $n; $i++) {
@@ -273,54 +274,67 @@ function New-Frames([double]$fast, [double]$share, [int]$n = 2000) {
     # Stretches: ten frames in each block of `slowEvery` are slow, so the share is 10 / slowEvery.
     $slow = $slowEvery -gt 0 -and ($i % $slowEvery) -lt 10
     $frames[$i] = if ($slow) { $fast * (2.5 + 0.35 * $jitter) } else { $fast * (1.0 + 0.15 * $jitter) }
+    if (& $regressed $i) { $frames[$i] += $add }
   }
   return , $frames
 }
 function Get-WholeMedian([double[]]$frames) { $s = [double[]]$frames.Clone(); [Array]::Sort($s); $s[[int][math]::Floor($s.Count / 2)] }
-# The test budget's cpu_ms median is 0.5 with +25% +0.1 ms: the limit is 0.725.
 $m = Get-CpuModes -Frames (New-Frames 0.5 0.5)
-Test-That 'the modes are told apart: the share, the fast median, the slow median' {
-  [math]::Abs($m.SlowShare - 0.5) -lt 0.01 -and $m.FastMedian -ge 0.5 -and $m.FastMedian -le 0.575 -and $m.SlowMedian -ge 1.25 -and $m.Separated
+Test-That 'the modes are told apart as numbers: the share, the fast median, the slow median' {
+  $m.SlowShare -is [double] -and [math]::Abs($m.SlowShare - 0.5) -lt 0.01 -and $m.FastMedian -ge 0.5 -and $m.FastMedian -le 0.575 -and $m.SlowMedian -ge 1.25
 }
-Test-That 'a flight with no slow frame has its fast median as its median' {
+Test-That 'a flight with no slow frame has its fast median as its median, and no slow mode' {
   $m0 = Get-CpuModes -Frames (New-Frames 0.5 0.0); $m0.SlowShare -eq 0 -and $m0.FastMedian -eq $m0.WholeMedian -and $null -eq $m0.SlowMedian
 }
-$frames = New-Frames 0.5 0.53
-$whole = Get-WholeMedian $frames
-$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -cpu $whole)
-Test-That 'a slow share over half puts the whole median over the limit: without the records it is over' { $whole -gt 0.725 -and $r.Verdict -eq 'over' }
-$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -cpu $whole) -Frames $frames
-Test-That 'with them the fast mode is judged and passes, and the line says the share' {
-  $r.Verdict -eq 'pass' -and (Row $r 'cpu_ms' 'median').Judged -eq 'fast' -and $r.MachineState -match 'slow share 5[23]\.' -and
-  (Row $r 'cpu_ms' 'p99').Judged -eq 'whole'
+Test-That 'and a flight with no frame records has none' { $null -eq (Get-CpuModes -Frames @()) }
+
+# The overlook's level: its unlocked cpu_ms median, 0.091 ms, so the limit is 0.091 x 1.25 + 0.1 =
+# 0.21375 ms, and a fast mode of 0.095 to 0.109 ms as the overlook flies. A judge that held the
+# fast mode's median would pass every one of these regressions (T221's review): each is over on a
+# quiet machine because the whole median is judged, the records given or not.
+$ov = New-Budget
+$ov.runs[0].budgets.locked.cpu_ms.median = 0.091
+$ovRun = $ov.runs[0]
+$ovLimit = 0.091 * 1.25 + 0.1
+function Test-Regression([string]$what, [double[]]$frames) {
+  $whole = Get-WholeMedian $frames
+  $r = Test-FrameBudgetRun -Budget $ov -Run $ovRun -Summary (New-Summary -cpu $whole) -Frames $frames
+  Test-That $what { $whole -gt $ovLimit -and $r.Verdict -eq 'over' -and (Row $r 'cpu_ms' 'median').Over -and (Row $r 'cpu_ms' 'median').Measured -eq $whole }
 }
-foreach ($share in 0.0, 0.25, 0.5) {
-  # A real regression: every frame 10% over the limit's fast mode, at each share the machine draws.
-  $frames = New-Frames (0.725 * 1.1) $share
-  $r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -cpu (Get-WholeMedian $frames)) -Frames $frames
-  Test-That ('a fast mode 10% over the limit fails at a slow share of {0:P0}' -f $share) { $r.Verdict -eq 'over' -and (Row $r 'cpu_ms' 'median').Over }
+Test-Regression 'a cost of 0.15 ms on every second frame at the overlook''s level is over' `
+  (New-Frames 0.095 0.0 -add 0.15 -regressed { param($i) $i % 2 -eq 1 })
+Test-Regression 'the same on every third frame, where the machine''s slow share puts the whole median over, is over' `
+  (New-Frames 0.095 0.3 -add 0.15 -regressed { param($i) $i % 3 -eq 2 })
+$bimodal = [double[]]::new(2000)
+for ($i = 0; $i -lt 2000; $i++) { $bimodal[$i] = if (($i % 20) -lt 9) { 0.05 + 0.002 * (($i * 37) % 10) / 10.0 } else { 0.25 + 0.002 * (($i * 37) % 10) / 10.0 } }
+Test-Regression 'a flight of 45% frames at 0.05 ms and 55% at 0.25 ms against the overlook''s limit is over' $bimodal
+Test-Regression 'a regression on 70% of the frames is over, not inconclusive' `
+  (New-Frames 0.095 0.0 -add 0.15 -regressed { param($i) ($i % 10) -lt 7 })
+
+# What the modes are for: said beside a verdict, never moving it. The same summaries with and without
+# their records give the same verdict and the same rows, across passes, overs and a busy machine.
+$same = $true
+$cases = @(
+  @{ frames = (New-Frames 0.095 0.0); quiet = $true }
+  @{ frames = (New-Frames 0.095 0.53); quiet = $true }
+  @{ frames = (New-Frames 0.095 0.2); quiet = $false }
+  @{ frames = (New-Frames 0.095 0.0 -add 0.15 -regressed { param($i) $i % 2 -eq 1 }); quiet = $false }
+  @{ frames = $bimodal; quiet = $true }
+)
+foreach ($c in $cases) {
+  $s = New-Summary -cpu (Get-WholeMedian $c.frames) -quiet $c.quiet
+  $with = Test-FrameBudgetRun -Budget $ov -Run $ovRun -Summary $s -Frames $c.frames
+  $without = Test-FrameBudgetRun -Budget $ov -Run $ovRun -Summary $s
+  $same = $same -and $with.Verdict -eq $without.Verdict -and $with.Rows.Count -eq $without.Rows.Count -and $null -ne $with.Modes -and $null -eq $without.Modes
+  for ($k = 0; $k -lt $with.Rows.Count; $k++) {
+    $same = $same -and $with.Rows[$k].Measured -eq $without.Rows[$k].Measured -and $with.Rows[$k].Over -eq $without.Rows[$k].Over
+  }
 }
-$frames = New-Frames 0.5 0.7
-$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -cpu (Get-WholeMedian $frames)) -Frames $frames
-Test-That 'a share over the ceiling is not split: the whole median over the limit is inconclusive on a quiet machine, never over' {
-  $r.Verdict -eq 'busy' -and (Row $r 'cpu_ms' 'median').Judged -eq 'unsplit' -and $r.MachineState -match 'not split: slow share 7'
-}
-$frames = New-Frames 0.2 0.7
-$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -cpu (Get-WholeMedian $frames)) -Frames $frames
-Test-That 'and one whose whole median is under the limit passes, an upper bound under it' { $r.Verdict -eq 'pass' }
-$frames = New-Frames 0.5 0.53 -n 40
-$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -cpu (Get-WholeMedian $frames)) -Frames $frames
-Test-That 'too few frames are not split either' { (Row $r 'cpu_ms' 'median').Judged -eq 'unsplit' -and $r.Verdict -eq 'busy' }
-$frames = New-Frames 0.5 0.3
-$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -cpu (Get-WholeMedian $frames) -cull 0.9) -Frames $frames
-Test-That 'a GPU line is never split: an over there is still over' { $r.Verdict -eq 'over' -and (Row $r 'gpu_ms.cull' 'median').Over -and (Row $r 'gpu_ms.cull' 'median').Judged -eq 'whole' }
-$frames = New-Frames 0.4 0.45
-$after = Set-FrameBudgetBaseline -Run (New-Budget).runs[0] -Summary (New-Summary -cpu (Get-WholeMedian $frames)) -By 'me' -Reason 'r' -Frames $frames
-Test-That 'a re-baseline takes the fast mode''s median and records the modes' {
-  $after.budgets.locked.cpu_ms.median -le 0.46 -and $after.budgets.locked.baseline.cpu_modes -match 'slow share 4[45]\.'
-}
-Test-That 'and refuses a flight whose modes it cannot tell apart' {
-  try { Set-FrameBudgetBaseline -Run (New-Budget).runs[0] -Summary (New-Summary) -By 'me' -Reason 'r' -Frames (New-Frames 0.4 0.8) | Out-Null; $false } catch { $_.Exception.Message -match 'not told apart' }
+Test-That 'the slow share and the modes are said and change no verdict and no row' { $same }
+$r = Test-FrameBudgetRun -Budget $ov -Run $ovRun -Summary (New-Summary -cpu (Get-WholeMedian $cases[1].frames)) -Frames $cases[1].frames
+$said = (Format-FrameBudgetReport -Results @($r) -Budget $ov) -join "`n"
+Test-That 'a slow share over half puts the whole median over: over, and the report says the share' {
+  $r.Verdict -eq 'over' -and $said -match 'slow share 5[23]\.\d%' -and $said -match 'whole median 0\.2\d\d ms judged'
 }
 
 Write-Host 'a budget file the gate refuses'
@@ -427,13 +441,18 @@ try {
   Test-That 'Read-FrameCpu reads every frame record and leaves the summary out' { (Read-FrameCpu -Path (Join-Path $kept 'scene-1080p.jsonl')).Count -eq 2000 }
   $reportDir = Join-Path $scratch 'kept-slow-report'
   $said = & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'frame-budget.ps1') -Budget $budgetFile -FromSummaries $kept -Out $reportDir 2>&1 | Out-String
-  Test-That 'a kept flight whose median sits in the slow mode passes by its fast mode, says the share, and is reported elsewhere' {
-    $LASTEXITCODE -eq 0 -and $said -match 'cpu_ms fast mode' -and (Test-Path (Join-Path $reportDir 'report.md')) -and -not (Test-Path (Join-Path $kept 'report.md'))
+  Test-That 'a kept flight whose whole median sits in the slow mode is over by it, says the share, and is reported elsewhere' {
+    $LASTEXITCODE -eq 1 -and $said -match 'over: cpu_ms median' -and $said -match 'slow share 5[23]\.\d%' -and
+    (Test-Path (Join-Path $reportDir 'report.md')) -and -not (Test-Path (Join-Path $kept 'report.md'))
   }
-  $regressed = Join-Path $scratch 'kept-regressed'
-  Write-Records $regressed (New-Frames (0.725 * 1.1) 0.25)
-  $said = & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'frame-budget.ps1') -Budget $budgetFile -FromSummaries $regressed -Out (Join-Path $scratch 'kept-regressed-report') 2>&1 | Out-String
-  Test-That 'and one whose fast mode is 10% over the limit exits 1 naming the frame thread' { $LASTEXITCODE -eq 1 -and $said -match 'over: cpu_ms median \(its fast mode\)' }
+  Test-That 'and report.json carries the modes as numbers' {
+    $j = Get-Content (Join-Path $reportDir 'report.json') -Raw | ConvertFrom-Json
+    $mo = @($j)[0].Modes; $mo.SlowShare -is [double] -and $mo.FastMedian -is [double] -and $mo.WholeMedian -gt 0.725
+  }
+  $calm = Join-Path $scratch 'kept-calm'
+  Write-Records $calm (New-Frames 0.5 0.0)
+  $said = & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'frame-budget.ps1') -Budget $budgetFile -FromSummaries $calm -Out (Join-Path $scratch 'kept-calm-report') 2>&1 | Out-String
+  Test-That 'one with no slow frame passes and says a share of none' { $LASTEXITCODE -eq 0 -and $said -match 'slow share 0\.0%' }
 
   # The measurement rule through the scripts (ADR-0064). The budget file is the re-baselined one.
   $recon = Join-Path $scratch 'reconstructed'

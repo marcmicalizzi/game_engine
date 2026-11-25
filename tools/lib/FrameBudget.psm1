@@ -174,28 +174,19 @@ function Get-MeasuredValue($summary, $line, [string]$stat) {
 }
 
 <#
-  **The frame thread's slow mode** (roadmap T221; bench.md, "The frame thread's two modes"). On
-  this machine a flight's `cpu_ms` is two-moded: most frames in a fast mode, and a share of them —
-  none to over half, varying from flight to flight of one binary — in a slow mode about 2.3 to 3
-  times dearer, every section of the frame by the same factor, in stretches of tens to hundreds of
-  milliseconds. The share is the machine's, not the code's, so the frame thread's median is held
-  to its budget by the **fast mode's median**, with the slow share stated beside it and bounded:
+  **The frame thread's two modes, said and never judged** (roadmap T221; bench.md, "The frame
+  thread's two modes"). On this machine a flight's `cpu_ms` is often two-moded: most frames in a
+  fast mode and a share in a slow mode 2.3 to 3 times dearer, every section of the frame by the same
+  factor. A verdict prints the share and the two modes' medians beside the whole median so that a
+  reader of a green gate sees a share that jumped; **nothing here decides a verdict**: the frame
+  thread's median is judged whole, as it always was. A judge by the fast mode alone was tried and
+  refused (T221's review): every fast frame is at or under the split, so its median can cross a limit
+  only when the p10 itself is over half of it, and a cost on every second or third frame, or a change
+  that makes some frames cheaper while the rest grow, would pass.
 
-    split      twice the flight's 10th percentile: a frame over it is in the slow mode. Every kept
-               flight's valley between the modes lies between 2.0 and 2.7 times its p10, and the
-               p10 stays in the fast mode while the slow share is under 90%.
-    ceiling    a slow share above `$SlowCeiling` (60%) is too much of the flight to tell the fast
-               mode apart: the whole flight's median is held to the limit instead, as an upper
-               bound, so a pass is still a pass and an over is inconclusive (fly it again).
-
-  A code change moves both modes, so it moves the fast mode's median as it moved the whole one; a
-  slow share moves neither. The p99 stays the whole flight's: the slow mode is under every run's p99
-  limit, so only a real tail can cross it. GPU lines are not split (a GPU pass's cost follows the
-  path's view, so a split by its p10 would cut the path's dear stretch, not a machine's mode).
+  The split is twice the flight's 10th percentile: a frame over it is counted in the slow mode.
 #>
 $script:SlowSplit = 2.0
-$script:SlowCeiling = 0.6
-$script:SlowLeast = 50   # fewer frames than this are not split: the whole flight's median is judged
 
 # The frame thread's `cpu_ms` of every frame record in a flight's .jsonl (the lines with a `frame`;
 # the summary, which has none, is left out). An empty array for a file of summaries alone.
@@ -222,16 +213,14 @@ function Read-FrameCpu {
   return , $out.ToArray()
 }
 
-# The two modes of a flight's per-frame `cpu_ms` (above): the split, the fast mode's median, the
-# slow share and the slow mode's median, the whole flight's median, and whether the fast mode was
-# told apart (`Separated`: enough frames and a share under the ceiling).
+# The two modes of a flight's per-frame `cpu_ms`, as numbers: the frames, the p10 and the split, the
+# fast mode's median, the slow share and the slow mode's median (null with no slow frame), and the
+# whole flight's median. $null for a flight with no frame records.
 function Get-CpuModes {
   [CmdletBinding()]
   param([AllowEmptyCollection()] [double[]]$Frames = @())
   $n = @($Frames).Count
-  if ($n -eq 0) {
-    return [pscustomobject]@{ Frames = 0; P10 = $null; Split = $null; FastMedian = $null; SlowShare = $null; SlowMedian = $null; WholeMedian = $null; Separated = $false; Why = 'no frame records' }
-  }
+  if ($n -eq 0) { return $null }
   $sorted = [double[]]@($Frames)
   [Array]::Sort($sorted)
   $p10 = $sorted[[int][math]::Floor(0.1 * $n)]
@@ -239,28 +228,22 @@ function Get-CpuModes {
   $fast = 0
   while ($fast -lt $n -and $sorted[$fast] -le $split) { $fast++ }
   $slow = $n - $fast
-  $share = $slow / $n
-  $separated = $n -ge $script:SlowLeast -and $share -le $script:SlowCeiling
-  $why = if ($n -lt $script:SlowLeast) { "$n frames, fewer than $script:SlowLeast" }
-         elseif ($share -gt $script:SlowCeiling) { 'slow share {0:P0} over the ceiling of {1:P0}' -f $share, $script:SlowCeiling }
-         else { '' }
-  return [pscustomobject]@{
+  return [pscustomobject][ordered]@{
     Frames = $n; P10 = $p10; Split = $split
-    FastMedian = $sorted[[int][math]::Floor($fast / 2)]
-    SlowShare = $share
+    FastMedian = $(if ($fast -gt 0) { $sorted[[int][math]::Floor($fast / 2)] } else { $null })
+    SlowShare = $slow / $n
     SlowMedian = $(if ($slow -gt 0) { $sorted[$fast + [int][math]::Floor($slow / 2)] } else { $null })
     WholeMedian = $sorted[[int][math]::Floor($n / 2)]
-    Separated = $separated; Why = $why
   }
 }
 
-# One line for a flight's modes: what a reader needs beside the frame thread's verdict.
+# One line for a flight's modes, said beside the verdict and deciding nothing.
 function Format-CpuModes($Modes) {
-  if ($null -eq $Modes -or $Modes.Frames -eq 0) { return 'cpu_ms not split: no frame records' }
+  if ($null -eq $Modes) { return 'cpu_ms modes: no frame records' }
   $slowMode = if ($null -ne $Modes.SlowMedian) { ', slow mode {0:N3} ms' -f $Modes.SlowMedian } else { '' }
-  $head = 'cpu_ms fast mode {0:N3} ms, slow share {1:P1}{2} (whole median {3:N3}, split {4:N3})' -f $Modes.FastMedian, $Modes.SlowShare, $slowMode, $Modes.WholeMedian, $Modes.Split
-  if (-not $Modes.Separated) { $head += "; not split: $($Modes.Why), the whole median judged" }
-  return $head
+  # The share as N1 and a sign, not P1: P1's pattern is the culture's ("53.2 %" in the invariant one).
+  return 'cpu_ms modes (said, not judged): slow share {0:N1}%, fast mode {1:N3} ms{2}; whole median {3:N3} ms judged (split {4:N3})' -f
+    (100.0 * $Modes.SlowShare), $Modes.FastMedian, $slowMode, $Modes.WholeMedian, $Modes.Split
 }
 
 <#
@@ -277,11 +260,8 @@ function Format-CpuModes($Modes) {
              'session'    the summary's session state is unknown, or changed during the flight:
                           compared with nothing
   `Session` is the summary's state (Get-SessionState) and `Compared` the baseline it was held to.
-
-  `-Frames` is the flight's per-frame `cpu_ms` (Read-FrameCpu). Given, the frame thread's median is
-  judged by its fast mode (Get-CpuModes, above) and `Modes` says how; a slow share over the ceiling
-  judges the whole median and makes an over 'busy' (inconclusive), never 'over'. Not given (a
-  summary with no frame records), the whole median is judged, as before T221.
+  `-Frames` (Read-FrameCpu) gives `Modes` (Get-CpuModes), which is said and never judged: the
+  verdict and every row are what they are without it.
 #>
 function Test-FrameBudgetRun {
   [CmdletBinding()]
@@ -320,9 +300,7 @@ function Test-FrameBudgetRun {
   }
   $rows = @()
   $over = $false
-  $unsplitOver = $false
   $missing = @()
-  $modes = if (@($Frames).Count -gt 0) { Get-CpuModes -Frames $Frames } else { $null }
   foreach ($line in (Get-BudgetLines $set)) {
     foreach ($s in $script:Stats) {
       $t = $Budget.tolerance.($line.Kind).$s
@@ -330,28 +308,19 @@ function Test-FrameBudgetRun {
       $limit = Get-FrameBudgetLimit $b ([double]$t.pct) ([double]$t.ms)
       $m = Get-MeasuredValue $Summary $line $s
       if ($null -eq $m) { $missing += "$($line.Name).$s"; continue }
-      $judged = 'whole'
-      # The frame thread's median by its fast mode (T221): the slow share is the machine's.
-      if ($line.Kind -eq 'cpu' -and $s -eq 'median' -and $null -ne $modes) {
-        if ($modes.Separated) { $m = [double]$modes.FastMedian; $judged = 'fast' } else { $judged = 'unsplit' }
-      }
       $isOver = $m -gt $limit
-      $over = $over -or ($isOver -and $judged -ne 'unsplit')
-      $unsplitOver = $unsplitOver -or ($isOver -and $judged -eq 'unsplit')
-      $rows += [pscustomobject]@{ Line = $line.Name; Stat = $s; Budget = $b; Measured = $m; Limit = $limit; Over = $isOver; Judged = $judged }
+      $over = $over -or $isOver
+      $rows += [pscustomobject]@{ Line = $line.Name; Stat = $s; Budget = $b; Measured = $m; Limit = $limit; Over = $isOver }
     }
   }
-  # An over judged on a flight whose modes could not be told apart is an upper bound over its limit:
-  # inconclusive whatever the machine's quiet said, as a busy over is.
   $verdict = if ($missing.Count -gt 0) { 'malformed' }
-             elseif (-not $over -and -not $unsplitOver) { 'pass' }
-             elseif ($over -and $quiet) { 'over' }
+             elseif (-not $over) { 'pass' }
+             elseif ($quiet) { 'over' }
              else { 'busy' }
-  if ($null -ne $modes) { $state = "$state; $(Format-CpuModes $modes)" }
   return [pscustomobject]@{
     Id = $Run.id; Verdict = $verdict; Device = $device; Session = $session
     Compared = "the $session baseline of $($set.baseline.date)"; Quiet = $quiet; Rows = $rows; Missing = $missing
-    MachineState = $state; Modes = $modes
+    MachineState = $state; Modes = (Get-CpuModes -Frames $Frames)
   }
 }
 
@@ -402,6 +371,7 @@ function Format-FrameBudgetReport {
     $out += ''
     $out += "Device: $($r.Device). Machine: $($r.MachineState)."
     if ($r.PSObject.Properties['Compared'] -and $r.Compared) { $out += "Compared with $($r.Compared)." }
+    if ($r.PSObject.Properties['Modes'] -and $null -ne $r.Modes) { $out += "$(Format-CpuModes $r.Modes)." }
     if ($r.Missing.Count -gt 0) { $out += "Missing from the summary: $($r.Missing -join ', ')." }
     if ($r.Rows.Count -gt 0) {
       $out += ''
@@ -409,10 +379,7 @@ function Format-FrameBudgetReport {
       $out += '|---|---|---|---|---|---|'
       foreach ($row in $r.Rows) {
         $mark = if ($row.Over) { '**over**' } else { '' }
-        $stat = $row.Stat
-        if ($row.PSObject.Properties['Judged'] -and $row.Judged -eq 'fast') { $stat += ' (fast mode)' }
-        elseif ($row.PSObject.Properties['Judged'] -and $row.Judged -eq 'unsplit') { $stat += ' (whole, modes not told apart)' }
-        $out += '| {0} | {1} | {2:N3} | {3:N3} | {4:N3} | {5} |' -f $row.Line, $stat, $row.Budget, $row.Limit, $row.Measured, $mark
+        $out += '| {0} | {1} | {2:N3} | {3:N3} | {4:N3} | {5} |' -f $row.Line, $row.Stat, $row.Budget, $row.Limit, $row.Measured, $mark
       }
     }
     $out += ''
@@ -432,16 +399,8 @@ function Format-FrameBudgetReport {
 function Set-FrameBudgetBaseline {
   [CmdletBinding()]
   param([Parameter(Mandatory)] $Run, [Parameter(Mandatory)] $Summary, [Parameter(Mandatory)] [string]$By,
-        [Parameter(Mandatory)] [string]$Reason, [string]$Commit = '', [string]$Date = (Get-Date -Format 'yyyy-MM-dd'),
-        [AllowEmptyCollection()] [double[]]$Frames = @())
+        [Parameter(Mandatory)] [string]$Reason, [string]$Commit = '', [string]$Date = (Get-Date -Format 'yyyy-MM-dd'))
   if (-not $Reason.Trim()) { throw 'frame-budget: a re-baseline says why (-Reason)' }
-  # The frame thread's median is taken as it is judged (T221): its fast mode's, when the flight's
-  # records tell the modes apart; a flight that cannot is refused, since its whole median carries
-  # a share of the slow mode the next flight will not repeat.
-  $modes = if (@($Frames).Count -gt 0) { Get-CpuModes -Frames $Frames } else { $null }
-  if ($null -ne $modes -and -not $modes.Separated) {
-    throw "frame-budget: a budget is never set from a flight whose frame thread's modes are not told apart ($($modes.Why))"
-  }
   $refusal = Get-ReconstructionRefusal -Summary $Summary
   if ($refusal) { throw "frame-budget: a budget is never set from a summary that is $refusal" }
   $session = Get-SessionState -Summary $Summary
@@ -456,14 +415,12 @@ function Set-FrameBudgetBaseline {
       $gpu[$p.Name] = [ordered]@{ median = [math]::Round($median, 3); p99 = [math]::Round($p99, 3) }
     }
   }
-  $cpuMedian = if ($null -ne $modes) { [double]$modes.FastMedian } else { [double]$Summary.cpu_ms.median }
-  $cpu = [pscustomobject][ordered]@{ median = [math]::Round($cpuMedian, 3); p99 = [math]::Round([double]$Summary.cpu_ms.p99, 3) }
+  $cpu = [pscustomobject][ordered]@{ median = [math]::Round([double]$Summary.cpu_ms.median, 3); p99 = [math]::Round([double]$Summary.cpu_ms.p99, 3) }
   $baseline = [pscustomobject][ordered]@{
     date = $Date; by = $By; reason = $Reason; commit = $Commit; device = "$($Summary.device)"
     session = $session; quiet = [bool]$Summary.quiet; machine_state = (Format-MachineState $Summary)
     identity = "$($Summary.identity)"; frames = $Summary.frames; repeats = $Summary.repeats
   }
-  if ($null -ne $modes) { $baseline | Add-Member -NotePropertyName cpu_modes -NotePropertyValue (Format-CpuModes $modes) }
   $set = [pscustomobject][ordered]@{ gpu_ms = [pscustomobject]$gpu; cpu_ms = $cpu; baseline = $baseline }
   if ($null -eq $Run.PSObject.Properties['budgets'] -or $null -eq $Run.budgets) {
     if ($Run.PSObject.Properties['budgets']) { $Run.budgets = [pscustomobject]@{} } else { $Run | Add-Member -NotePropertyName budgets -NotePropertyValue ([pscustomobject]@{}) }

@@ -16,14 +16,19 @@
   "The GPU lock"), releases the lock, and compares the summary's `gpu_ms` medians and p99s (and
   `cpu_ms`, where a run budgets it) with the budget plus the file's tolerance
   (tools/lib/FrameBudget.psm1 has the rule). The per-frame `.jsonl`, `report.md` and
-  `report.json` go in -Out (default build/<preset>/frame-budget/<time>/).
+  `report.json` go in -Out (default build/<preset>/frame-budget/<time>/). Each run's line also
+  says the frame thread's slow share and its two modes' medians (`report.json`'s `Modes`, as
+  numbers), read from the per-frame records; they decide nothing (bench.md, "The frame thread's
+  two modes").
 
   The budgets hold on one machine, the file's `machine.device`: elsewhere the script measures
   nothing and exits 3 (nvidia-smi names the adapter before anything runs; the summary's `device`
   is checked after each run too). -AnyDevice compares anyway, to read a number, never to gate.
 
   -FromSummaries <dir> compares the `<id>.jsonl` files a previous run left in <dir> instead of
-  flying anything: re-reading a run against a changed budget, or a tolerance, costs no GPU.
+  flying anything: re-reading a run against a changed budget, or a tolerance, costs no GPU. It
+  reads them where they are and writes `report.md` and `report.json` to -Out when one is named
+  (so a kept flight is judged again without writing beside it), and into <dir> when none is.
 
   A run holds a budget per Windows session state, `budgets.locked` and `budgets.unlocked` (T161):
   a locked session idles the card's clocks, so a flight is compared only with the set of the state
@@ -161,8 +166,8 @@ foreach ($r in $runs) {
     continue
   }
   $summaries[$r.id] = $summary
-  # The frame records beside the summary: the frame thread's median is judged by its fast mode
-  # (T221; tools/lib/FrameBudget.psm1, Get-CpuModes).
+  # The frame records beside the summary, for the frame thread's modes, which the verdict says and
+  # never judges (T221; tools/lib/FrameBudget.psm1, Get-CpuModes).
   $frames = Read-FrameCpu -Path $jsonl
   $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary -Frames $frames
   if ($AnyDevice -and $result.Verdict -eq 'device') {
@@ -187,9 +192,10 @@ foreach ($r in $runs) {
   $line = '   {0}: {1}; total {2:N3} / {3:N3} ms (median / p99) against {4:N3} / {5:N3}, {6}; {7}' -f $r.id, $result.Verdict,
     (Get-Measured $summary 'median'), (Get-Measured $summary 'p99'), [double]$set.gpu_ms.total.median, [double]$set.gpu_ms.total.p99, $result.Compared, $result.MachineState
   Write-Host $line -ForegroundColor $(if ($result.Verdict -eq 'pass') { 'Green' } elseif ($result.Verdict -eq 'busy') { 'Yellow' } else { 'Red' })
+  # The frame thread's modes, said beside the verdict and deciding nothing (T221).
+  if ($null -ne $result.Modes) { Write-Host "     $(Format-CpuModes $result.Modes)" }
   foreach ($row in $overRows) {
-    $how = switch ($row.Judged) { 'fast' { ' (its fast mode)' } 'unsplit' { ' (the whole flight: modes not told apart, inconclusive)' } default { '' } }
-    Write-Host ('     over: {0} {1}{5} {2:N3} ms, budget {3:N3}, limit {4:N3}' -f $row.Line, $row.Stat, $row.Measured, $row.Budget, $row.Limit, $how) -ForegroundColor Red
+    Write-Host ('     over: {0} {1} {2:N3} ms, budget {3:N3}, limit {4:N3}' -f $row.Line, $row.Stat, $row.Measured, $row.Budget, $row.Limit) -ForegroundColor Red
   }
 }
 
@@ -218,13 +224,7 @@ if ($Rebaseline) {
       continue
     }
     # The flight's own session state's set, and only that one: the other state's stays as it was.
-    $recordsAt = Join-Path $(if ($FromSummaries) { $FromSummaries } else { $Out }) "$($r.id).jsonl"
-    try {
-      Set-FrameBudgetBaseline -Run $r -Summary $summaries[$r.id] -By $By -Reason $Reason -Commit $commit -Frames (Read-FrameCpu -Path $recordsAt) | Out-Null
-    } catch {
-      Write-Warning "frame-budget: $($r.id) not re-baselined: $($_.Exception.Message)"
-      continue
-    }
+    Set-FrameBudgetBaseline -Run $r -Summary $summaries[$r.id] -By $By -Reason $Reason -Commit $commit | Out-Null
     Write-Host "   $($r.id): the $($res.Session) baseline taken; the run now holds $(Format-RunSessions $r)" -ForegroundColor Cyan
     $changed++
   }
