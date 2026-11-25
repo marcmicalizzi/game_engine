@@ -337,6 +337,46 @@ Test-That 'a slow share over half puts the whole median over: over, and the repo
   $r.Verdict -eq 'over' -and $said -match 'slow share 5[23]\.\d%' -and $said -match 'whole median 0\.2\d\d ms judged'
 }
 
+Write-Host 'the frame thread pinned (T221)'
+Test-That 'the rule takes the first logical CPU of the third core, from made-up counts' {
+  (Get-FrameCpuChoice -Cores 18 -Logical 36) -eq 4 -and (Get-FrameCpuChoice -Cores 8 -Logical 8) -eq 2 -and
+  (Get-FrameCpuChoice -Cores 64 -Logical 128) -eq 4 -and (Get-FrameCpuChoice -Cores 4 -Logical 16) -eq 8
+}
+Test-That 'and the last core of a smaller machine' { (Get-FrameCpuChoice -Cores 2 -Logical 4) -eq 2 -and (Get-FrameCpuChoice -Cores 1 -Logical 1) -eq 0 }
+Test-That '-FrameCpu free is free, a number is that CPU, auto is the rule, and auto where no pin can be made is free' {
+  (Resolve-FrameCpu 'free' 18 36) -eq -1 -and (Resolve-FrameCpu '7' 18 36) -eq 7 -and (Resolve-FrameCpu 'auto' 18 36) -eq 4 -and
+  (Resolve-FrameCpu 'auto' 18 36 $false) -eq -1
+}
+Test-That 'and a CPU the machine does not have, or a word, is refused' {
+  $a = try { Resolve-FrameCpu '36' 18 36; $false } catch { $true }
+  $b = try { Resolve-FrameCpu 'fast' 18 36; $false } catch { $true }
+  $a -and $b
+}
+$calm = New-Summary
+$failed = [pscustomobject]@{ Asked = $true; Cpu = 4; Thread = 0; Applied = $false; Held = $false; Looks = 0; Why = 'OpenThread failed (5)' }
+$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary $calm -Pin $failed
+Test-That 'a pin that could not be applied makes a passing flight inconclusive, and says so' {
+  $r.Verdict -eq 'busy' -and $r.MachineState -match 'could not be pinned to CPU 4: OpenThread failed' -and $r.MachineState -match 'inconclusive' -and -not $r.Pin.Applied
+}
+$lost = [pscustomobject]@{ Asked = $true; Cpu = 4; Thread = 12; Applied = $true; Held = $false; Looks = 9; Why = 'a look found the mask at 0xffff' }
+Test-That 'and so does one that did not hold' { (Test-FrameBudgetRun -Budget $b -Run $run -Summary $calm -Pin $lost).Verdict -eq 'busy' }
+Test-That 'but an over on a quiet machine stays over, as a free flight is' { (Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -total 2.26) -Pin $failed).Verdict -eq 'over' }
+$held = [pscustomobject]@{ Asked = $true; Cpu = 4; Thread = 12; Applied = $true; Held = $true; Looks = 40; Why = '' }
+$r = Test-FrameBudgetRun -Budget $b -Run $run -Summary $calm -Pin $held
+Test-That 'a pin that held is judged as any flight, and the report records the CPU and that it held' {
+  $r.Verdict -eq 'pass' -and $r.MachineState -match 'pinned to CPU 4, held \(40 looks\)' -and $r.Pin.Cpu -eq 4 -and $r.Pin.Held
+}
+if ($IsWindows) {
+  # The plumbing on a real process with no device: a pwsh that sleeps, its first thread pinned and
+  # looked at (the mask found as set), then let go.
+  $child = Start-Process pwsh -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 4' -PassThru -WindowStyle Hidden
+  $live = Set-FrameThreadPin -Process $child -Cpu 0
+  Test-FrameThreadPin -Pin $live -Process $child
+  Close-FrameThreadPin $live
+  $child.WaitForExit()
+  Test-That 'a live process''s first thread is pinned, and a look finds the mask it was given' { $live.Applied -and $live.Held -and $live.Looks -eq 1 -and $live.Thread -gt 0 }
+}
+
 Write-Host 'a budget file the gate refuses'
 $bad = New-Budget
 $bad.runs[0].budgets.locked.baseline = [pscustomobject]@{ date = '2026-10-07'; by = 'test' }

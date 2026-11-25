@@ -96,7 +96,10 @@ through `cmd` or a Unix shell. In order:
    is in the verdict (`budgets.flights`). The frame thread's `cpu_ms` median is judged whole; each
    run's line also says the flight's slow share and its two modes' medians, which decide nothing
    (T221: a judge by the fast mode alone was tried and refused as a check made weaker;
-   [bench](../subsystems/bench.md), "The frame thread's two modes").
+   [bench](../subsystems/bench.md), "The frame thread's two modes"). Each flight's frame thread is
+   pinned to one logical CPU by `tools/frame-budget.ps1` (`-FrameCpu auto`), which takes the slow
+   mode out of what is measured; a pin that cannot be applied or does not hold makes the run busy,
+   flown again like any busy run ([bench](../subsystems/bench.md), "The frame thread pinned").
 6. **The integrity read, the litter check, the tree check, the summary**, and
    `<batch>-gate.verdict.json`: green, the tip it judged, each leg's verdict, every build attempt,
    every second look, every fault, and **each step's state and source** (`states`, `sources`,

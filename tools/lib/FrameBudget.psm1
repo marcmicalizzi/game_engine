@@ -237,6 +237,110 @@ function Get-CpuModes {
   }
 }
 
+<#
+  **The flight's frame thread, pinned** (roadmap T221; bench.md, "The frame thread pinned"). The
+  slow mode above goes when the frame thread stays on one logical CPU: so the tool pins it, from
+  outside the process, before the first frame, and judges the whole median as before. engine-view's
+  offscreen flight runs its frames on the process's main thread (`main` calls `run_offscreen`), the
+  first thread the process has, which is the one pinned; its loader's and sound's threads stay free.
+
+  Which CPU, by rule and never by a number of one machine: the first logical CPU of the third
+  physical core (core 2, or the last core of a smaller machine), Windows numbering a core's
+  hyperthreads next to each other. Core 0 is where the system's interrupts and deferred calls land
+  by default, core 1 its neighbour; the third is the first that neither usually holds, and it is
+  where T221's experiment pinned. -FrameCpu <n> names another, -FrameCpu free flies the thread
+  free as before T221. A pin within the first processor group only (64 logical CPUs).
+#>
+function Get-FrameCpuChoice([int]$Cores, [int]$Logical) {
+  if ($Cores -lt 1 -or $Logical -lt $Cores) { throw "frame-budget: no CPU rule for $Cores cores and $Logical logical CPUs" }
+  $perCore = [math]::Max(1, [math]::Floor($Logical / $Cores))
+  $core = [math]::Min(2, $Cores - 1)
+  return [int]($core * $perCore)
+}
+
+# -FrameCpu's value to a logical CPU, or -1 for a free frame thread: 'auto' is the rule above over
+# the machine's own counts (or free where the tool cannot pin: not Windows), 'free' is free, and a
+# number is that CPU, refused past the first processor group or the machine's logical CPUs.
+function Resolve-FrameCpu([string]$Value, [int]$Cores, [int]$Logical, [bool]$CanPin = $true) {
+  if ($Value -eq 'free') { return -1 }
+  if ($Value -eq 'auto') { if (-not $CanPin) { return -1 }; return Get-FrameCpuChoice -Cores $Cores -Logical $Logical }
+  $n = 0
+  if (-not [int]::TryParse($Value, [ref]$n)) { throw "frame-budget: -FrameCpu is 'auto', 'free' or a logical CPU, not '$Value'" }
+  if (-not $CanPin) { throw 'frame-budget: -FrameCpu <n> pins on Windows only' }
+  if ($n -lt 0 -or $n -ge [math]::Min($Logical, 64)) { throw "frame-budget: no logical CPU $n here (0 to $([math]::Min($Logical, 64) - 1))" }
+  return $n
+}
+
+# The machine's physical cores and logical CPUs (Windows: every socket's).
+function Get-CpuCounts {
+  $p = @(Get-CimInstance Win32_Processor)
+  return [pscustomobject]@{ Cores = [int](($p | Measure-Object NumberOfCores -Sum).Sum); Logical = [int](($p | Measure-Object NumberOfLogicalProcessors -Sum).Sum) }
+}
+
+function Initialize-ThreadPinApi {
+  if ('EngineFrameBudget.ThreadPin' -as [type]) { return }
+  Add-Type -Namespace EngineFrameBudget -Name ThreadPin -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr OpenThread(uint access, bool inherit, uint id);
+[DllImport("kernel32.dll", SetLastError = true)] public static extern UIntPtr SetThreadAffinityMask(IntPtr thread, UIntPtr mask);
+[DllImport("kernel32.dll", SetLastError = true)] public static extern bool CloseHandle(IntPtr handle);
+'@
+}
+
+# Pins a just-started process's first thread to `Cpu`, before its first frame. Returns the pin's
+# record: Asked, Cpu, Thread, Applied, Held (every look since found the mask as set), Looks, Why.
+function Set-FrameThreadPin {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)] [System.Diagnostics.Process]$Process, [Parameter(Mandatory)] [int]$Cpu)
+  $pin = [pscustomobject]@{ Asked = $true; Cpu = $Cpu; Thread = 0; Applied = $false; Held = $false; Looks = 0; Why = ''; Handle = [IntPtr]::Zero }
+  try {
+    Initialize-ThreadPinApi
+    $first = $null
+    # The thread list can be empty for the first moments of a process: look again for up to 2 s.
+    for ($i = 0; $i -lt 100 -and $null -eq $first -and -not $Process.HasExited; $i++) {
+      $Process.Refresh()
+      $first = $Process.Threads | Sort-Object StartTime | Select-Object -First 1
+      if ($null -eq $first) { Start-Sleep -Milliseconds 20 }
+    }
+    if ($null -eq $first) { $pin.Why = 'the process had no thread to pin'; return $pin }
+    $pin.Thread = $first.Id
+    # THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION
+    $h = [EngineFrameBudget.ThreadPin]::OpenThread(0x0060, $false, [uint32]$first.Id)
+    if ($h -eq [IntPtr]::Zero) { $pin.Why = "OpenThread failed ($([Runtime.InteropServices.Marshal]::GetLastWin32Error()))"; return $pin }
+    $pin.Handle = $h
+    $old = [EngineFrameBudget.ThreadPin]::SetThreadAffinityMask($h, [UIntPtr]([uint64]1 -shl $Cpu))
+    if ($old -eq [UIntPtr]::Zero) { $pin.Why = "SetThreadAffinityMask failed ($([Runtime.InteropServices.Marshal]::GetLastWin32Error()))"; return $pin }
+    $pin.Applied = $true
+    $pin.Held = $true
+  } catch { $pin.Why = "$($_.Exception.Message)" }
+  return $pin
+}
+
+# A look during the flight: setting the same mask again returns the mask the thread had, so a look
+# that finds another mask says the pin did not hold (and sets it again). A look after the process
+# has gone is not counted.
+function Test-FrameThreadPin {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)] $Pin, [Parameter(Mandatory)] [System.Diagnostics.Process]$Process)
+  if (-not $Pin.Applied -or $Pin.Handle -eq [IntPtr]::Zero) { return }
+  $mask = [UIntPtr]([uint64]1 -shl $Pin.Cpu)
+  $old = [EngineFrameBudget.ThreadPin]::SetThreadAffinityMask($Pin.Handle, $mask)
+  if ($Process.HasExited) { return }
+  $Pin.Looks++
+  if ($old -ne $mask) { $Pin.Held = $false; $Pin.Why = "a look found the frame thread's mask at 0x{0:x}" -f [uint64]$old }
+}
+
+function Close-FrameThreadPin($Pin) {
+  if ($null -ne $Pin -and $Pin.Handle -ne [IntPtr]::Zero) { [void][EngineFrameBudget.ThreadPin]::CloseHandle($Pin.Handle); $Pin.Handle = [IntPtr]::Zero }
+}
+
+# The pin's words on a run's line.
+function Format-FramePin($Pin) {
+  if ($null -eq $Pin -or -not $Pin.Asked) { return 'frame thread free' }
+  if ($Pin.Applied -and $Pin.Held) { return "frame thread pinned to CPU $($Pin.Cpu), held ($($Pin.Looks) looks)" }
+  if ($Pin.Applied) { return "frame thread pinned to CPU $($Pin.Cpu), not held: $($Pin.Why)" }
+  return "frame thread could not be pinned to CPU $($Pin.Cpu): $($Pin.Why)"
+}
+
 # One line for a flight's modes, said beside the verdict and deciding nothing.
 function Format-CpuModes($Modes) {
   if ($null -eq $Modes) { return 'cpu_ms modes: no frame records' }
@@ -262,11 +366,14 @@ function Format-CpuModes($Modes) {
   `Session` is the summary's state (Get-SessionState) and `Compared` the baseline it was held to.
   `-Frames` (Read-FrameCpu) gives `Modes` (Get-CpuModes), which is said and never judged: the
   verdict and every row are what they are without it.
+  `-Pin` (Set-FrameThreadPin) is the flight's frame thread's pin: one that was asked for and could
+  not be applied, or did not hold, makes the flight inconclusive ('busy', fly it again) unless it is
+  already over on a quiet machine, which a free flight is too; it never flies free silently.
 #>
 function Test-FrameBudgetRun {
   [CmdletBinding()]
   param([Parameter(Mandatory)] $Budget, [Parameter(Mandatory)] $Run, [Parameter(Mandatory)] $Summary,
-        [AllowEmptyCollection()] [double[]]$Frames = @())
+        [AllowEmptyCollection()] [double[]]$Frames = @(), $Pin = $null)
   $device = if ($Summary.PSObject.Properties['device']) { "$($Summary.device)" } else { '' }
   $session = Get-SessionState -Summary $Summary
   $refusal = Get-ReconstructionRefusal -Summary $Summary
@@ -317,10 +424,15 @@ function Test-FrameBudgetRun {
              elseif (-not $over) { 'pass' }
              elseif ($quiet) { 'over' }
              else { 'busy' }
+  if ($null -ne $Pin -and $Pin.Asked) {
+    $state = "$state; $(Format-FramePin $Pin)"
+    if (-not ($Pin.Applied -and $Pin.Held) -and $verdict -in @('pass', 'busy')) { $verdict = 'busy'; $state += ': inconclusive, fly it again' }
+  }
   return [pscustomobject]@{
     Id = $Run.id; Verdict = $verdict; Device = $device; Session = $session
     Compared = "the $session baseline of $($set.baseline.date)"; Quiet = $quiet; Rows = $rows; Missing = $missing
     MachineState = $state; Modes = (Get-CpuModes -Frames $Frames)
+    Pin = $(if ($null -ne $Pin -and $Pin.Asked) { [pscustomobject]@{ Cpu = $Pin.Cpu; Thread = $Pin.Thread; Applied = $Pin.Applied; Held = $Pin.Held; Looks = $Pin.Looks; Why = $Pin.Why } } else { $null })
   }
 }
 
@@ -463,4 +575,5 @@ function Get-ReconstructionRefusal {
 Export-ModuleMember -Function Read-FrameBudget, Assert-FrameBudget, Get-FrameBudgetArgs, Get-FrameBudgetLimit,
   Test-FrameBudgetRun, Get-FrameBudgetExitCode, Format-FrameBudgetReport, Set-FrameBudgetBaseline, Format-MachineState,
   Get-ReconstructionRefusal, Get-SessionState, Get-SessionBudget, Format-RunSessions,
-  Read-FrameCpu, Get-CpuModes, Format-CpuModes
+  Read-FrameCpu, Get-CpuModes, Format-CpuModes, Get-FrameCpuChoice, Resolve-FrameCpu, Get-CpuCounts,
+  Set-FrameThreadPin, Test-FrameThreadPin, Close-FrameThreadPin, Format-FramePin
