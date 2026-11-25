@@ -45,6 +45,7 @@
 #include <systems/renderer/fire.h>
 #include <systems/renderer/frame_pass.h>
 #include <systems/renderer/gpu_scene.h>
+#include <systems/renderer/lighting.h>
 #include <systems/renderer/overlay.h>
 #include <systems/renderer/rt_capacity.h>
 #include <systems/renderer/shadow_cascades.h>
@@ -1364,6 +1365,9 @@ class SceneRenderer {
   // The frame's light grid's cells, built here and copied behind the slot's lights (R87): sized
   // once, `gfx::k_light_grid_words`, because the slot's buffer is written, not read back.
   Vector<u32> light_grid_cells_;
+  // The frame's lights (lighting.h), made again in place every frame (R217): a local would zero its
+  // 322-light array, 20 KiB, on every frame's entry, and nothing reads past its `light_count`.
+  FrameLighting frame_lighting_;
   // The scene's sky: its provider, tables and pipelines (sky.h), the last frame's state and block.
   SkyPass sky_;
   OverlayPass overlay_;

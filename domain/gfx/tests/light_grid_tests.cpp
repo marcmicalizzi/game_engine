@@ -307,3 +307,48 @@ TEST_CASE("light grid: a cell holding every light culls nothing there") {
   REQUIRE(build_light_grid(lamps, cells, grid));
   CHECK(light_grid_culls_at(grid, cells, Vec3{0.0f, 1.7f, 0.0f}));
 }
+
+// R217: the renderer skips the build where every light reaches the eye, because the grid would be
+// dropped by the test above. That skip has to be no wider than the drop: wherever it says every
+// light reaches, a grid built anyway holds every light in that point's cell.
+TEST_CASE("light grid: lights that all reach a point are a grid that culls nothing there") {
+  std::vector<u32> cells(k_light_grid_words);
+  // The stand-in's two lights (lighting.cpp): reaches of four scene radii round a scene of 400 m.
+  const f32 radius = 400.0f;
+  std::vector<ResolveLight> stand_in = {point({540.0f, 280.0f, 0.0f}, 4.0f * radius),
+                                        point({-540.0f, -140.0f, 0.0f}, 4.0f * radius)};
+  CHECK(light_grid_reaches_all(stand_in, Vec3{}));
+  LightGrid grid;
+  REQUIRE(build_light_grid(stand_in, cells, grid));
+  CHECK_FALSE(light_grid_culls_at(grid, cells, Vec3{}));
+  // A moon ahead of them is walked at every point and is no reason to build.
+  std::vector<ResolveLight> with_moon = {moon(), stand_in[0], stand_in[1]};
+  CHECK(light_grid_reaches_all(with_moon, Vec3{}));
+  // One light short of the point: build, and the grid may cull there.
+  std::vector<ResolveLight> short_of = {point({0.0f, 0.0f, 30.0f}, 20.0f), stand_in[0]};
+  CHECK_FALSE(light_grid_reaches_all(short_of, Vec3{}));
+  // No light with a reach, a directional light behind a finite one, a reach that is not finite:
+  // the build decides those, so the skip says no.
+  CHECK_FALSE(light_grid_reaches_all(std::vector<ResolveLight>{moon()}, Vec3{}));
+  CHECK_FALSE(light_grid_reaches_all(std::vector<ResolveLight>{stand_in[0], moon()}, Vec3{}));
+  CHECK_FALSE(light_grid_reaches_all(
+      std::vector<ResolveLight>{point({0.0f, 0.0f, 0.0f}, std::numeric_limits<f32>::infinity())},
+      Vec3{}));
+  // Random scenes: wherever the skip says yes at a point, the built grid culls nothing there.
+  std::mt19937 rng(217);
+  std::uniform_real_distribution<f32> at(-200.0f, 200.0f);
+  std::uniform_real_distribution<f32> reach(1.0f, 400.0f);
+  u32 yes = 0;
+  for (u32 trial = 0; trial < 400; ++trial) {
+    std::vector<ResolveLight> lights;
+    const u32 n = 1 + trial % 9;
+    for (u32 i = 0; i < n; ++i)
+      lights.push_back(point({at(rng), at(rng) * 0.1f, at(rng)}, reach(rng)));
+    const Vec3 eye{at(rng) * 0.25f, 1.7f, at(rng) * 0.25f};
+    if (!light_grid_reaches_all(lights, eye)) continue;
+    ++yes;
+    REQUIRE(build_light_grid(lights, cells, grid));
+    CHECK_FALSE(light_grid_culls_at(grid, cells, eye));
+  }
+  CHECK(yes > 20);
+}

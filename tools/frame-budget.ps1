@@ -108,7 +108,9 @@ $env:ENGINE_DEFAULT_MATERIALS = '0'
 $results = @()
 $summaries = @{}
 foreach ($r in $runs) {
-  $jsonl = Join-Path $Out "$($r.id).jsonl"
+  # A re-reading reads the records where they are and writes its report to -Out (T221: a kept
+  # flight is judged again without writing into the directory that keeps it).
+  $jsonl = Join-Path $(if ($FromSummaries) { $FromSummaries } else { $Out }) "$($r.id).jsonl"
   if (-not $FromSummaries) {
     Write-Host "== $($r.id)" -ForegroundColor Cyan
     # A run whose scene names files the tree does not commit says how to write them: `prepare` is
@@ -159,11 +161,14 @@ foreach ($r in $runs) {
     continue
   }
   $summaries[$r.id] = $summary
-  $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary
+  # The frame records beside the summary: the frame thread's median is judged by its fast mode
+  # (T221; tools/lib/FrameBudget.psm1, Get-CpuModes).
+  $frames = Read-FrameCpu -Path $jsonl
+  $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary -Frames $frames
   if ($AnyDevice -and $result.Verdict -eq 'device') {
     $saved = $plan.machine.device
     $plan.machine.device = $result.Device
-    $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary
+    $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary -Frames $frames
     $plan.machine.device = $saved
   }
   $results += $result
@@ -183,7 +188,8 @@ foreach ($r in $runs) {
     (Get-Measured $summary 'median'), (Get-Measured $summary 'p99'), [double]$set.gpu_ms.total.median, [double]$set.gpu_ms.total.p99, $result.Compared, $result.MachineState
   Write-Host $line -ForegroundColor $(if ($result.Verdict -eq 'pass') { 'Green' } elseif ($result.Verdict -eq 'busy') { 'Yellow' } else { 'Red' })
   foreach ($row in $overRows) {
-    Write-Host ('     over: {0} {1} {2:N3} ms, budget {3:N3}, limit {4:N3}' -f $row.Line, $row.Stat, $row.Measured, $row.Budget, $row.Limit) -ForegroundColor Red
+    $how = switch ($row.Judged) { 'fast' { ' (its fast mode)' } 'unsplit' { ' (the whole flight: modes not told apart, inconclusive)' } default { '' } }
+    Write-Host ('     over: {0} {1}{5} {2:N3} ms, budget {3:N3}, limit {4:N3}' -f $row.Line, $row.Stat, $row.Measured, $row.Budget, $row.Limit, $how) -ForegroundColor Red
   }
 }
 
@@ -212,7 +218,13 @@ if ($Rebaseline) {
       continue
     }
     # The flight's own session state's set, and only that one: the other state's stays as it was.
-    Set-FrameBudgetBaseline -Run $r -Summary $summaries[$r.id] -By $By -Reason $Reason -Commit $commit | Out-Null
+    $recordsAt = Join-Path $(if ($FromSummaries) { $FromSummaries } else { $Out }) "$($r.id).jsonl"
+    try {
+      Set-FrameBudgetBaseline -Run $r -Summary $summaries[$r.id] -By $By -Reason $Reason -Commit $commit -Frames (Read-FrameCpu -Path $recordsAt) | Out-Null
+    } catch {
+      Write-Warning "frame-budget: $($r.id) not re-baselined: $($_.Exception.Message)"
+      continue
+    }
     Write-Host "   $($r.id): the $($res.Session) baseline taken; the run now holds $(Format-RunSessions $r)" -ForegroundColor Cyan
     $changed++
   }

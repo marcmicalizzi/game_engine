@@ -93,7 +93,10 @@ through `cmd` or a Unix shell. In order:
    `-budgets-2`): within budget then is green, busy again (4 or 6) is **inconclusive**, over on a
    quiet machine is red. A 4 whose report names no busy run is red (the code and the report
    disagree). A quiet over is never flown again: a check is not retried into passing. Every flight
-   is in the verdict (`budgets.flights`).
+   is in the verdict (`budgets.flights`). Since T221 the frame thread's `cpu_ms` median is judged by
+   its **fast mode**, the slow share said on the run's line, so a slow mode the machine drew cannot
+   turn a run red; a share over 60 % judges the whole median and makes an over `busy`, flown again
+   like any busy run ([bench](../subsystems/bench.md), "The frame thread's two modes").
 6. **The integrity read, the litter check, the tree check, the summary**, and
    `<batch>-gate.verdict.json`: green, the tip it judged, each leg's verdict, every build attempt,
    every second look, every fault, and **each step's state and source** (`states`, `sources`,

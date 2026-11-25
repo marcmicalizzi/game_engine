@@ -184,4 +184,25 @@ bool light_grid_culls_at(const LightGrid& grid, std::span<const u32> cells,
   return set < grid.count - grid.first;
 }
 
+bool light_grid_reaches_all(std::span<const ResolveLight> lights, Vec3 position) noexcept {
+  const u32 n = static_cast<u32>(lights.size());
+  u32 first = 0;
+  while (first < n && directional(lights[first]))
+    ++first;
+  if (first == n) return false;
+  const f64 at[3] = {static_cast<f64>(position.x), static_cast<f64>(position.y),
+                     static_cast<f64>(position.z)};
+  for (u32 i = first; i < n; ++i) {
+    if (directional(lights[i]) || !finite(lights[i])) return false;
+    // The builder's own reach and arithmetic: a cell is marked when its box is within the reach
+    // and a margin of the light, and the box holding `position` is no farther than `position` is.
+    const f64 r = base_reach(lights[i]);
+    const f64 d[3] = {static_cast<f64>(lights[i].position_radius.x) - at[0],
+                      static_cast<f64>(lights[i].position_radius.y) - at[1],
+                      static_cast<f64>(lights[i].position_radius.z) - at[2]};
+    if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > r * r) return false;
+  }
+  return true;
+}
+
 }  // namespace engine::gfx

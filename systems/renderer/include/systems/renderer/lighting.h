@@ -146,6 +146,9 @@ struct FrameLighting {
   // rgb: the ground's albedo, `SceneData::ground_albedo` — the hemisphere's lower half is this
   // ground lit by `sun` and `sky` (gfx::ResolveParams::ground, PathTraceParams::ground). w unused.
   Vec4 ground{};
+  // The first `light_count` are the frame's; **the rest are unspecified** once a `frame_lighting`
+  // has made the struct again in place (R217: it resets the lights it writes, not the 20 KiB
+  // array), so every reader stops at `light_count`. A field added here is reset in lighting.cpp.
   gfx::ResolveLight lights[k_frame_lights];
   u32 light_count = 0;
   // How far a ray leaves a surface along its geometric normal: `shadow_bias` world units plus
