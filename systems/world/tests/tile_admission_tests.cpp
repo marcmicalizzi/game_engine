@@ -418,7 +418,7 @@ struct Room {
       if (h.mesh == mesh) return &h;
     return nullptr;
   }
-  static bool fits(void* c, u32, u32) {
+  static bool fits(void* c, u32, u32, u64, u64) {
     const auto* self = static_cast<const Room*>(c);
     return self->held.size() < self->most;
   }

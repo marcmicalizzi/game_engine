@@ -44,7 +44,12 @@ namespace engine::world {
 // renderer, which then counts the room itself (`TileMeshConfig::clusters`).
 struct TileMeshSink {
   void* context = nullptr;
-  bool (*fits)(void* context, u32 clusters, u32 materials) = nullptr;
+  // A mesh of `clusters` and `materials` fits beside `reserved_*`, what meshes nearer in this
+  // commit's order hold while they are built again (R218): the mesh is asked of the room alone —
+  // its own run, its own limit — and the reservations only of the room's free total, never of a
+  // limit one mesh has.
+  bool (*fits)(void* context, u32 clusters, u32 materials, u64 reserved_clusters,
+               u64 reserved_materials) = nullptr;
   bool (*admit)(void* context, u32 mesh, const renderer::PlacementMeshData& data,
                 std::string* error) = nullptr;
   void (*retire)(void* context, u32 mesh) = nullptr;
@@ -95,6 +100,8 @@ struct TileMeshStats {
   u32 clusters = 0;    // the resident meshes' clusters, of `TileMeshConfig::clusters`
   u64 bytes = 0;       // those clusters' reserved device bytes
   u64 host_bytes = 0;  // the waiting meshes' streams in host memory
+  // Held by shelved meshes being built again, until they are in (W51-5b).
+  u64 reserved_clusters = 0;
   // Over the run.
   u64 builds = 0;    // meshes built or found in the cache, the shelved ones' second builds included
   u64 rebuilds = 0;  // of those, shelved meshes built again because the room could take them
@@ -202,6 +209,7 @@ class TileMeshes {
   void release_textures(Entry& entry);
   bool room_for(const Entry& entry) const;
   void reserve(Entry& entry, bool on) noexcept;
+  void count_reserved(Entry& entry) noexcept;
 
   renderer::PlacementMeshOptions options_;
   TileMeshConfig config_;
@@ -211,9 +219,13 @@ class TileMeshes {
   Vector<u32> free_;                        // free slots, the lowest last
   FlatMap<u64, u32> by_identity_;
   u32 used_clusters_ = 0;  // a host with no sink counts the room itself
-  // What the shelved meshes being built again hold of the room until they are in (W51-5b).
+  // What the shelved meshes being built again hold of the room until they are in (W51-5b), and the
+  // part of it held by meshes already asked this commit — the nearer ones, since a commit asks in
+  // the pair budget's order — which is all a mesh is asked against (R218).
   u64 reserved_clusters_ = 0;
   u64 reserved_materials_ = 0;
+  u64 asked_reserved_clusters_ = 0;
+  u64 asked_reserved_materials_ = 0;
   bool whole_ = true;
   u32 commit_admissions_ = 0;
   u64 commit_bytes_ = 0;

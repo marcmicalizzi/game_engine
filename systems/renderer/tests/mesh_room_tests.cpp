@@ -487,6 +487,34 @@ TEST_CASE("mesh room: the room's refusal names its bound and changes nothing") {
     CHECK(rig.scene.mesh_use().meshes == 0);
   }
   {
+    // R218: what other meshes being built again reserve is held to the room's free total, never to
+    // the limit one mesh has. An empty room whose meshes may each be one rock takes a rock beside
+    // three rocks' reservations, and refuses one beside reservations of every free cluster.
+    REQUIRE(tunables::apply_overrides("renderer.meshes.max_clusters=4096"));
+    PlacementMeshData built;
+    {
+      Rig rig;  // the rock's clusters, under the scene's own options
+      REQUIRE_MESSAGE(rig.build(gpu.device, describe(tmp, false), plain(), true), rig.error);
+      REQUIRE_MESSAGE(load_placement_mesh(rock(2), rig.data.mesh_options, built, rig.error),
+                      rig.error);
+    }
+    const u32 clusters = built.lod.mesh.clusters.size();
+    const u32 materials = GpuScene::mesh_materials(built);
+    REQUIRE(tunables::apply_overrides("renderer.meshes.max_clusters=" + std::to_string(clusters)));
+    Rig one;
+    REQUIRE_MESSAGE(one.build(gpu.device, describe(tmp, false), plain(), true), one.error);
+    const GpuScene::MeshRoom room = one.scene.mesh_room();
+    REQUIRE(room.max_clusters == clusters);
+    REQUIRE(room.clusters > 4 * clusters);
+    CHECK(one.scene.mesh_fits(clusters, materials, 3u * clusters, 3u * materials));
+    CHECK_FALSE(one.scene.mesh_fits(clusters, materials, room.clusters - clusters + 1, 0));
+    CHECK_FALSE(one.scene.mesh_fits(clusters, materials, 0, room.materials - materials + 1));
+    // Resident meshes count too: with one in, the same reservations of every other free cluster.
+    REQUIRE_MESSAGE(one.renderer.admit_mesh(room.first_mesh, built, &one.error), one.error);
+    CHECK(one.scene.mesh_fits(clusters, materials, room.clusters - 2 * clusters, 0));
+    CHECK_FALSE(one.scene.mesh_fits(clusters, materials, room.clusters - 2 * clusters + 1, 0));
+  }
+  {
     // A scene none of whose generators hands a mesh with a tile reserves nothing, and says so.
     Rig rig;
     SceneDesc desc = describe(tmp, false);

@@ -1496,8 +1496,10 @@ class GpuScene {
     u64 staged_bytes = 0;  // copied onto the device by admissions, over the run
   };
   MeshUse mesh_use() const noexcept;
-  // Whether a mesh of this many clusters and materials has room now (a slot is the caller's).
-  bool mesh_fits(u32 clusters, u32 materials) const noexcept;
+  // Whether a mesh of this many clusters and materials has room now (a slot is the caller's),
+  // beside what other meshes being built again reserve of the room's free total (R218).
+  bool mesh_fits(u32 clusters, u32 materials, u64 reserved_clusters = 0,
+                 u64 reserved_materials = 0) const noexcept;
   // How many material table entries a mesh takes: its materials and the default after them.
   static u32 mesh_materials(const PlacementMeshData& mesh) noexcept {
     return mesh.source.data.materials.size() + 1u;

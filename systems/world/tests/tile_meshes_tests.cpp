@@ -58,9 +58,11 @@ struct Recorder {
       if (h.mesh == mesh) return &h;
     return nullptr;
   }
-  static bool fits(void* context, u32 mesh_clusters, u32) {
+  // The mesh and what nearer meshes being built again reserve, against the clusters it holds.
+  static bool fits(void* context, u32 mesh_clusters, u32, u64 reserved, u64) {
     const auto* self = static_cast<const Recorder*>(context);
-    return u64{self->clusters} + mesh_clusters <= self->room && self->held.size() < self->most;
+    return u64{self->clusters} + reserved + mesh_clusters <= self->room &&
+           self->held.size() < self->most;
   }
   static bool admit(void* context, u32 mesh, const renderer::PlacementMeshData& data,
                     std::string* error) {
@@ -782,5 +784,90 @@ TEST_CASE("tile meshes: built on the job system, a tile waits and no tail names 
       drawn += placements.tile_instances(TileCoord{-4 + dx, z}).size() == 2;
   }
   CHECK(drawn == 9);
+  CHECK(told.violations == 0);
+}
+
+// R218 (world.md, "A tile's meshes: residency by reference", the budget and what is withheld): a
+// room with room admits the nearest waiting tile's mesh, whatever a farther tile's mesh being built
+// again holds. Textured rocks, one of the room's worth and a half (never two): filled standing at
+// the field's middle, the eye flown away until the room is empty, then walked back across it a tile
+// at a time. On the owner's walk of the forest (2026-11-24) the room went on refusing with nothing
+// in it: a shelved mesh built again reserves its room (W51-5b), the reservation was counted against
+// every mesh asked, nearer ones included, and once its texture had started it was kept whenever a
+// nearer refusal came first in a commit — which that very reservation caused, every commit after.
+// The case counts, commit by commit, those where every waiting tile is withheld (the nearest
+// included) while the room's resident meshes leave room for a rock.
+TEST_CASE("tile meshes: a room with room admits the nearest waiting tile's mesh") {
+  test::TempDir tmp{"engine_world_tile_meshes_room"};
+  const renderer::SceneData scene = scene_of(tmp, R"({"reach":4,"n":10,"look":1,"sets":25})");
+  u32 least = ~0u;
+  u32 most = 0;
+  {
+    Recorder told;
+    PlacementTiles placements;
+    PlacementTilesConfig config;
+    config.ring_count = 1;
+    std::string error;
+    REQUIRE_MESSAGE(placements.create(scene, config, &error), error);
+    placements.set_meshes(room(32, 1u << 20, 0), told.sink());
+    placements.set_run_sink(&Recorder::runs, &told);
+    World world(ring(1.5f));
+    add_scene_consumers(world, nullptr, &placements);
+    for (u64 tick = 0; tick < 2; ++tick)
+      step(world, placements, at(0, 0), tick);
+    REQUIRE(told.held.size() == 9);
+    for (const Recorder::Held& h : told.held) {
+      least = std::min(least, h.clusters);
+      most = std::max(most, h.clusters);
+    }
+  }
+  REQUIRE(least > 0);
+  TexturedRoom told;
+  told.room = most + most / 2;
+  REQUIRE(2 * least > told.room);  // one rock at a time
+  PlacementTiles placements;
+  PlacementTilesConfig config;
+  config.ring_count = 1;
+  std::string error;
+  REQUIRE_MESSAGE(placements.create(scene, config, &error), error);
+  TileMeshConfig meshes = room(32, 1u << 20, 0);
+  meshes.admissions = 0;
+  meshes.admission_bytes = 1500;  // a 32 x 32 map (1,392 staged bytes) fills a commit
+  placements.set_meshes(meshes, told.textured_sink());
+  placements.set_run_sink(&Recorder::runs, &told);
+  World world(ring(1.5f));
+  add_scene_consumers(world, nullptr, &placements);
+  const struct {
+    f64 x;
+    u32 commits;
+  } path[] = {{0, 12}, {40, 6}, {0, 12}, {1, 2}, {2, 24}, {3, 2}, {2, 3}, {1, 24}, {0, 24}};
+  u64 tick = 0;
+  u32 commits = 0;
+  u32 spare_withheld = 0;  // every waiting tile withheld while the room has room for a rock
+  u32 empty_withheld = 0;  // the same with nothing in the room
+  u32 drawn_last = 0;
+  std::string trace;
+  for (const auto& leg : path) {
+    trace += "\n x=" + std::to_string(static_cast<i32>(leg.x)) + ":";
+    for (u32 c = 0; c < leg.commits; ++c) {
+      step(world, placements, at(leg.x, 0), tick++, 64);
+      ++commits;
+      const PlacementTilesStats& p = placements.stats();
+      const bool all_withheld = p.mesh_waiting != 0 && p.mesh_starved == p.mesh_waiting;
+      const bool spare = told.room - told.clusters >= most;
+      spare_withheld += all_withheld && spare ? 1u : 0u;
+      empty_withheld += all_withheld && told.held.empty() ? 1u : 0u;
+      trace += " " + std::to_string(told.held.size()) + "/" + std::to_string(p.mesh_starved) + "/" +
+               std::to_string(p.mesh_waiting);
+    }
+    drawn_last =
+        static_cast<u32>(placements.tile_instances(TileCoord{static_cast<i32>(leg.x), 0}).size());
+  }
+  MESSAGE("resident/withheld/waiting a commit:" << trace);
+  MESSAGE(commits << " commits; every waiting tile withheld with room for a rock: "
+                  << spare_withheld << ", with the room empty: " << empty_withheld);
+  CHECK(spare_withheld == 0);
+  CHECK(empty_withheld == 0);
+  CHECK(drawn_last == 2);  // the walk's last tile draws its rock
   CHECK(told.violations == 0);
 }

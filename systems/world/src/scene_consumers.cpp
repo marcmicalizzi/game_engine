@@ -6,8 +6,10 @@ namespace engine::world {
 
 namespace {
 
-bool mesh_fits(void* context, u32 clusters, u32 materials) {
-  return static_cast<renderer::SceneRenderer*>(context)->scene().mesh_fits(clusters, materials);
+bool mesh_fits(void* context, u32 clusters, u32 materials, u64 reserved_clusters,
+               u64 reserved_materials) {
+  return static_cast<renderer::SceneRenderer*>(context)->scene().mesh_fits(
+      clusters, materials, reserved_clusters, reserved_materials);
 }
 bool mesh_admit(void* context, u32 mesh, const renderer::PlacementMeshData& data,
                 std::string* error) {

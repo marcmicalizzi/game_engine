@@ -476,7 +476,9 @@ namespace {
 // A room of three meshes, whatever their clusters, for the tile rocks.
 struct ThreeRocks {
   u32 held = 0;
-  static bool fits(void* context, u32, u32) { return static_cast<ThreeRocks*>(context)->held < 3; }
+  static bool fits(void* context, u32, u32, u64, u64) {
+    return static_cast<ThreeRocks*>(context)->held < 3;
+  }
   static bool admit(void* context, u32, const renderer::PlacementMeshData&, std::string*) {
     ++static_cast<ThreeRocks*>(context)->held;
     return true;

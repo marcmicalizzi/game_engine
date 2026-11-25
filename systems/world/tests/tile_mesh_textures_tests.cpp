@@ -56,7 +56,7 @@ struct Scene {
     }
     ++violations;
   }
-  static bool fits(void*, u32, u32) { return true; }
+  static bool fits(void*, u32, u32, u64, u64) { return true; }
   static bool admit(void* context, u32 mesh, const renderer::PlacementMeshData& data,
                     std::string*) {
     auto* self = static_cast<Scene*>(context);

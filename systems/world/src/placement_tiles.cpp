@@ -1498,6 +1498,7 @@ void PlacementTiles::admit_meshes() {
         log::field("room_clusters", meshes_.config().clusters),
         log::field("resident_mib", static_cast<f64>(held.bytes) / (1024.0 * 1024.0)),
         log::field("shelved_meshes", held.shelved),
+        log::field("reserved_clusters", held.reserved_clusters),
         log::field("waiting_host_mib", static_cast<f64>(held.host_bytes) / (1024.0 * 1024.0)));
   }
 }
