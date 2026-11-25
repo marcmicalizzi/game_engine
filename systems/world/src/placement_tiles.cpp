@@ -1426,7 +1426,13 @@ void PlacementTiles::admit_meshes() {
       TileMeshes::Admit result =
           full && !meshes_.resident(slot) ? TileMeshes::Admit::no_room : meshes_.admit(slot);
       while (result == TileMeshes::Admit::no_room && !full) {
-        if (!meshes_.evict_lingering() && !yield_farthest(rank)) break;
+        // What nobody names, then a farther mesh's reservation (R218: nothing drawn changes), then
+        // a farther tile's resident meshes: the head of the order waits only for what nearer tiles
+        // hold.
+        if (!meshes_.evict_lingering() && !meshes_.release_farther_reservation() &&
+            !yield_farthest(rank)) {
+          break;
+        }
         result = meshes_.admit(slot);
       }
       if (result == TileMeshes::Admit::failed) {

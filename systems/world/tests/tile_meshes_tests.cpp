@@ -866,6 +866,8 @@ TEST_CASE("tile meshes: a room with room admits the nearest waiting tile's mesh"
   MESSAGE("resident/withheld/waiting a commit:" << trace);
   MESSAGE(commits << " commits; every waiting tile withheld with room for a rock: "
                   << spare_withheld << ", with the room empty: " << empty_withheld);
+  MESSAGE("reservations a nearer rock took from a farther one: "
+          << placements.meshes().stats().reservations_taken);
   CHECK(spare_withheld == 0);
   CHECK(empty_withheld == 0);
   CHECK(drawn_last == 2);  // the walk's last tile draws its rock

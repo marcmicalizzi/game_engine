@@ -73,7 +73,6 @@ struct TileMeshes::Entry {
   bool reserved = false;
   u32 reserved_clusters = 0;
   u32 reserved_materials = 0;
-  u64 counted = 0;  // the commit whose asked reservations hold its own (R218)
   // Its textures (R147): how many of `data.textures` are in the scene, and the references the
   // table holds on them until the mesh is admitted and holds its own.
   u32 textures_in = 0;
@@ -124,8 +123,6 @@ void TileMeshes::create(const renderer::PlacementMeshOptions& options, const Til
   used_clusters_ = 0;
   reserved_clusters_ = 0;
   reserved_materials_ = 0;
-  asked_reserved_clusters_ = 0;
-  asked_reserved_materials_ = 0;
   whole_ = true;
   commit_admissions_ = 0;
   commit_bytes_ = 0;
@@ -314,33 +311,20 @@ void TileMeshes::begin_commit(bool whole) {
   whole_ = whole;
   commit_admissions_ = 0;
   commit_bytes_ = 0;
-  asked_reserved_clusters_ = 0;
-  asked_reserved_materials_ = 0;
   collect(whole);
 }
 
-// The room asked for `entry` beside the reservations of the meshes asked before it this commit,
-// less its own: a shelved mesh built again holds what it was asked for until it is in or let go,
-// and an admission is asked against what is left (W51-5b) — **of the nearer meshes only** (R218).
-// A commit asks in the pair budget's order, so what was asked before a mesh this commit is what a
-// nearer tile wants. Until R218 every reservation counted against every mesh, and a farther tile's
-// mesh built again — once its first texture was in, kept by `withhold` whenever a nearer refusal
-// came first in a commit, and never asked again — held the nearer mesh out with nothing in the
-// room: its reservation was the refusal, every commit after (the owner's walk of the forest,
-// 2026-11-24: the room empty and 240 tiles withheld). Now the head of the order is refused only for
-// what nearer tiles hold, resident or reserved, after every farther tile has yielded: nothing
-// farther can starve it. A farther reservation the nearer mesh's admission overtakes is refused at
-// its own next ask and shelved again — a build wasted, never a stall.
+// The room asked for `entry` beside every other reservation, less its own: a shelved mesh built
+// again holds what it was asked for until it is in or let go, and every admission is asked against
+// what is left (W51-5b). **The mesh and the reservations go to the sink apart** (R218): the sum
+// used to be handed over as one mesh's count, which the renderer held to `max_clusters` and to one
+// run, so two large meshes built again (a forest tree is about 1,850 clusters) refused a third in
+// an empty room.
 bool TileMeshes::room_for(const Entry& entry) const {
-  const bool own = entry.counted == commit_;
-  const u64 clusters = asked_reserved_clusters_ - (own ? entry.reserved_clusters : 0u);
-  const u64 materials = asked_reserved_materials_ - (own ? entry.reserved_materials : 0u);
-  if (sink_.fits != nullptr) {
-    // The mesh alone in the room's terms, and the reservations beside it as a total: the sum used
-    // to be handed over as one mesh's count, which the renderer held to `max_clusters` and to one
-    // run, so two large meshes built again refused a third in an empty room.
+  const u64 clusters = reserved_clusters_ - entry.reserved_clusters;
+  const u64 materials = reserved_materials_ - entry.reserved_materials;
+  if (sink_.fits != nullptr)
     return sink_.fits(sink_.context, entry.clusters, entry.materials, clusters, materials);
-  }
   return u64{used_clusters_} + clusters + entry.clusters <= config_.clusters;
 }
 
@@ -352,30 +336,52 @@ void TileMeshes::reserve(Entry& entry, bool on) noexcept {
     entry.reserved_materials = entry.materials;
     reserved_clusters_ += entry.clusters;
     reserved_materials_ += entry.materials;
-    // Reserved as it is asked: the farther meshes of this commit are asked beside it.
-    if (in_commit_ && entry.asked == commit_) count_reserved(entry);
   } else {
     reserved_clusters_ -= entry.reserved_clusters;
     reserved_materials_ -= entry.reserved_materials;
-    if (entry.counted == commit_) {
-      asked_reserved_clusters_ -= entry.reserved_clusters;
-      asked_reserved_materials_ -= entry.reserved_materials;
-    }
-    entry.counted = 0;
     entry.reserved_clusters = 0;
     entry.reserved_materials = 0;
   }
   stats_.reserved_clusters = reserved_clusters_;
 }
 
-// A reservation the meshes asked after `entry` this commit are asked beside, counted once a commit.
-void TileMeshes::count_reserved(Entry& entry) noexcept {
-  if (!entry.reserved || entry.counted == commit_) return;
-  entry.counted = commit_;
-  asked_reserved_clusters_ += entry.reserved_clusters;
-  asked_reserved_materials_ += entry.reserved_materials;
+// **A nearer mesh takes a farther one's reservation** (R218; world.md, "A withheld mesh is let go
+// and built again"). A commit asks in the pair budget's order, so a reservation held by a mesh not
+// yet asked this commit is a farther tile's (or one no waiting tile asks for). Until R218 such a
+// reservation held the nearer mesh out with nothing in the room: a farther mesh built again, once
+// its first texture was in, was kept by `withhold` whenever a nearer refusal came first in a
+// commit, and never asked again, while the nearer mesh was refused for its reservation — every
+// commit after (the owner's walk of the forest, 2026-11-24: the room empty and 240 tiles withheld).
+// The caller asks this after the lingering meshes and before it yields a farther tile's resident
+// meshes (a reservation is of nothing drawn), so the head of the order is refused only for what
+// nearer tiles hold, resident or reserved: nothing farther can starve it. The one let go is shelved
+// again (its streams and textures given back), or, still building, keeps its build and loses only
+// the room; either way it is asked again in its turn.
+bool TileMeshes::release_farther_reservation() {
+  u32 chosen = k_none;
+  for (u32 slot = 0; slot < entries_.size(); ++slot) {
+    const Entry* entry = entries_[slot].get();
+    if (entry == nullptr || !entry->reserved || entry->asked == commit_) continue;
+    // The largest first: the fewest builds undone for the room asked.
+    if (chosen == k_none || entry->reserved_clusters > entries_[chosen]->reserved_clusters)
+      chosen = slot;
+  }
+  if (chosen == k_none) return false;
+  Entry& entry = *entries_[chosen];
+  reserve(entry, false);
+  ++stats_.reservations_taken;
+  if (entry.collected && entry.state.load(std::memory_order_acquire) == State::built &&
+      !entry.shelved) {
+    release_textures(entry);
+    entry.textures_in = 0;
+    entry.data = renderer::PlacementMeshData{};
+    entry.shelved = true;
+    --stats_.waiting;
+    stats_.host_bytes -= entry.payload;
+    ++stats_.shelved;
+  }
+  return true;
 }
-
 void TileMeshes::release_textures(Entry& entry) {
   if (sink_.release_texture != nullptr) {
     for (const u64 key : entry.held)
@@ -446,7 +452,6 @@ TileMeshes::Admit TileMeshes::admit(u32 slot) {
   if (slot >= entries_.size() || entries_[slot] == nullptr) return Admit::failed;
   Entry& entry = *entries_[slot];
   entry.asked = commit_;
-  count_reserved(entry);  // a nearer mesh's reservation, for the meshes asked after it
   if (!entry.collected) return Admit::not_ready;
   const State now = entry.state.load(std::memory_order_acquire);
   if (now == State::resident) return Admit::done;

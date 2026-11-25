@@ -44,10 +44,9 @@ namespace engine::world {
 // renderer, which then counts the room itself (`TileMeshConfig::clusters`).
 struct TileMeshSink {
   void* context = nullptr;
-  // A mesh of `clusters` and `materials` fits beside `reserved_*`, what meshes nearer in this
-  // commit's order hold while they are built again (R218): the mesh is asked of the room alone —
-  // its own run, its own limit — and the reservations only of the room's free total, never of a
-  // limit one mesh has.
+  // A mesh of `clusters` and `materials` fits beside `reserved_*`, what other meshes hold while
+  // they are built again (R218): the mesh is asked of the room alone — its own run, its own limit —
+  // and the reservations only of the room's free total, never of a limit one mesh has.
   bool (*fits)(void* context, u32 clusters, u32 materials, u64 reserved_clusters,
                u64 reserved_materials) = nullptr;
   bool (*admit)(void* context, u32 mesh, const renderer::PlacementMeshData& data,
@@ -119,6 +118,8 @@ struct TileMeshStats {
   // texture progress, kept rather than let go when a farther tile's ticket was kept from asking.
   u64 kept_asked = 0;
   u64 kept_textures = 0;
+  // Reservations a nearer mesh took from a farther one (R218).
+  u64 reservations_taken = 0;
   u64 failures = 0;  // meshes that could not be built
   // Their textures (R147), over the run: the ones a commit uploaded and their staged bytes, the
   // ones a mesh found in the scene already, and the meshes that draw their constants because a
@@ -189,6 +190,10 @@ class TileMeshes {
   void withhold(u32 slot);
   // Retires one resident mesh no held tile names, the longest unnamed first. False: there is none.
   bool evict_lingering();
+  // **A nearer mesh takes a farther one's reservation** (R218): the largest reservation of a mesh
+  // not asked this commit — a farther tile's, since a commit asks nearest first — is let go, and
+  // the mesh shelved again (or, still building, keeps its build). False: there is none.
+  bool release_farther_reservation();
   // After the tail has been handed on (nothing names a mesh this retires): every mesh unnamed for
   // `linger` commits goes, and every entry nobody names that never became resident.
   void end_commit();
@@ -209,7 +214,6 @@ class TileMeshes {
   void release_textures(Entry& entry);
   bool room_for(const Entry& entry) const;
   void reserve(Entry& entry, bool on) noexcept;
-  void count_reserved(Entry& entry) noexcept;
 
   renderer::PlacementMeshOptions options_;
   TileMeshConfig config_;
@@ -219,13 +223,9 @@ class TileMeshes {
   Vector<u32> free_;                        // free slots, the lowest last
   FlatMap<u64, u32> by_identity_;
   u32 used_clusters_ = 0;  // a host with no sink counts the room itself
-  // What the shelved meshes being built again hold of the room until they are in (W51-5b), and the
-  // part of it held by meshes already asked this commit — the nearer ones, since a commit asks in
-  // the pair budget's order — which is all a mesh is asked against (R218).
+  // What the shelved meshes being built again hold of the room until they are in (W51-5b).
   u64 reserved_clusters_ = 0;
   u64 reserved_materials_ = 0;
-  u64 asked_reserved_clusters_ = 0;
-  u64 asked_reserved_materials_ = 0;
   bool whole_ = true;
   u32 commit_admissions_ = 0;
   u64 commit_bytes_ = 0;
