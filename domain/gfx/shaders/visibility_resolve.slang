@@ -2147,25 +2147,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
           color += lit;
           continue;
         }
-        if (i < directional) {  // traced as below, uncounted
-          float3 lit = brdf_direct(surface, light_dir, radiance);
-          if (foliage) lit = foliage_direct(material, surface, light_dir, radiance, lit);
-          const float v = weigh && max(lit.r, max(lit.g, lit.b)) <= rest
-                              ? sun_visibility
-                              : shadow_visibility(params, k_shadow_lights, i + 1u, s.position,
-                                                  foliage ? ray_side(s.geometric, light_dir)
-                                                          : s.geometric,
-                                                  ray_bias, light_dir,
-                                                  light_distance - ray_bias - lights[i].spot.z);
-          if (v >= 1.0) {
-            color += lit;
-          } else if (v > 0.0) {
-            float3 shaded = brdf_direct(surface, light_dir, radiance * v);
-            if (foliage) shaded = foliage_direct(material, surface, light_dir, radiance * v, shaded);
-            color += shaded;
-          }
-          continue;
-        }
+        if (i < directional) continue;  // traced in the second walk, uncounted
         const float w = light_cap_weight(radiance, surface.normal, light_dir);
         total_w += w;
         candidates += 1u;
@@ -2206,18 +2188,22 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
                       : dot(surface.normal, light_dir) > 0.0)) {
           continue;  // added in the first walk
         }
-        if (i < directional) continue;  // traced in the first walk
         const float w = light_cap_weight(radiance, surface.normal, light_dir);
         float3 lit = brdf_direct(surface, light_dir, radiance);
         if (foliage) lit = foliage_direct(material, surface, light_dir, radiance, lit);
         float v;
-        if (light_cap_key(w, i) >= cut) {
+        // A directional light is traced as below (unless too faint to test) and not counted; one
+        // call of the shadow query for both, since every call is the ray query's whole loop inlined.
+        const bool faint = weigh && max(lit.r, max(lit.g, lit.b)) <= rest;
+        if (i < directional ? !faint : light_cap_key(w, i) >= cut) {
           v = shadow_visibility(params, k_shadow_lights, i + 1u, s.position,
                                 foliage ? ray_side(s.geometric, light_dir) : s.geometric, ray_bias,
                                 light_dir, light_distance - ray_bias - lights[i].spot.z);
-          traced_w += w;
-          found_w += w * v;
-        } else if (weigh && max(lit.r, max(lit.g, lit.b)) <= rest) {
+          if (i >= directional) {
+            traced_w += w;
+            found_w += w * v;
+          }
+        } else if (faint) {
           v = sun_visibility;  // too faint to test, as below
         } else {
           untraced += lit;  // at the fill, below
