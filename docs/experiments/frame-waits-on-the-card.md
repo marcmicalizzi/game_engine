@@ -89,7 +89,7 @@ The standing pose alone (960 frames over its 30 s, read from frame 60), one view
 
 ## 3. The pass labels
 
-The render graph labelled no pass for a capture: a Vulkan capture saw command buffers and draws, never the graph's passes. `RenderGraph::set_labels` (behind `renderer.graph.labels`, false) now wraps every pass in a `VK_EXT_debug_utils` label of its name, `stats().labels` counts them, and a gfx case holds the count to the passes ([bench](../subsystems/bench.md#the-frames-gpu-metrics-by-pass) has the detail). **What it costs**: *(the pair below)*.
+The render graph labelled no pass for a capture: a Vulkan capture saw command buffers and draws, never the graph's passes. `RenderGraph::set_labels` (behind `renderer.graph.labels`, false) now wraps every pass in a `VK_EXT_debug_utils` label of its name, `stats().labels` counts them, and a gfx case holds the count to the passes ([bench](../subsystems/bench.md#the-frames-gpu-metrics-by-pass) has the detail). **What it costs** (this row's release build, the standing pose, 960 frames, the labels on and off flown alternately after a first load not read, 23:40 to 23:59): the GPU frame 16.88 and 16.89 ms with the labels, 16.91, 16.88 and 17.11 without; the recording's CPU (`cpu.record`, its 10th percentile, the CPU figure being two-moded on this machine) 0.24 and 0.25 ms with them, 0.26 and 0.28 without. So nothing measurable either way: a label is two commands a pass. Main's binary flew the same pose at 17.11 and 17.16 half an hour earlier, inside the same spread.
 
 
 ## 4. The owner's one run, prepared and not run
