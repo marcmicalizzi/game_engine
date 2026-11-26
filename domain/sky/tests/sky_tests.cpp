@@ -291,6 +291,10 @@ struct AlmanacCase {
   f64 sun_azimuth;    // JPL Horizons (DE441), airless apparent, topocentric, degrees
   f64 sun_elevation;  // degrees
   f64 moon_lit;       // Horizons' Illu%, as a fraction
+  f64 moon_azimuth;   // topocentric, airless, degrees
+  f64 moon_elevation;
+  f64 moon_ra;  // geocentric apparent, of date, degrees
+  f64 moon_dec;
 };
 
 }  // namespace
@@ -301,9 +305,12 @@ TEST_CASE("sky: the civil form's sun and moon against an almanac at three places
   // a March morning on AEDT, whose UT is still the day before; Tromso at the June solstice under
   // the midnight sun, four degrees over the northern horizon.
   const AlmanacCase cases[] = {
-      {"Toronto", 43.65, -79.38, 2025, 7, 15, 15.0, -4.0, 229.673850, 60.076466, 0.7482665},
-      {"Sydney", -33.87, 151.21, 2025, 3, 10, 10.0, 11.0, 65.825220, 37.687365, 0.8235261},
-      {"Tromso", 69.65, 18.96, 2025, 6, 21, 23.5, 2.0, 342.550866, 4.084453, 0.1727881},
+      {"Toronto", 43.65, -79.38, 2025, 7, 15, 15.0, -4.0, 229.673850, 60.076466, 0.7482665,
+       313.105847, -38.479259, 354.80019, -1.78727},
+      {"Sydney", -33.87, 151.21, 2025, 3, 10, 10.0, 11.0, 65.825220, 37.687365, 0.8235261,
+       175.172734, -80.747231, 123.22740, 24.49926},
+      {"Tromso", 69.65, 18.96, 2025, 6, 21, 23.5, 2.0, 342.550866, 4.084453, 0.1727881, 31.522782,
+       0.849299, 38.22378, 19.05876},
   };
   for (const AlmanacCase& c : cases) {
     CivilCalendar cal;
@@ -326,6 +333,21 @@ TEST_CASE("sky: the civil form's sun and moon against an almanac at three places
     CHECK(std::fabs(d_el) < 0.05);
     CHECK(std::fabs(d_az_sky) < 0.05);
     CHECK(std::fabs(d_lit) < 0.02);
+    // The moon's place: geocentric against Horizons' apparent right ascension and declination,
+    // within the terms the series leaves out; topocentric within those plus its parallax (up to
+    // 0.95 degrees), which the engine does not draw.
+    const f64 ra = c.moon_ra / k_deg;
+    const f64 dec = c.moon_dec / k_deg;
+    const Direction geo{std::cos(dec) * std::cos(ra), std::cos(dec) * std::sin(ra), std::sin(dec)};
+    const f64 d_geo = angle_deg(e.moon_celestial, geo);
+    const f64 az = c.moon_azimuth / k_deg;
+    const f64 el = c.moon_elevation / k_deg;
+    const Direction topo{std::cos(el) * std::sin(az), std::sin(el), -std::cos(el) * std::cos(az)};
+    const f64 d_topo = angle_deg(e.moon, topo);
+    MESSAGE(std::string(c.place) << ": moon geocentric off by " << d_geo << " deg, topocentric by "
+                                 << d_topo << " deg");
+    CHECK(d_geo < 1.0);
+    CHECK(d_topo < 2.0);
     // The pole still stands the latitude high.
     CHECK(std::fabs(elevation_deg(e.celestial_z) - c.latitude) < 1e-9);
   }

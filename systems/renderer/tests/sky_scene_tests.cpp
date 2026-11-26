@@ -356,6 +356,11 @@ TEST_CASE("sky scene: a sky by place and civil time is read, and a mixed one ref
                      scene_with(",\"sky\":{" + civil_fields + "},\"terrain\":{\"time\":46200}")));
   CHECK_FALSE(read_scene_file(timed, desc, error));
   CHECK(error.find("drop terrain.time") != std::string::npos);
+  // And a ground time asked of the reader, which would replace the terrain's and be the epoch.
+  SceneFileOptions ground;
+  ground.ground_time_s = 189'216'000.0;
+  CHECK_FALSE(read_scene_file(civil, ground, desc, error));
+  CHECK(error.find("so drop the ground time") != std::string::npos);
 }
 
 TEST_CASE("sky scene: the frame's lights are the sky's sun and a directional moon") {

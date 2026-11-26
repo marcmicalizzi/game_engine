@@ -310,7 +310,10 @@ class GameRunner {
   // The clocks at the session's start (renderer/clocks.h): the sky's `--time-of-day` offset from
   // the epoch, the day's rate in game seconds a real second, the scene's epoch, and the world's
   // rate. A restored session's clocks replace them.
-  void set_clock(f64 sun_offset_s, f64 sun_rate, f64 epoch_s, f64 world_rate = 1.0) noexcept;
+  // `clock_start_s`: the sky clock's seconds into its day at game time 0 (renderer's
+  // `scene_clock_start_s`), which a GameTick's `day_fraction` counts from.
+  void set_clock(f64 sun_offset_s, f64 sun_rate, f64 epoch_s, f64 world_rate = 1.0,
+                 f64 clock_start_s = 0.0) noexcept;
   // **The clocks as the frame draws them** (renderer.md "One world clock, and the day's length";
   // roadmap P44, R88): a `--game` session's frames take `FrameDesc::sky_time_s` (`sun_time_s`:
   // the offset plus the day's game seconds so far) and `FrameDesc::world_time_s` from here, each

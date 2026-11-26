@@ -1231,8 +1231,7 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   if (desc.stream) pages = std::move(built);
   // A miss draws what a hit draws (R207-M1): the materials take the container's alpha words, which
   // a later load reads back, after the build and the write have read the import's own floats.
-  for (assets::Material& material : out.data.materials)
-    assets::round_trip_alpha_word(material);
+  for (assets::Material& material : out.data.materials) assets::round_trip_alpha_word(material);
   return true;
 }
 
@@ -2747,6 +2746,16 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
               ": terrain.time is given beside a sky by place and civil time: the sky's date and "
               "time_of_day_h say where its clock starts, so drop terrain.time (or the sky's civil "
               "fields)";
+      return false;
+    }
+    // The same for a ground time asked of the reader (`--ground-time`, `render.load`'s
+    // `ground_time_s`), which replaces the terrain's and so becomes the sky's epoch.
+    if (file.sky->date.has_value() && options.ground_time_s.has_value() &&
+        *options.ground_time_s != 0.0) {
+      error = path +
+              ": a ground time (--ground-time, render.load's ground_time_s) is asked for beside a "
+              "sky by place and civil time: it would move the sky's clock off its date and "
+              "time_of_day_h, so drop the ground time (or the sky's civil fields)";
       return false;
     }
     out.sky = *file.sky;

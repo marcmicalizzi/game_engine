@@ -233,11 +233,26 @@ bool SkyPass::create(const gfx::Device& device, const SceneData& scene, gfx::Sha
     destroy();
     return false;
   }
-  ENGINE_LOG_INFO(log_renderer, "sky", log::field("provider", std::string(name)),
-                  log::field("latitude_deg", static_cast<f64>(entry_.latitude_deg)),
-                  log::field("day_of_year", static_cast<f64>(entry_.day_of_year)),
-                  log::field("turbidity", static_cast<f64>(entry_.turbidity)),
-                  log::field("stars", star_count_), log::field("star_cell_entries", index.size()));
+  if (entry_.date.has_value()) {  // a sky by place and civil time (W185): its own fields
+    ENGINE_LOG_INFO(log_renderer, "sky", log::field("provider", std::string(name)),
+                    log::field("latitude_deg", static_cast<f64>(entry_.latitude_deg)),
+                    log::field("longitude_deg", entry_.longitude_deg.value_or(0.0)),
+                    log::field("year", static_cast<i64>(entry_.date->year)),
+                    log::field("month", static_cast<u64>(entry_.date->month)),
+                    log::field("day", static_cast<u64>(entry_.date->day)),
+                    log::field("time_of_day_h", entry_.time_of_day_h.value_or(0.0)),
+                    log::field("utc_offset_h", entry_.utc_offset_h.value_or(0.0)),
+                    log::field("turbidity", static_cast<f64>(entry_.turbidity)),
+                    log::field("stars", star_count_),
+                    log::field("star_cell_entries", index.size()));
+  } else {
+    ENGINE_LOG_INFO(log_renderer, "sky", log::field("provider", std::string(name)),
+                    log::field("latitude_deg", static_cast<f64>(entry_.latitude_deg)),
+                    log::field("day_of_year", static_cast<f64>(entry_.day_of_year)),
+                    log::field("turbidity", static_cast<f64>(entry_.turbidity)),
+                    log::field("stars", star_count_),
+                    log::field("star_cell_entries", index.size()));
+  }
   return true;
 }
 

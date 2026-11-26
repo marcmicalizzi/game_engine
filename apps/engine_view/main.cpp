@@ -300,8 +300,8 @@ constexpr const char* k_usage =
     "                   light is unchanged (the scene's Sky.disc_scale)\n"
     "  --time-of-day <h>  a scene with a sky (renderer.md, \"The sky\"): start its clock at hour h\n"
     "                   (17.5 is 17:30) of the day its ground stands at, rather than the ground's\n"
-    "                   own hour; --sun-rate runs the day on from there. The summary's \"sun\"\n"
-    "                   block has a \"sky\" block: the hour, the day, the sun, the moon, the EV\n"
+    "                   own hour (a civil sky: hour h of its own clock); --sun-rate runs it on.\n"
+    "                   The summary's \"sky\": the solar hour, the day, the sun, the moon, the EV\n"
     "  --ground-time <s>  a --scene file's ground at game time s, in place of its terrain's own\n"
     "                   `time` (94608000 is three years): the mesh is built there, whatever stands\n"
     "                   on the ground stands on it, and a sky's clock starts from it.\n"
@@ -1459,7 +1459,8 @@ void attach_game(view::FlySession& session, f64 sun_offset_s, f64 sun_rate, f64 
   }
   session.set_tick_observer(&view::GameRunner::observe, g_game);
   g_game->set_session(&session);  // the walker's services act on this session (fly_camera.h)
-  g_game->set_clock(sun_offset_s, sun_rate, renderer::scene_epoch_s(scene), world_rate);
+  g_game->set_clock(sun_offset_s, sun_rate, renderer::scene_epoch_s(scene), world_rate,
+                    renderer::scene_clock_start_s(scene));
   g_game->attach_sound(scene);  // the crowns the session's sound hears (S112)
   if (g_game->props().declared()) walker.set_props(&view::GameProps::walk_props, &g_game->props());
   walker.set_door_service(&view::GameRunner::walk_door_ask, g_game);  // props P45, doors S91

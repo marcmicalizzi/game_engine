@@ -144,6 +144,13 @@ f64 scene_epoch_s(const SceneData& scene) noexcept {
   return scene.terrain.enabled ? scene.terrain.time_s : 0.0;
 }
 
+f64 scene_clock_start_s(const SceneData& scene) noexcept {
+  return scene.sky.has_value() && scene.sky->date.has_value() &&
+                 scene.sky->time_of_day_h.has_value()
+             ? *scene.sky->time_of_day_h * 3600.0
+             : 0.0;
+}
+
 FrameClock frame_clock(const ClockRequest& clock, const SceneData& scene) {
   FrameClock out;
   out.epoch_s = scene_epoch_s(scene);
@@ -159,10 +166,7 @@ FrameClock frame_clock(const ClockRequest& clock, const SceneData& scene) {
     // A sky by place and civil time (W185; sky.md, "The sky by place and civil time") starts its
     // clock at the scene's own time of day, so the hour asked for is that clock's: the offset is
     // the hours asked for less the scene's. Zero for the solar form, which starts at midnight.
-    const f64 civil_start = scene.sky->date.has_value() && scene.sky->time_of_day_h.has_value()
-                                ? *scene.sky->time_of_day_h * 3600.0
-                                : 0.0;
-    out.sky_start_s = *clock.time_of_day_h * 3600.0 - into_day - civil_start;
+    out.sky_start_s = *clock.time_of_day_h * 3600.0 - into_day - scene_clock_start_s(scene);
   }
   return out;
 }
