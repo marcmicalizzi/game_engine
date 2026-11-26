@@ -375,21 +375,31 @@ and inches an hour, converted:
 infiltration chapter; not reached); [a SWMM help page](https://tbn2net.com/help/SOLIDOSen/SwmmInfiltration.html)
 cites "Rawls et al. (1983), J. Hyd. Engr., 109:1316", where the paper is Rawls, Brakensiek and Miller,
 *J. Hydraulic Engineering* 109(1), 62–70, and page 1316 is the first page of Rawls, Brakensiek and
-Saxton (1982), *Trans. ASAE* 25(5), so the help page's citation joins the two (*derived* from the
-citations as a search gives them).
+Saxton (1982), *Trans. ASAE* 25(5), so the help page's citation joins the two (the two papers'
+citations as a search gives them: **search, not read**).
 
 **What the second pass corrects** (W176, 2026-11-25). The first pass called the K columns "1993" and
-"1983" and their difference "the spread between the two publications". **They are two different
-quantities, not a spread**: TxDOT's column is labelled the saturated conductivity, SWMM's the
-Green–Ampt conductivity (the Horton curve's minimum, "equivalent to" the saturated one by the page's
-own words), and the first is twice the second in nine classes of eleven to the tables' rounding
-(*derived*, the ratio column), four times on loam and once on silt loam. The porosity, its range and
-the suction are the same table in both (ψ to the tables' rounding), so the moisture and the suction
-are one set of 1983 numbers, and TxDOT's second moisture column, which the first pass set aside as
-"initial content", is the **effective porosity** θ_e, the porosity less the residual water: a search
-summary of a course's copy of the same table names that column effective porosity with sand at 0.417
+"1983" and their difference "the spread between the two publications". **They are most likely two
+different quantities, not a spread** — and that rests on their ratio, not on their labels: **both
+manuals label their column the saturated hydraulic conductivity** (TxDOT's outright; SWMM's table sits
+under its Horton minimum rate, "equivalent to" the saturated conductivity, and its Green–Ampt section
+names the parameter the soil's saturated conductivity). TxDOT's is twice SWMM's in nine classes of
+eleven to the tables' rounding (*derived*, the ratio column), four times on loam and once on silt
+loam; and **the two exceptions disappear if SWMM's loam (0.13 in/h) and silt loam (0.26 in/h) are
+swapped**, all eleven classes then sitting at 2 (0.52 / 0.26 and 0.27 / 0.13; *derived*), which points
+to a transposition in that table. A constant factor of two reads as one column being half the other
+by a convention for the Green–Ampt conductivity: **that is a reading, not something read**. The
+porosity, its range and the suction are the same table in both (ψ to the tables' rounding), so the
+moisture and the suction are one set of 1983 numbers. TxDOT's second moisture column, which the first
+pass set aside as "initial content", **reads as the effective porosity** θ_e, the porosity less the
+residual water: from read numbers, the saturated content less that column is small and positive in
+every class (sand 0.020, loamy sand 0.036, sandy loam 0.041, loam 0.029, silt loam 0.015, sandy clay
+loam 0.068, clay loam 0.155, silty clay loam 0.039, sandy clay 0.109, silty clay 0.056, clay 0.090;
+*derived*), which is what a residual water content looks like and not an initial one; and a search
+summary of a course's copy of the same table names the column effective porosity with sand at 0.417
 and loam at 0.434 (search summary, **not read**; it identifies the column and gives no number used).
-So a Green–Ampt deficit Δθ for a dry soil is up to θ_e, not θ_s. Which conductivity a Green–Ampt step
+**If that reading holds**, a Green–Ampt deficit Δθ for a dry soil is up to θ_e, not θ_s; until the
+1983 table is read, a design takes Δθ ≤ θ_e as the conservative bound. Which conductivity a Green–Ampt step
 should take — the saturated one or the one the 1983 parameters were derived with — is what the 1983
 paper says and was not read, so **K stays a scene number with the two columns as its bounds**, and
 the losses derived below are given with both.
@@ -672,11 +682,11 @@ neighbours' read, its new state written — times the cells, over the card's ban
 
 ## 8. The check that ties a simulated lake to the steady solve (W176)
 
-(2026-11-25; specified here, to be built as a case of W184's reference, whose tests may link
-`channels` to ask it; the module may not.) **A dynamic solver driven by the steady solve's inflow must
-settle on the steady solve's level for the same lake**, so the two never disagree about where a lake
-stands. The numbers below are *derived* from the closed forms named, worked by hand and checked by a
-numerical integration outside the repository.
+(2026-11-25, respecified 2026-11-26 after W184's reference first ran the case as first written; to be
+built as a case of W184's reference, whose tests may link `channels` to ask it; the module may not.)
+**A dynamic solver driven by the steady solve's inflow must settle on the steady solve's level for the
+same lake**, so the two never disagree about where a lake stands. The numbers below are *derived* from
+the closed forms named, worked by hand and checked by a numerical integration outside the repository.
 
 **Which level.** The steady solve gives a lake of the plan two numbers. The **body's level** is its
 spill less `basin_notch_m` whatever the discharge, and its outlet's sill is held 2 cm over it
@@ -685,24 +695,76 @@ leaving it can do. The **outlet's crest control** is what the outlet's profile s
 ([channels](../subsystems/channels.md#the-profile)): the sill is a crest where the flow passes critical
 depth (Q² T = g A³), and the tranquil profile upstream of it reaches the lake at the sill plus the
 critical section's specific energy plus the friction over the crest. **The tie is to the crest
-control.** The body's level is reported beside it and is a finding: a state started at it fills 2 cm
-plus the head before its outlet runs, which for the forest's largest lake (43.6 ha, 105 l/s leaving),
-through a crest 2 m wide, is 0.118 m of water, about **5.7 days** at the world's own rate with the
-stream below it dry; so a state's starting level for a lake with an outlet is the crest control's.
+control.** The body's level is reported beside it and is a finding. A state started at it runs no
+outlet until the first 2 cm are filled, then comes to full flow with the time constant A E_c / (1.5 Q)
+of the reservoir below; for the forest's largest lake (43.6 ha, 105 l/s leaving) through a crest that
+**this page assumes** 2 m wide (the plan's sections give no crest width), that is about 0.96 days dry
+and then a time constant of about 3.1 days, the deficit (2 cm plus the head, 0.118 m) being 5.7 days
+of the inflow. So a state's starting level for a lake with an outlet is the crest control's.
 
-**The geometry.** x down a slope of 0.1, sill at z = 0: a hollow 8 × 8 m with a flat floor at −0.5 and
-vertical walls; a crest 2 m wide (b) and 0.5 m long (L_c) at z = 0; below it a channel 2 m wide and 5 m
-long falling at 0.1 to a free boundary; walls elsewhere. Cells of 0.125 m (4,800 that can be wet, the
-crest four cells long). Manning's n 0.01 in both solvers; no infiltration (or a full store), no
-evaporation; the inflow Q a mass source over the hollow's first metre, carrying no momentum, which is
-W120's lake with no loss, whose outlet carries all it is fed. Two discharges, 0.1 and 0.02 m³/s (the
-forest's outlets carry 9 to 105 l/s).
+**What the level by hand assumes.** Energy is conserved from the hollow to the critical section: no
+loss where the flow leaves the hollow and climbs onto the crest. That is what the steady profile
+computes too (its step adds friction, and no entrance loss). It is the right expectation of a fluid and
+of a scheme only where the approach is graded; at an abrupt upstand it is neither:
 
-**The level by hand** (q = Q / b; y_c = (q² / g)^(1/3); E_c = 1.5 y_c over a rectangular crest; the
-friction over the crest at most L_c n² V_c² / y_c^(4/3), the critical section's slope over the whole
-crest):
+- **A real fluid at a square-edged upstand** separates at the corner. The U.S. Bureau of Reclamation's
+  Water Measurement Manual ([chapter 7, weirs](https://www.usbr.gov/tsc/techreferences/mands/wmm/chap07_03.html),
+  read; a federal agency's manual) says a thick wall whose head is large against its top's length
+  springs from the upstream corner and acts as a sharp-crested weir, and that broad-crested flow wants
+  a head between about a twentieth and a half of the crest's length (here 0.19 and 0.065: inside);
+  its [ramp flumes](https://www.usbr.gov/tsc/techreferences/mands/wmm/chap08_09.html) (read) rise to the
+  sill on a ramp 2 to 3 times the sill's height, 3:1 preferred, with a throat at least 1.5 times the
+  greatest head and an approach Froude number under 0.5, and say nothing of why. **How much a square
+  edge lowers the discharge coefficient below the ideal was not read**: a paper on it ("Characteristics of
+  square-edged and round-nosed broad-crested weirs", *J. Irrig. Drain. Eng.* 114(1), 61, 1988) says, as a search summary gives its abstract, that
+  the coefficient depends on the head and the upstream corner's radius and that the square edge needed
+  non-hydrostatic pressures treated; Bos's rounded-nose coefficient was reached only through a search
+  summary of a copied text, and is not used. **No number for the size is on this page.**
+- **A shallow-water scheme at a discontinuous bed** has no unique weak solution: the answer depends on
+  how the scheme treats the step, and refining the grid never resolves it (the step stays a step at
+  every Δx). Under the first-order hydrostatic reconstruction the face's upstream state is cut to the
+  depth over the sill but keeps the deep cell's slow velocity, so the face's flux is the dam-break
+  flux of that state: the rarefaction's sonic point, with the Riemann invariant
+  u + 2√(g h) carried from the cell, gives c = (u_L + 2√(g H)) / 3 with c³ = g q (*derived*). With
+  u_L = q / (0.5 + H) solved together: at q = 0.05 m²/s, c = 0.7886 m/s, u_L = 0.079 m/s, **H =
+  0.1333 m, 40 % over E_c**; at q = 0.01, c = 0.4611, u_L = 0.018, **H = 0.0475 m, 46 % over**
+  (*derived*; with W184's u_L of 0.084 and 0.019 the same gives 0.1327 and 0.0475). **W184's reference
+  measured 0.1315 and 0.0482 m over the sill on the first geometry (a vertical 0.5 m wall), 38 and
+  48 % over the head, the same at twice the cell**, while critical flow held on the crest (crest energy
+  0.0947 and 0.0322 against 0.0951 and 0.0325): that is this limit, not a fault of the reference.
+  Being well-balanced makes the controlling face critical on a flat crest; it says nothing of the
+  energy the flow brings to that face.
 
-| | Q = 0.1 m³/s | Q = 0.02 m³/s |
+**The geometry (the asserted case).** x down a slope of 0.1, sill at z = 0, everything 8 m wide so
+nothing contracts in plan (a corner in plan is the same trouble as one in elevation): a hollow 8 m
+long, its floor at −0.5 for its first 4.02 m and then **a graded approach** rising to the sill; a crest
+0.5 m long (L_c) at z = 0; below it a channel 5 m long falling at 0.1 to a free boundary; walls at the
+sides and behind. The approach, at a distance x′ upstream of the crest, is
+z = −y_r (e^(x′/ℓ) − 1) with y_r = 0.02169 m (the smaller discharge's critical depth) and ℓ = 1.25 m,
+down to the floor at x′ = 3.98 m. **The rule it meets**: the bed's rise across a face is a tenth of
+the depth over it, y_r plus the depth under the sill, at Δx = 0.125 m (ℓ = 10 Δx), so at the sill a face
+rises a tenth of the smaller discharge's critical depth (2.2 mm) and less at Δx / 2; a straight ramp
+to the same rule would be 29 m long. Cells of 0.125 m (6,912 that can be wet, the crest four cells
+long), and again at 0.0625 m. Manning's n 0.01 in both solvers where the steady solve can be given a
+fixed n (below); no infiltration (or a full store), no evaporation; the inflow Q a mass source over the
+hollow's first metre, carrying no momentum: W120's lake with no loss, whose outlet carries all it is
+fed. Two discharges, **0.4 and 0.08 m³/s over the 8 m**, unit discharges q of 0.05 and 0.01 m²/s.
+**The reported case** is the same with the approach removed: the floor flat at −0.5 up to a vertical
+wall at the crest.
+
+**The steady solve's resistance.** The profile's default law is Ferguson's on the bed's own D84
+([channels](../subsystems/channels.md#the-profile)), and `--resistance manning` names one n on the
+command; whether `solve_profile` takes a fixed n through its parameters on a test-built ground is not
+established. If it cannot, the reference runs the steady solve's own law over the crest with the same
+D84, and the "by hand" row below is widened by that law's friction head at the critical section,
+printed by the case; the case says which it used.
+
+**The level by hand** (y_c = (q² / g)^(1/3); E_c = 1.5 y_c over a rectangular crest; the friction over
+the crest at most L_c n² V_c² / y_c^(4/3), the critical section's slope over the whole crest, with
+**the depth as the hydraulic radius**, as a 2-D solver takes it — an 8 m rectangle's radius gives 1.26
+and 1.77 mm, the first geometry's 2 m one 1.34 and 1.81):
+
+| | q = 0.05 m²/s (Q 0.4) | q = 0.01 m²/s (Q 0.08) |
 |---|---|---|
 | y_c, V_c | 0.06341 m, 0.789 m/s | 0.02169 m, 0.461 m/s |
 | E_c, the head over the sill | **0.0951 m** | **0.0325 m** |
@@ -710,41 +772,48 @@ crest):
 | the lake's level, over the sill | 0.0951 to 0.0964 m | 0.0325 to 0.0343 m |
 | the channel's normal depth (Manning, 0.1) | 0.021 m, shooting | 0.008 m, shooting |
 | the body's level, under the crest control by | 0.115 m | 0.053 m |
+| the vertical wall's first-order limit, over the sill | 0.1333 m (+40 %) | 0.0475 m (+46 %) |
 
 The steady solve's own number is first held to the row "the lake's level" (within a millimetre), so a
 disagreement is laid on the right solver.
 
-**The bound: |η_dyn − η_steady| ≤ max(0.05 E_c, 1 mm)**, 4.8 and 1.6 mm, with η_dyn the mean level over
-the hollow's middle 4 × 4 m and the last 10 s. **Why that.** A well-balanced Godunov-type flux makes the
-flow at the controlling face critical on a flat crest, so the head is the scheme's own answer at any Δx
-and the bound need not shrink with the cell; what is left is first-order dissipation where the flow
-quickens onto the crest, the entrance's corners in two dimensions, and the two solvers' different
-friction sums over a crest whose friction is itself 1.3 % to 5.4 % of the head. 5 % of the head is
-7.5 % of the discharge (dQ / Q = 1.5 dH / H). It is far inside every wrong answer the case is for: the
-body's level misses by 121 % and 161 % of the head; a kinematic or local inertial solver does not
-settle; a crest the grid holds as a bed step misses by the step (12.5 mm a cell here, 13 % and 38 %);
-a leak is caught by the mass check. **The bound holds where the crest spans at least four cells**
-(Δx ≤ L_c / 4), so the critical face is on the crest and not at the step below it; the case runs at
-2 Δx too and reports the change.
+**The bound, on the graded approach: |η_dyn − η_steady| ≤ max(0.05 E_c, 1 mm)**, 4.8 and 1.6 mm, at Δx
+and at Δx / 2, **and the error at Δx / 2 no larger than at Δx**; η_dyn the mean level over the hollow's
+flat floor and the last 20 s. **Why that.** On a graded approach both the fluid and the scheme carry
+the hollow's energy to the crest, and the scheme's controlling face is critical on the flat crest; what
+is left is first-order dissipation where the flow quickens up the ramp and onto the crest, which falls
+with the cell, and the two solvers' different friction sums over a crest whose friction is itself
+1.3 % to 5.4 % of the head. 5 % of the head is 7.5 % of the discharge (dQ / Q = 1.5 dH / H). It is far
+inside every wrong answer the case is for: the body's level misses by 121 % and 161 % of the head; a
+kinematic or local inertial solver does not settle; a scheme that treats the bed's rise as a step
+reaches the dam-break limit (40 % and 46 %); a leak is caught by the mass check. The crest spans at
+least four cells (Δx ≤ L_c / 4), so the critical face is on the crest and not at the drop below it.
+**The vertical wall is reported and not asserted**: its level is printed beside the first-order limit
+of the table, so a scheme that later holds moving water over a step shows its gain there.
 
 **How long it runs.** The lake is a reservoir over a weir, A dη/dt = Q − C b H^(3/2) with A = 64 m², so
-it settles with a time constant A E_c / (1.5 Q), 41 s and 69 s; integrated whole, from the body's level
-(2 cm under the sill) it is within 0.1 % of the head after 307 s and 567 s, and from twice the head
-over the sill after 272 and 465 s. **The run is 900 s of world time.** The hollow's first seiche has a
-period of 2 L / √(g h) = 7.2 s, which is why the level is a 10 s mean. At CFL 0.5 the step is about
-0.022 s: some 41,000 steps on 4,800 cells a run.
+it settles with a time constant A E_c / (1.5 Q), 10 s and 17 s; integrated whole, from the body's level
+(2 cm under the sill) it is within 0.1 % of the head after 77 s and 142 s, and from twice the head over
+the sill after 68 and 116 s. **The run is 300 s of world time.** The hollow's first seiche has a period
+2 L / √(g h) of 6.6 to 7.0 s over the flat 0.5 m floor at the settled levels, and about 9 and 11 s with
+the graded approach (the travel time integrated over its depths), which is why the level is a 20 s
+mean. At CFL 0.5 the step is about 0.022 s at Δx: some 13,600 steps on 6,912 cells a run, and four times the cells
+for twice the steps at Δx / 2.
 
-**What the case asserts**: the steady solve against the hand; the tie, for both discharges and from
-both starts (the body's level, and twice the head over the sill); settled (the level's change over the
-last time constant under a tenth of the bound, its range over the last 10 s under the bound); mass
-(inflow less storage less what leaves through the free boundary zero to the reference's arithmetic,
-the last 10 s' outflow Q within 0.5 %); the two starts within the bound of each other; and the head
-following the law, the two heads' ratio 5^(2/3) = 2.924 within the two bounds' sum.
+**What the case asserts**: the steady solve against the hand; the tie on the graded approach, for both
+discharges, from both starts (the body's level, and twice the head over the sill), at both cells, the
+finer no worse; settled (the level's change over the last time constant under a tenth of the bound,
+its range over the last 20 s under the bound); mass (inflow less storage less what leaves through the
+free boundary zero to the reference's arithmetic, the last 20 s' outflow Q within 0.5 %); the two
+starts within the bound of each other; the level the same across the width within the bound; and the
+head following the law, the two heads' ratio 5^(2/3) = 2.924 within the two bounds' sum. It prints,
+and does not assert, the vertical wall's levels beside their first-order limits.
 
 **What it must not hide**: the body's level's gap, printed; a tie by tuning (no coefficient of the
 case's own, n the same in both solvers and in every other case, no weir law given to the crest); a tie
-at one discharge, from one side, on a snapshot, with water lost, or on a crest the grid does not hold;
-and the ground's take, switched off by name here and W184's to tie separately.
+at one discharge, from one side, on a snapshot, at one cell, with water lost, or on a crest or an
+approach the grid does not hold; the vertical wall's result, printed beside its limit; and the ground's
+take, switched off by name here and W184's to tie separately.
 
 ## The sources, and how far each was read
 
@@ -784,6 +853,8 @@ and the ground's take, switched off by name here and W184's to tie separately.
 | Thürey, Müller-Fischer, Schirm, Gross (2007) via US 8,204,725 | breaking-front detection and sheets | read (the patent) |
 | USBR, "Groundwater basics: interaction with rivers" | gaining, losing, connected, disconnected; the mound | read |
 | Langmuir circulation, the encyclopaedia's article | windrows of foam at convergence zones, 1–300 m apart, along the wind, above about 3 m/s | read |
+| U.S. Bureau of Reclamation, Water Measurement Manual, chapter 7 (weirs) and chapter 8 (ramp flumes) | a thick wall springs from its corner; broad-crested flow at a head 1/20 to 1/2 of the crest; a ramp 2–3 × the sill's height, 3:1 preferred, a throat ≥ 1.5 × the head, approach Froude < 0.5 | read (the two pages); a federal agency's manual |
+| "Characteristics of square-edged and round-nosed broad-crested weirs", *J. Irrig. Drain. Eng.* 114(1), 61 (1988) | nothing: the square edge's coefficient depends on head and corner radius | search summary of the abstract only, not read |
 | Weir, the encyclopaedia's article | Q = C L H^n, n 3/2 for a horizontal weir; C 3.33 on average, read against the ideal crest's 3.09 ft^½/s (*derived*, §2) | read |
 | Yuksel, House, Keyser (2007), wave particles | method, limits, the boat scene's cost | read (project page) |
 | Not read at all | the USGS circular on ground and surface water (refused), Lamarre's thesis and Lamarre and Melville (1991), Melville, Loewen and Lamarre (1992), Schäffer et al.'s decay rule, Lane (1983) and the Walnut Gulch losses, Yu et al. (2009), From Dust, Timberborn's developers' article, Bear's conductivity table | — |
