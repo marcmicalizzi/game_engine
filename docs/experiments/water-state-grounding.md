@@ -35,6 +35,14 @@ source), and **search summary only**, which is **not read**: a figure that came 
 engine's summary is named as such where it appears and is never used as a constant. A number derived on
 this page from read numbers is marked *derived*, with the arithmetic beside it.
 
+**A second pass** (2026-11-25, roadmap W176) went to two sources the first had read only through
+others. The HEC-RAS manuals were reached at the source: the 2D User's Manual's pages read, the
+Hydraulic Reference Manual's 2D chapter read for its text only, its equations not reaching the fetch as
+text (§1). Rawls, Brakensiek and Miller (1983) was **not** reached as text: its only copy found is a
+scanned PDF, which did not parse; so the table of §3 is still secondary, now set against two secondary
+copies and corrected where they disagree. [Section 8](#8-the-check-that-ties-a-simulated-lake-to-the-steady-solve-w176)
+is the check that ties a simulated lake's level to the steady solve's.
+
 ## What has no state today
 
 Every water the engine draws is a function of the clock and of fields built once at load. A channel is
@@ -108,12 +116,10 @@ Hydrology drops terms from the momentum equation and keeps the mass equation who
 - **The diffusion (diffusive, zero-inertia) wave** drops both acceleration terms: the water surface's
   slope balances friction, so the discharge follows the surface's gradient through Manning's law. It
   carries backwater (a downstream level is felt upstream), so a hollow fills to a level and a pool
-  stands; it is HEC-RAS's default two-dimensional set, recommended for flood extents, levee breaches
-  and dam-break inundation, and not for sharp contractions and expansions, detailed velocity fields,
-  mixed regimes or hydraulic jumps
-  ([CivilGEO's summary of HEC-RAS's options](https://knowledge.civilgeo.com/hec-ras-2d-computational-equations-comparison),
-  secondary; the HEC-RAS manual itself was not reached). An explicit diffusive scheme's stable step
-  falls with Δx² (above).
+  stands. It is HEC-RAS's default two-dimensional set; [what HEC-RAS says of it](#what-hec-ras-solves-in-two-dimensions)
+  is below, read at the source, and corrects the first pass's secondary reading, which had it
+  recommended for dam-break inundation. An explicit diffusive scheme's stable step falls with Δx²
+  (above).
 - **The kinematic wave** keeps only the balance of the bed's slope against friction, so the discharge is
   a function of the depth alone (Manning's law, q = h^(5/3) S^(1/2) / n per unit width) and the wave
   travels downstream at dq/dh with no attenuation. With one characteristic, pointing downstream, it
@@ -138,6 +144,71 @@ holds for**: a mountain stream is the kinematic wave's best case and the full eq
 (*derived*, below), which is why hydrology routes steep channels kinematically and why a steady
 solve on Manning's law (W120's) is already the kinematic answer for constant inflow. Neither cheap wave
 holds a step's plunge, a jump or a pool's backwater on a steep stream: those are local and fast.
+
+### What HEC-RAS solves in two dimensions
+
+(W176, 2026-11-25; the U.S. Army Corps of Engineers' Hydrologic Engineering Center's online manuals,
+a federal agency's documentation whose footer carries the centre's copyright line; the terms-of-use
+page was not read, and only numbers and paraphrase are taken.) Read: the 2D User's Manual's pages
+[Shallow Water or Diffusion Wave Equations](https://www.hec.usace.army.mil/confluence/rasdocs/r2dum/latest/running-a-model-with-2d-flow-areas/shallow-water-or-diffusion-wave-equations),
+[Selecting an Appropriate Grid Size and Time Step](https://www.hec.usace.army.mil/confluence/rasdocs/r2dum/latest/running-a-model-with-2d-flow-areas/selecting-an-appropriate-grid-size-and-time-step),
+[2D Computation Options and Tolerances](https://www.hec.usace.army.mil/confluence/rasdocs/r2dum/latest/running-a-model-with-2d-flow-areas/2d-computation-options-and-tolerances),
+[Creating Hydraulic Property Tables](https://www.hec.usace.army.mil/confluence/rasdocs/r2dum/latest/development-of-a-2d-or-combined-1d-2d-model/creating-hydraulic-property-tables-for-2d-flow-areas)
+and [Advantages/Capabilities](https://www.hec.usace.army.mil/confluence/rasdocs/r2dum/latest/introduction/hec-ras-2d-modeling-advantages-capabilities);
+and the Hydraulic Reference Manual's
+[2D Unsteady Flow Hydrodynamics](https://www.hec.usace.army.mil/confluence/rasdocs/ras1dtechref/latest/theoretical-basis-for-one-dimensional-and-two-dimensional-hydrodynamic-calculations/2d-unsteady-flow-hydrodynamics),
+whose text was read and **whose equations did not reach the fetch as text**: no equation below is
+the manual's own typesetting, and none is pinned from it.
+
+- **The equation sets.** Three: the diffusion wave (the default), and the full shallow-water equations
+  in two forms, SWE-ELM (Eulerian–Lagrangian, the original) and SWE-EM (Eulerian, newer, described as
+  more conservative of momentum and **explicit**), with optional turbulence (none, a conservative and a
+  non-conservative form, longitudinal and transverse mixing coefficients, a Smagorinsky coefficient
+  typically 0.05 to 0.2), wind, Coriolis and mud and debris terms. The reference manual's assumptions
+  for the full set: incompressible, uniform density, hydrostatic pressure, Reynolds-averaged with an
+  eddy viscosity, vertical scales much smaller than horizontal. The diffusion wave drops the unsteady,
+  advection and viscous terms where gravity and bed friction dominate, and with the mass equation
+  becomes **a single equation in the water surface**. The water surface is the bed plus the depth.
+- **What each is for.** The diffusion wave is faster and more stable and serves many floods; the
+  manual's own procedure is to build with it, run a second plan with the full equations, and take the
+  full equations' answer where the two differ significantly. It names the cases for the full equations:
+  highly dynamic floods (**dam breach**, flash floods), abrupt contractions and expansions, very flat
+  rivers (under 1 ft a mile, about 0.19 m a km), tidal water, wave propagation and run-up on walls,
+  superelevation in tight bends, detailed velocities and levels at structures (which also need very
+  small cells and steps), and **mixed regimes, subcritical to supercritical and hydraulic jumps**. (The
+  capabilities page says the solver handles mixed flow and jumps without special options; read
+  together, the solver runs through them and the diffusion wave does not represent them.) **This
+  corrects the first pass**, whose secondary reading listed dam-break inundation among the diffusion
+  wave's uses.
+- **The solver.** Implicit finite volume (the capabilities page), which is what allows larger steps
+  than explicit methods; a time-weighting θ of 1.0 by default (0.5 to 1.0; 1.0 the most stable, about
+  0.6 the more accurate and the less stable, the two often alike on river floods); iterated each step
+  to a water-surface tolerance of 0.01 ft (3 mm) and a volume tolerance expressed the same way, at most
+  20 iterations by default. SWE-EM is the explicit exception.
+- **The step.** C = V ΔT / ΔX, with V the flood wave's speed (the celerity) and ΔX the average cell
+  size. Targets and maxima: SWE-ELM 1.0 and 3.0; SWE-EM 1.0 and 1.0; diffusion wave 2.0 and 5.0 (the
+  page's rearranged form for the diffusion wave, ΔT ≤ 2 ΔX / V, is labelled C = 1.0, which by its own
+  definition is C = 2.0: an inconsistency in the page). Cells small where the surface's slope and the
+  speed change fast; transitions in cell size gradual; faces aligned with the high ground (levees,
+  roads, banks) that holds water back.
+- **Sub-grid bathymetry.** Cells need not have flat floors nor faces one height: from the fine terrain
+  a preprocessor tabulates **each cell's volume against elevation** and **each face's area, wetted
+  perimeter and roughness against elevation**, each face treated as a cross section; the mass equation
+  is discretised by finite volumes over those integrals, which is why it pairs with either momentum
+  form. The manual's examples: 200 ft and 500 ft cells over a 2 ft terrain, a canal under 100 ft wide
+  held in its channel until the stage passes its banks; at least **5 to 7 cells across a channel** where
+  in-channel velocities and a varying surface are wanted. A face may take a composite n varying with
+  the elevation (n 0.01 to 0.1 being the range the formula was made for; 0.25 to 0.5 suggested for
+  buildings).
+- **Wetting and drying.** Described as very robust: an area may start dry and take a sudden rush of
+  water, and cells may be partly wet (which the sub-grid tables make possible). **No depth threshold
+  for a wet cell, nor how a drying cell is handled, is stated in what was read.**
+
+So for this engine: the diffusion wave is a hollow-filler, but by HEC-RAS's own list it is not the
+form for an outlet's crest (a mixed regime), a dam's breach, or a pool's level at a structure, which
+are the three things [section 8's check](#8-the-check-that-ties-a-simulated-lake-to-the-steady-solve-w176)
+holds; and sub-grid tables are how a coarse cell carries a stream narrower than itself, a structure
+the design may take for its LOD.
 
 **Manning's law on a steep bed** is itself the weak point: a fixed n is far too smooth for shallow flow
 over clasts, which is why [stream-profile](stream-profile.md#sources) took Jarrett's (1984) resistance
@@ -244,7 +315,10 @@ storage-cell model's steps were so small (Bates et al., above).
 stays exactly at rest, so a full hollow neither leaks nor sloshes numerically), with the outflow over the
 lip found by the equations themselves (over a broad crest the flow passes critical depth, the textbook
 reading; the weir law Q = C L H^(3/2) is the steady consequence, C on average 3.33 in
-[the encyclopaedia's form](https://en.wikipedia.org/wiki/Weir), read, which does not state its units); and a static one that the channels
+[the encyclopaedia's form](https://en.wikipedia.org/wiki/Weir), read, which does not state its units;
+an ideal broad crest, critical at its end and losing nothing, gives C = (2/3)^(3/2) √g = 1.705 m^½/s,
+which is 3.09 ft^½/s, so the 3.33 reads as a US-unit coefficient some 8 % over the ideal, *derived*,
+[§8](#8-the-check-that-ties-a-simulated-lake-to-the-steady-solve-w176)); and a static one that the channels
 capability already uses for the year's mean — Barnes et al.'s Fill-Spill-Merge, each hollow's balance of
 inflow against evaporation and seepage deciding its level ([channels](../subsystems/channels.md#hollows)).
 The second is the steady state the first reaches under constant inflow, which makes it the first's
@@ -277,37 +351,70 @@ and [its sorptivity article](https://en.wikipedia.org/wiki/Sorptivity), read for
 - **Richards' equation**: the general unsaturated-flow equation these approximate; nonlinear, expensive,
   not guaranteed to converge.
 
-**Constants by soil** (Rawls et al. as tabulated by two manuals, read; SI by *derived* conversion, 1 in/h
-= 25.4 mm/h). The two tables disagree on K by up to a factor of four (loam), and agree on silt loam;
-that is the spread between the two publications as the manuals give them, not a transcription here:
+**Constants by soil** (Rawls, Brakensiek and Miller 1983 and Rawls et al. 1993 as two manuals tabulate
+them, both read whole for the table, neither stating a licence; the source itself **not read**, W176
+below; SI by *derived* conversion, 1 in = 25.4 mm). The table as the two manuals print it, in inches
+and inches an hour, converted:
 
-| texture | porosity θ_s (range), 1993 | ψ, 1993 (mm) | K, 1993 (mm/h) | K, 1983 (mm/h) |
-|---|---|---|---|---|
-| sand | 0.437 (0.374–0.500) | 49.5 | 236 | 120 |
-| loamy sand | 0.437 (0.363–0.506) | 61.2 | 59.7 | 30.0 |
-| sandy loam | 0.453 (0.351–0.555) | 110 | 21.8 | 10.9 |
-| loam | 0.463 (0.375–0.551) | 88.9 | 13.2 | 3.3 |
-| silt loam | 0.501 (0.420–0.582) | 167 | 6.9 | 6.6 |
-| sandy clay loam | 0.398 (0.332–0.464) | 218 | 3.0 | 1.5 |
-| clay loam | 0.464 (0.409–0.519) | 209 | 2.0 | 1.0 |
-| silty clay loam | 0.471 (0.418–0.524) | 273 | 2.0 | 1.0 |
-| sandy clay | 0.430 (0.370–0.490) | 239 | 1.3 | 0.5 |
-| silty clay | 0.479 (0.425–0.533) | 292 | 1.0 | 0.5 |
-| clay | 0.475 (0.427–0.523) | 316 | 0.5 | 0.25 |
+| texture | θ_s (range) | θ_e (range), TxDOT's "initial" | ψ, TxDOT / SWMM (mm) | K_s, TxDOT (mm/h) | K, SWMM (mm/h) | ratio |
+|---|---|---|---|---|---|---|
+| sand | 0.437 (0.374–0.500) | 0.417 (0.354–0.480) | 49.5 / 49.0 | 236 | 120 | 2.0 |
+| loamy sand | 0.437 (0.363–0.506) | 0.401 (0.329–0.473) | 61.2 / 61.0 | 59.7 | 30.0 | 2.0 |
+| sandy loam | 0.453 (0.351–0.555) | 0.412 (0.283–0.541) | 110 / 110 | 21.8 | 10.9 | 2.0 |
+| loam | 0.463 (0.375–0.551) | 0.434 (0.334–0.534) | 88.9 / 88.9 | 13.2 | 3.3 | 4.0 |
+| silt loam | 0.501 (0.420–0.582) | 0.486 (0.394–0.578) | 167 / 170 | 6.9 | 6.6 | 1.0 |
+| sandy clay loam | 0.398 (0.332–0.464) | 0.330 (0.235–0.425) | 218 / 220 | 3.0 | 1.5 | 2.0 |
+| clay loam | 0.464 (0.409–0.519) | 0.309 (0.279–0.501) | 209 / 210 | 2.0 | 1.0 | 2.0 |
+| silty clay loam | 0.471 (0.418–0.524) | 0.432 (0.347–0.517) | 273 / 270 | 2.0 | 1.0 | 2.0 |
+| sandy clay | 0.430 (0.370–0.490) | 0.321 (0.207–0.435) | 239 / 240 | 1.3 | 0.5 | 2.5 |
+| silty clay | 0.479 (0.425–0.533) | 0.423 (0.334–0.512) | 292 / 290 | 1.0 | 0.5 | 2.0 |
+| clay | 0.475 (0.427–0.523) | 0.385 (0.269–0.501) | 316 / 320 | 0.5 | 0.25 | 2.0 |
 
-The 1993 columns are [TxDOT's hydraulic design manual's](https://www.txdot.gov/manuals/des/hyd/chapter-4--hydrology/section-13--hydrograph-method/green-and-ampt-loss-model.html)
-table, citing Rawls et al. (1993); its second moisture column (0.417 for sand) is labelled the initial
-content there and is not used. The 1983 K is [a SWMM help page's](https://tbn2net.com/help/SOLIDOSen/SwmmInfiltration.html)
-minimum Horton rate, citing Rawls, Brakensiek and Miller (1983, *J. Hydraulic Engineering* 109). The
-same page's Horton guidance: **f₀ for dry soils with little vegetation 127 mm/h on sand, 76 on loam, 25
-on clay, twice that under dense vegetation; divided by 3 at field capacity and by 1.5 to 2.5 when partly
-dry; the decay k 2 to 7 per hour; a saturated soil drying completely in 2 to 14 days**. **No
-range of K within a texture class was read** (the two tables give one value each); field conductivities
-spread over decades from gravel to clay, and the encyclopaedia's table of them (Bear 1972, via Freeze and
-Cherry) is an image that did not read, so a design that needs a texture's spread reads Rawls's own
-tables first.
+[TxDOT's hydraulic design manual](https://www.txdot.gov/manuals/des/hyd/chapter-4--hydrology/section-13--hydrograph-method/green-and-ampt-loss-model.html)
+(Table 4-27) cites "Rawls et al. (1993)" with no title (probably the Handbook of Hydrology's
+infiltration chapter; not reached); [a SWMM help page](https://tbn2net.com/help/SOLIDOSen/SwmmInfiltration.html)
+cites "Rawls et al. (1983), J. Hyd. Engr., 109:1316", where the paper is Rawls, Brakensiek and Miller,
+*J. Hydraulic Engineering* 109(1), 62–70, and page 1316 is the first page of Rawls, Brakensiek and
+Saxton (1982), *Trans. ASAE* 25(5), so the help page's citation joins the two (*derived* from the
+citations as a search gives them).
 
-**What a stream loses** (*derived*). A bed losing at K a square metre (Green and Ampt's late rate, the
+**What the second pass corrects** (W176, 2026-11-25). The first pass called the K columns "1993" and
+"1983" and their difference "the spread between the two publications". **They are two different
+quantities, not a spread**: TxDOT's column is labelled the saturated conductivity, SWMM's the
+Green–Ampt conductivity (the Horton curve's minimum, "equivalent to" the saturated one by the page's
+own words), and the first is twice the second in nine classes of eleven to the tables' rounding
+(*derived*, the ratio column), four times on loam and once on silt loam. The porosity, its range and
+the suction are the same table in both (ψ to the tables' rounding), so the moisture and the suction
+are one set of 1983 numbers, and TxDOT's second moisture column, which the first pass set aside as
+"initial content", is the **effective porosity** θ_e, the porosity less the residual water: a search
+summary of a course's copy of the same table names that column effective porosity with sand at 0.417
+and loam at 0.434 (search summary, **not read**; it identifies the column and gives no number used).
+So a Green–Ampt deficit Δθ for a dry soil is up to θ_e, not θ_s. Which conductivity a Green–Ampt step
+should take — the saturated one or the one the 1983 parameters were derived with — is what the 1983
+paper says and was not read, so **K stays a scene number with the two columns as its bounds**, and
+the losses derived below are given with both.
+
+**Rawls, Brakensiek and Miller (1983) at the source.** Its only copy found as a file is a scan on a
+state agency's server; the fetch returned compressed image streams and no text, so the paper is
+**not read**, its tables included, and nothing is taken from it directly. What a search summary of its
+abstract gives (**not read**): about 5,000 soil horizons, Green–Ampt parameters (effective porosity,
+wetting-front capillary pressure, conductivity) that could not be assigned by soil order or suborder,
+and a procedure to estimate them from soil-survey properties. Its text stands under the society's
+copyright (ASCE, the journal's publisher); a number is taken from it only as a fact with its citation,
+and none is taken here. **The ranges of ψ and of K within a class** appear in neither manual and were
+**not read**; the 1982 paper's saturated conductivities were not reached either. A second-hand table of another data set (Clapp and Hornberger's 1,845 soils,
+through Dingman, on [CSDMS's TopoFlow page](https://csdms.colorado.edu/wiki/Model_help:TopoFlow-Soil_Properties_Page),
+read, no licence stated) gives standard deviations of a Brooks–Corey air-entry head as large as its
+mean in every class: that is the spread within a texture to expect, and it is a different model's.
+
+The SWMM page's Horton guidance stands as read: **f₀ for dry soils with little vegetation 127 mm/h on
+sand, 76 on loam, 25 on clay, twice that under dense vegetation; divided by 3 at field capacity and by
+1.5 to 2.5 when partly dry; the decay k 2 to 7 per hour; a saturated soil drying completely in 2 to 14
+days**. Field conductivities spread over decades from gravel to clay, and the encyclopaedia's table of
+them (Bear 1972, via Freeze and Cherry) is an image that did not read.
+
+**What a stream loses** (*derived*; at TxDOT's saturated K, the upper of the two columns, and at
+SWMM's where named). A bed losing at K a square metre (Green and Ampt's late rate, the
 unit-gradient limit) takes from a stream 1 m wide, per metre of channel: on the 1993 sand 65 ml/s, on loam
 3.7 ml/s, on clay 0.14 ml/s. A 10 l/s stream would be gone in about **150 m of sand, 2.7 km of loam (10.9
 km at the 1983 value), 70 km of clay**. While the bed is still taking water by capillarity the rate is
@@ -563,6 +670,82 @@ neighbours' read, its new state written — times the cells, over the card's ban
   the foam's lace reads φ. Under [11 §11.10](../plan/11-performance-principles.md#1110-absent-capabilities-are-free)
   a scene with no state pays nothing, and a state's pools are made on first use.
 
+## 8. The check that ties a simulated lake to the steady solve (W176)
+
+(2026-11-25; specified here, to be built as a case of W184's reference, whose tests may link
+`channels` to ask it; the module may not.) **A dynamic solver driven by the steady solve's inflow must
+settle on the steady solve's level for the same lake**, so the two never disagree about where a lake
+stands. The numbers below are *derived* from the closed forms named, worked by hand and checked by a
+numerical integration outside the repository.
+
+**Which level.** The steady solve gives a lake of the plan two numbers. The **body's level** is its
+spill less `basin_notch_m` whatever the discharge, and its outlet's sill is held 2 cm over it
+([channels](../subsystems/channels.md#hollows)): the body stands under its own sill, which no water
+leaving it can do. The **outlet's crest control** is what the outlet's profile solves
+([channels](../subsystems/channels.md#the-profile)): the sill is a crest where the flow passes critical
+depth (Q² T = g A³), and the tranquil profile upstream of it reaches the lake at the sill plus the
+critical section's specific energy plus the friction over the crest. **The tie is to the crest
+control.** The body's level is reported beside it and is a finding: a state started at it fills 2 cm
+plus the head before its outlet runs, which for the forest's largest lake (43.6 ha, 105 l/s leaving),
+through a crest 2 m wide, is 0.118 m of water, about **5.7 days** at the world's own rate with the
+stream below it dry; so a state's starting level for a lake with an outlet is the crest control's.
+
+**The geometry.** x down a slope of 0.1, sill at z = 0: a hollow 8 × 8 m with a flat floor at −0.5 and
+vertical walls; a crest 2 m wide (b) and 0.5 m long (L_c) at z = 0; below it a channel 2 m wide and 5 m
+long falling at 0.1 to a free boundary; walls elsewhere. Cells of 0.125 m (4,800 that can be wet, the
+crest four cells long). Manning's n 0.01 in both solvers; no infiltration (or a full store), no
+evaporation; the inflow Q a mass source over the hollow's first metre, carrying no momentum, which is
+W120's lake with no loss, whose outlet carries all it is fed. Two discharges, 0.1 and 0.02 m³/s (the
+forest's outlets carry 9 to 105 l/s).
+
+**The level by hand** (q = Q / b; y_c = (q² / g)^(1/3); E_c = 1.5 y_c over a rectangular crest; the
+friction over the crest at most L_c n² V_c² / y_c^(4/3), the critical section's slope over the whole
+crest):
+
+| | Q = 0.1 m³/s | Q = 0.02 m³/s |
+|---|---|---|
+| y_c, V_c | 0.06341 m, 0.789 m/s | 0.02169 m, 0.461 m/s |
+| E_c, the head over the sill | **0.0951 m** | **0.0325 m** |
+| friction over the crest, at most | 1.2 mm | 1.8 mm |
+| the lake's level, over the sill | 0.0951 to 0.0964 m | 0.0325 to 0.0343 m |
+| the channel's normal depth (Manning, 0.1) | 0.021 m, shooting | 0.008 m, shooting |
+| the body's level, under the crest control by | 0.115 m | 0.053 m |
+
+The steady solve's own number is first held to the row "the lake's level" (within a millimetre), so a
+disagreement is laid on the right solver.
+
+**The bound: |η_dyn − η_steady| ≤ max(0.05 E_c, 1 mm)**, 4.8 and 1.6 mm, with η_dyn the mean level over
+the hollow's middle 4 × 4 m and the last 10 s. **Why that.** A well-balanced Godunov-type flux makes the
+flow at the controlling face critical on a flat crest, so the head is the scheme's own answer at any Δx
+and the bound need not shrink with the cell; what is left is first-order dissipation where the flow
+quickens onto the crest, the entrance's corners in two dimensions, and the two solvers' different
+friction sums over a crest whose friction is itself 1.3 % to 5.4 % of the head. 5 % of the head is
+7.5 % of the discharge (dQ / Q = 1.5 dH / H). It is far inside every wrong answer the case is for: the
+body's level misses by 121 % and 161 % of the head; a kinematic or local inertial solver does not
+settle; a crest the grid holds as a bed step misses by the step (12.5 mm a cell here, 13 % and 38 %);
+a leak is caught by the mass check. **The bound holds where the crest spans at least four cells**
+(Δx ≤ L_c / 4), so the critical face is on the crest and not at the step below it; the case runs at
+2 Δx too and reports the change.
+
+**How long it runs.** The lake is a reservoir over a weir, A dη/dt = Q − C b H^(3/2) with A = 64 m², so
+it settles with a time constant A E_c / (1.5 Q), 41 s and 69 s; integrated whole, from the body's level
+(2 cm under the sill) it is within 0.1 % of the head after 307 s and 567 s, and from twice the head
+over the sill after 272 and 465 s. **The run is 900 s of world time.** The hollow's first seiche has a
+period of 2 L / √(g h) = 7.2 s, which is why the level is a 10 s mean. At CFL 0.5 the step is about
+0.022 s: some 41,000 steps on 4,800 cells a run.
+
+**What the case asserts**: the steady solve against the hand; the tie, for both discharges and from
+both starts (the body's level, and twice the head over the sill); settled (the level's change over the
+last time constant under a tenth of the bound, its range over the last 10 s under the bound); mass
+(inflow less storage less what leaves through the free boundary zero to the reference's arithmetic,
+the last 10 s' outflow Q within 0.5 %); the two starts within the bound of each other; and the head
+following the law, the two heads' ratio 5^(2/3) = 2.924 within the two bounds' sum.
+
+**What it must not hide**: the body's level's gap, printed; a tie by tuning (no coefficient of the
+case's own, n the same in both solvers and in every other case, no weir law given to the crest); a tie
+at one discharge, from one side, on a snapshot, with water lost, or on a crest the grid does not hold;
+and the ground's take, switched off by name here and W184's to tie separately.
+
 ## The sources, and how far each was read
 
 | source | what is taken | read |
@@ -578,7 +761,8 @@ neighbours' read, its new state written — times the cells, over the card's ban
 | Callaghan, Deane, Stokes (2012, 2024) | foam decay 0.2–10.4 s (2012, white-water's reading); lab and field alike (2024) | 2012 as white-water read it; 2024 search summary only |
 | Chanson, self-aeration on chute and stepped spillways (UQ page) | inception where the boundary layer meets the surface; C_e = 0.9 sin θ; drag reduction table | read |
 | Chentanez, Müller (2010), SCA | full shallow water on terrain with wet/dry, particles for what it cannot hold | search summary of the abstract; the page refused the fetch, the PDF did not parse |
-| CivilGEO, HEC-RAS 2D equation sets | diffusion wave, SWE-ELM, SWE-EM, local inertia: where each serves and fails | read (secondary to the HEC-RAS manual, which was not reached) |
+| CivilGEO, HEC-RAS 2D equation sets | nothing now: the first pass's reading of it (the diffusion wave for dam-break inundation) is corrected by the manual | read (secondary); superseded by the manual |
+| HEC-RAS 2D User's Manual and Hydraulic Reference Manual (USACE Hydrologic Engineering Center, online, latest) | the three equation sets and the cases for the full equations; implicit finite volume, θ 1.0 (0.5–1.0), tolerances 0.01 ft, 20 iterations; Courant targets and maxima 1/3, 1/1, 2/5; sub-grid cell and face tables, 5–7 cells across a channel; wetting and drying as stated | read (the five User's Manual pages named in §1, and the reference manual's 2D page for its text; its equations did not reach as text and are not taken); a federal agency's pages with the centre's copyright line, terms of use not read |
 | Cozzolino et al. (2019), *Adv. Water Res.*, arXiv 1904.12564 | local inertia: shock at moving fronts, no drying, no solution for some problems, energy not conserved | abstract |
 | de Almeida, Bates (2013), *WRR* 49 | local inertia good for Fr < 0.5 | search summary only |
 | Denlinger, O'Connell (2008); Maranzoni, Tomirotti (2022) | the slope limit of the hydrostatic equations | search summaries only |
@@ -591,11 +775,15 @@ neighbours' read, its new state written — times the cells, over the card's ban
 | Kurganov, Petrova (2007), *Comm. Math. Sci.* 5 | well-balanced, positivity-preserving central-upwind | search summary of the abstract; read through Bollermann et al. |
 | lisyarus, "Simulating water over terrain" | the pipe model's equations and limits as implemented | read (secondary) |
 | Ponce, Li, Simons (1978), online version; Ponce's diffusion-wave and Vedernikov pages | kinematic ≥ 171, diffusion ≥ 30; Vedernikov, F_ns 2 (Chézy) and 1.5 (Manning) | read |
-| Rawls et al. (1983, 1993) via TxDOT's manual and a SWMM help page | Green–Ampt parameters by texture; Horton's guidance | read (secondary) |
+| Rawls, Brakensiek, Miller (1983), *J. Hydraulic Eng.* 109(1), 62–70 | nothing directly: its table only through the two manuals below | not read (a scanned PDF that did not parse; the abstract as a search summary only); ASCE copyright |
+| Rawls et al. (1993), as TxDOT's hydraulic design manual's Table 4-27 cites it | θ_s and θ_e with ranges, ψ, the saturated K by texture | read (secondary, the table whole); no licence stated |
+| Rawls et al. (1983), as a SWMM help page cites it | ψ, porosity, the Green–Ampt K by texture; Horton's guidance | read (secondary, the table whole); no licence stated; its citation joins the 1983 paper to the 1982 one |
+| Rawls, Brakensiek, Saxton (1982), *Trans. ASAE* 25(5), 1316 | nothing: its saturated conductivities not reached | not read |
+| Clapp, Hornberger (1978) via Dingman (2002), CSDMS's TopoFlow page | the spread of an air-entry head within a texture, as large as its mean | read (secondary); no licence stated |
 | Tavakkol, Lynett (2017), Celeris | Boussinesq on the GPU, faster than real time | abstracts (arXiv, ICCE) |
 | Thürey, Müller-Fischer, Schirm, Gross (2007) via US 8,204,725 | breaking-front detection and sheets | read (the patent) |
 | USBR, "Groundwater basics: interaction with rivers" | gaining, losing, connected, disconnected; the mound | read |
 | Langmuir circulation, the encyclopaedia's article | windrows of foam at convergence zones, 1–300 m apart, along the wind, above about 3 m/s | read |
-| Weir, the encyclopaedia's article | Q = C L H^n, n 3/2 for a horizontal weir | read |
+| Weir, the encyclopaedia's article | Q = C L H^n, n 3/2 for a horizontal weir; C 3.33 on average, read against the ideal crest's 3.09 ft^½/s (*derived*, §2) | read |
 | Yuksel, House, Keyser (2007), wave particles | method, limits, the boat scene's cost | read (project page) |
 | Not read at all | the USGS circular on ground and surface water (refused), Lamarre's thesis and Lamarre and Melville (1991), Melville, Loewen and Lamarre (1992), Schäffer et al.'s decay rule, Lane (1983) and the Walnut Gulch losses, Yu et al. (2009), From Dust, Timberborn's developers' article, Bear's conductivity table | — |
