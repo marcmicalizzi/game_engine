@@ -33,8 +33,10 @@ as such where it appears and is never a constant — and **under what licence it
 before anything was taken from it. Two of the most used pages carry licences that limit reuse of their
 *text*: the Coastal Wiki's footer is CC BY-NC-SA 4.0 by a search summary of it (its own pages fetched
 tonight print no licence line), and the National Academies' and NALMS' pages are all rights reserved.
-From those only the published equations and numbers they restate are taken, which are their cited
-authors' and not the page's text, and nothing is quoted. No code was read for this page; XBeach's
+From those only equations and facts are taken, and no text: the equations are their cited authors',
+and some numbers are the pages' own statements of fact with no paper named (the Coastal Wiki's load lag,
+dune lengths and lee angles, and its bars', volumes' and recoveries' figures in §2, §7 and §8); nothing
+is quoted. No code was read for this page; XBeach's
 manual (documentation, which states no licence for its text) is read for the published forms it
 describes and nothing of the program. A number computed on this page from read numbers is marked
 *derived*, with its inputs beside it; a statement written from the author's memory is marked
@@ -160,7 +162,8 @@ exchanges with the bed at a rate. Two published forms, read:
   about the time a grain takes to settle through the depth. C_eq is Soulsby and van Rijn's,
   (A_s / h)(√(U² + 0.018 u_rms² / C_d) − U_cr)^2.4, with A_s the bed and suspended coefficients of the
   grain (eq. 100), or van Thiel and van Rijn's (eq. 105). **This is the form every graphics erosion
-  method of §9 uses with a capacity of its own choosing**, and the form a game can afford.
+  method of §9 uses with a capacity of its own choosing**; that it is the form a game can afford is
+  this page's reading (§10), not a source's.
 
 The time the load lags its flow: 0 to 60 minutes over a tide, negligible for sand coarser than about
 0.3 mm (the sand page, read). The water's own mass changes by (E − D)/(1 − p) where the exchange is fast
@@ -169,8 +172,8 @@ The time the load lags its flow: 0 to 60 minutes over a tide, negligible for san
 ## 3. The bed's conservation, and coupling it to the shallow-water step
 
 **Exner** (the encyclopaedia, read): ∂η/∂t = −(1/ε₀) ∇·**q**_s, η the bed's height and ε₀ = 1 − λ_p the
-packing, **0.45 to 0.75** in nature, about 0.64 random close packing as the practical ceiling (so a
-porosity of 0.25 to 0.55). With the suspended exchange (arXiv 2505.22278, eq. 69, read):
+packing, **0.45 to 0.75** in natural systems, 0.64 a typical value for spherical grains (random close
+packing) and 0.74 the upper bound for close-packed spheres (so a porosity of 0.25 to 0.55). With the suspended exchange (arXiv 2505.22278, eq. 69, read):
 
     ∂η/∂t + ∇·(**q**_b / (1 − p)) = (D − E) / (1 − p)
     ∂h/∂t + ∇·(h **u**) = (E − D) / (1 − p)
@@ -199,11 +202,14 @@ and Morales de Luna (2011) show that splitting can make spurious oscillations be
 the coupled system can differ in sign from the split one, and that with Meyer-Peter and Müller's law the
 coupled system is hyperbolic, and so linearly stable, only under a constraint on the velocity (the
 abstract as a search summary gives it, the HAL page refused the fetch: **summary**). **The bed's own
-wave is slow.** The low-Froude linearisation (**memory**: the standard result, not read tonight) gives
-the bed's celerity c_b ≈ (1/(1 − p)) (∂q/∂U)(U/h) / (1 − Fr²). *Derived* for the 1 mm example of §2
-(q ∝ (θ − 0.047)^1.5, θ ∝ U², Fr 0.17): c_b ≈ **2.4 × 10⁻⁴ m/s, under a metre an hour**, against the
-water's U + √(g h) = 2.6 m/s — four orders of magnitude, which is why a bed can step far less often than
-its water and why the coastal models can quicken its clock (§6). The same form shows where that breaks:
+wave is slow.** De Vries' low-Froude linearisation (**memory**: the standard result, **not read
+tonight**) gives the bed's celerity c_b ≈ (1/(1 − p)) (∂q/∂U)(U/h) / (1 − Fr²). *Derived* for the 1 mm
+example of §2 with p = 0.4 (q_b 1.21 × 10⁻⁵ m²/s, q ∝ (θ − 0.047)^1.5 and θ ∝ U² so ∂q/∂U ≈
+1.82 × 10⁻⁴ m, U/h 0.76 s⁻¹, Fr² 0.029): c_b ≈ **2.4 × 10⁻⁴ m/s, under a metre an hour**, against the
+water's U + √(g h) = 2.6 m/s — four orders of magnitude. **This argument, and the bed step of
+minutes in §10 built on it, rest on a formula written from memory**: de Vries' paper, or a text that
+derives it, is to be read before either is relied on. If it holds, that gap is why a bed can step far
+less often than its water and why the coastal models can quicken its clock (§6). The same form shows where that breaks:
 the denominator vanishes near Fr = 1, where bed and surface interact strongly (antidunes, §7), which is
 where splitting is weakest. Carraro et al. (2018; arXiv 1912.05245, abstract read) accelerate both mass
 equations (MASSPEED) with factors chosen from the flux matrix's approximate eigenvalues, adaptively, "in
@@ -239,9 +245,12 @@ looser aggregates; hindered settling at high concentration (Richardson and Zaki)
 cross-section, so a mass concentration C_k (g/m³) of grains of diameter d_k adds to the beam attenuation
 c = c_w + Σ_k b_k C_k, with the mass-specific attenuation **b_k = 3 / (ρ_s d_k)** for solid spheres; a
 black target is seen to the distance where ∫c ds = 4.8, so **y = 4.8 / c** in uniform water (Zaneveld and
-Pegau 2003); clear water's c_w 0.16 m⁻¹ gives 30 m (arXiv 2611.12895, eqs. 22, 23, read, under arXiv's
-non-exclusive licence; it cites Boss et al. 2009 for the size dependence and Davies-Colley and Smith 2001
-for fine silt dominating attenuation). Natural waters measure **0.05 to 1.5 m²/g**, a decade's spread
+Pegau 2003) (arXiv 2611.12895, eqs. 22, 23, read, under arXiv's non-exclusive licence; it cites Boss et
+al. 2009 for the size dependence, Davies-Colley and Smith 2001 for fine silt dominating attenuation,
+and Zaneveld and Pegau for the 4.8). That paper is an **unrefereed 2026 preprint**: its clear water's
+c_w = 0.16 m⁻¹, a sighting range of 30 m, is a value it chose and cites no source for, it calls every
+value of its Table 1 illustrative, and it reads its own sighting ranges as scaling relations rather
+than predictions. b = 3/(ρ_s d) and y = 4.8/c are the forms taken; c_w below is that illustrative 0.16. Natural waters measure **0.05 to 1.5 m²/g**, a decade's spread
 driven mostly by the particles' apparent density (77 % of its variance), not their size (Neukermans et
 al. 2012; **summary**), and aggregated marine particles sit at 0.2 to 0.6 m²/g, nearly insensitive to
 size (Boss, Slade and Hill 2009; **summary**). Black-disc visibility converts to beam attenuation
@@ -286,8 +295,9 @@ a the obstacle's width, y₁ and V₁ the approach depth and speed, K₁ the nos
 attack, K₃ the bed's condition. The factors' values (K₁ 1.0 for a round nose and 1.1 for a square one,
 K₃ 1.1 for clear water) are a search summary's (**summary**); the caps on y_s / a recalled as 2.4 for
 Fr ≤ 0.8 and 3.0 above are **memory**. The encyclopaedia says HEC-18 over-predicts under some
-conditions. *Derived* (K₁K₂K₃ = 1.1): a trunk standing 0.4 m wide in 0.8 m of water at 0.6 m/s
-(Fr 0.21) scours **0.58 m**, 1.4 widths. A log **lying** on the bed is a horizontal cylinder, and pier
+conditions. *Derived*, and **illustrative only** because K₁K₂K₃ = 1.1 rests on the summary's factor
+values: a trunk standing 0.4 m wide in 0.8 m of water at 0.6 m/s (Fr 0.21) scours about 0.58 m,
+1.4 widths. A log **lying** on the bed is a horizontal cylinder, and pier
 equations do not describe it: the scour under a pipeline (Sumer and Fredsøe's, of the order of the
 cylinder's diameter: **memory**) and a log jam's backwater and bank attack were **not read**; the
 owner's tree, laid across a channel, also narrows it, and that narrowing is **contraction scour**, which
@@ -301,9 +311,10 @@ speed (search summaries of the abstract and of a paper quoting it: **summary**).
 **not read** (the National Academies' report on wide piers, which carries it, reached only its contents
 page through the fetch); a search summary of that report gives the longest time to equilibrium as
 **28.96 a / V₁ days** with a/V₁ in seconds (**summary**, not used as a constant: it would put the
-0.4 m trunk above at about 19 days). The shape of the published curve, steep and then slow, is what
-matters first: a fresh obstacle's hole is mostly dug in the first part of its time, and the rest is
-days to weeks of a slowing tail.
+0.4 m trunk above at about 19 days). If those two summaries hold, the curve's shape is what matters
+first: a fresh obstacle's hole is mostly dug in the first part of its time, and the rest is days to
+weeks of a slowing tail — **a reading resting on summaries only**, to be checked against Melville and
+Chiew before anything leans on it.
 
 ## 6. The time scales, and the bed's quickened clock
 
@@ -315,35 +326,42 @@ days to weeks of a slowing tail.
 | the same cloud's silt clearing in a slow stream | minutes to an hour, carried hundreds of metres | §4 |
 | a 5 cm dent refilled by 1 mm bedload at θ 0.1 (q 1.2 × 10⁻⁵ m²/s, over 0.3 m, p 0.4) | about 12 minutes | §2, Exner |
 | sand laid against a log that stops that bedload, a metre of bed | about 7 cm an hour | the same |
-| a scour hole at a fresh obstacle | most of it in the first tenth of t*; t* days to weeks by a summary only | §5 |
+| a scour hole at a fresh obstacle | most of it in the first tenth of t*, and t* days to weeks: both by summaries only | §5 |
 | wave ripples re-forming after a change of waves | tens of minutes to many hours (summaries); nothing below θ 0.043 | §7 |
 | a beach's storm cut | a storm: DUNERULE's reference is 5 hours | §8 |
 | a bar's offshore move | about 90 m in one storm (Duck, 1994) | §8 |
 | a dune foot's recovery | years: back to trend in about 15 at Walcheren after 1953 | §8 |
 | a river bed's long change | the bed's celerity, under a metre an hour on a sand bed and nothing on a stone one; years for a reach | §3 |
 
-**The morphological acceleration factor (MORFAC) is the published form of a calendar rate** — the
-game's third clock (W187), set apart from the world clock that moves what is in front of the eye. The
-coastal models multiply the bed's change in each hydrodynamic step by a factor f_mor and divide every
-input time series by it, so a tide or a wave climate drives f_mor times its own bed change
-(XBeach's manual, read: the time series are divided internally, and f_mor is described as O(1–10));
-**only the sediment's equation is accelerated, not the water's** (Carraro et al. 2018, abstract read).
-The values published: XBeach's manual describes its factor as O(1–10) (read; XBeach is a storm-impact
-model); about 10 for long runs in another model, a
-critical value of roughly 60, 90 and 130 for three tidal cases, O(100) "frequently used", and up to
-1,000 in qualitative long-term studies (**summaries** of the TELEMAC paper, of a Coastal Engineering
-study, of a river study and of a review: none read). **Where it stops being right**, as the authors
-read here put it: no robust objective way to know the largest usable factor in advance (Ranasinghe et
-al. 2011, abstract read, who propose a criterion from the bed-form migration CFL; Reyns et al. 2014,
-abstract read, the same for tidal flow by geometry and time step); the scaling assumes the bed's change
-is linear in the forcing over the accelerated span and that the water is much faster than the bed
-(summaries of the review literature); results compare only at the ends of whole tidal cycles
-(**summary**); and storms are run at low factors, a variable factor lower in strong episodic weather
-(**summary** of a tidal-inlet study). This page's reading of what it distorts: anything whose flow
-depends on the bed changing within the event (a scour hole that changes the flow that digs it, a bar
-that changes where the waves break), and anything not linear in the forcing — a threshold law is not,
-which is one reading of why storm runs keep their factors low. MASSPEED widens the linear range by accelerating the water's mass
-equation too (Carraro et al., abstract).
+**The morphological acceleration factor (MORFAC).** The coastal models multiply the bed's change in
+each hydrodynamic step by a factor f_mor, so a tide or a wave climate drives f_mor times its own bed
+change; XBeach either divides every input time series by it internally (its morfacopt = 1) or leaves
+them alone (morfacopt = 0), and describes f_mor as O(1–10) (XBeach's manual, read); **only the
+sediment's equation is accelerated, not the water's** (Carraro et al. 2018, abstract read). The values:
+the only one read is XBeach's O(1–10) (XBeach is a storm-impact model); about 10 for long runs in
+another model, a critical value of roughly 60, 90 and 130 for three tidal cases, O(100) "frequently
+used", and up to 1,000 in qualitative long-term studies are **summaries** (of a TELEMAC paper, of a
+Coastal Engineering study, of a river study and of a review: none read).
+
+**Where it stops being right.** XBeach's manual (read) states the limits of its own two options: with
+the time series divided, the method is valid only as long as the accelerated water-level changes do not
+alter the hydrodynamics too much, which holds where the tide runs perpendicular to the coast and its
+rise and fall make no significant currents; it cannot be applied where there is an alongshore tidal
+current, as in shallow seas, because it would alter the inertia terms and so the tidal currents; that
+option suits short simulations of extreme events. With the time series left alone, the mean evolution
+over a tidal cycle matches running every cycle only as long as the change in one cycle stays limited;
+that option suits longer simulations without very extreme events. Beyond the manual, from abstracts:
+there is no robust objective way to know the largest usable factor in advance (Ranasinghe et al. 2011,
+who propose a criterion from the bed-form migration CFL; Reyns et al. 2014, the same for tidal flow by
+geometry and time step). From **summaries** only: the scaling assumes the bed's change is linear in the
+forcing over the accelerated span and the water much faster than the bed; results compare only at the
+ends of whole tidal cycles; storms are run at low factors, a variable factor lower in strong episodic
+weather (a tidal-inlet study). This page's reading of what it distorts: anything whose flow depends on
+the bed changing within the event (a scour hole that changes the flow that digs it, a bar that changes
+where the waves break), and anything not linear in the forcing — a threshold law is not, which is one
+reading of why storm runs keep their factors low. MASSPEED widens the linear range by accelerating the
+water's mass equation too (Carraro et al., abstract). How this bears on a game's calendar (W187) is
+this page's reading, and is weighed in [section 10](#which-clock-each-part-reads-w187).
 
 **A calendar that jumps** ("it's winter now") needs a slow state at a date without the gap lived
 through. What the literature offers, each read where marked:
@@ -513,9 +531,12 @@ Everything below is this page's reading of the above, for the design stage; it d
 ### The smallest state a bed needs beside the water's
 
 1. **A mobile layer's thickness δ over the built ground**, the bed the water sees z = z_built + δ, δ ≥ 0.
-   Under δ is the ground's own stack (W183): where it is stone, nothing erodes below δ and transport is
-   supply-limited, at most what arrives (Exner, §3, with a floor). The baked bed is δ₀; a disturbed bed
-   is δ₀ plus a change.
+   Under δ is the ground's own stack, and **the ground owns its layers** (W183): where it is stone,
+   nothing erodes below δ and transport is supply-limited, at most what arrives. That floor is this
+   page's rule, not Exner's: Exner as read (§3) has no non-erodible layer, and no source on
+   non-erodible layers was read (an open question below). The baked bed is δ₀; **a tile that wakes works
+   on a copy of δ** taken from the ground's, so the baked layer stays what it was and the change is the
+   difference.
 2. **Grain classes: one for the bed, one or two for the cloud.** The bed's moving class from the ground's
    type (a gravel channel's D50 is already derived, [channels](channels.md#the-bed)); a fine class (silt,
    clay) is what clouds water and stays up (§1: fine sand and finer go straight to suspension; §4: silt
@@ -546,13 +567,16 @@ with no mobile bed pays none of it.
   transport and the shore's section all read them.
 - **In**: a bed height that changes, with the water step well-balanced over it (§3); **N carried
   scalars**, the foam one of them, each with a source, a decay or a settling sink — one generic carried
-  tracer, not a foam special case; a roughness that changes with the bed's forms (§7: ripples raise Manning's
-  n, a flattened bed lowers it); and the exchange's mass where it is not negligible.
+  tracer, not a foam special case; **a roughness that changes with the bed's forms**: a rippled bed's
+  k_s ≈ 8 η²/λ + 170 D √(θ − θ_c) and a flat sand bed's 2 to 3 D (§7, read), so ripples raise the
+  friction the water feels and a bed washed flat lowers it; and the exchange's mass where it is not
+  negligible.
 - **The coupling**: splitting (water, then bed) is the common way, safe while the bed's wave is
   four orders slower than the water's (§3) and weakest near Fr 1 (Cordier et al., summary only). The
   slowness also means **the bed can step far less often than its water**: at the 1 mm example's
   celerity the bed's own CFL allows minutes on a 0.25 m cell (*derived*, 0.5 × 0.25 m / 2.4 × 10⁻⁴ m/s ≈
-  9 min), though a fresh obstacle raises the local transport by the stress it concentrates.
+  9 min, p = 0.4, on de Vries' celerity as written from memory in §3 and not yet read), though a fresh
+  obstacle raises the local transport by the stress it concentrates.
 
 ### Which clock each part reads (W187)
 
@@ -560,27 +584,45 @@ with no mobile bed pays none of it.
 |---|---|---|
 | a cloud stirred by a foot or a fall | world | sand settles in seconds, silt in minutes (§4) |
 | a footprint's dent refilling | world | minutes under a moving bed (§6) |
-| scour and the deposit round a fresh obstacle | world, while it is in front of the eye; the calendar takes over its slow tail | most of a hole is dug early (§5) |
+| scour and the deposit round a fresh obstacle | world, while it is in front of the eye; the calendar takes over its slow tail | most of a hole is dug early, a tail of days to weeks (§5; both rest on summaries only) |
 | ripples re-forming as a flow changes | world near the eye; the calendar's predictor elsewhere | an equilibrium function of the flow, followed over minutes to hours and frozen under θ 0.043 (§7) |
 | a bar's migration, a storm's cut, the calm's recovery | calendar | storms of hours, recoveries of years (§8) |
 | a river bed's long change, a channel's slow migration | calendar | under a metre an hour on sand, years for a reach (§6) |
 
-**The calendar's rate is the published MORFAC** (§6): the bed's change a hydrodynamic step multiplied,
-the water's not, linear over the span, low in storms. **A jump of the calendar needs the slow state at a
-date without the gap**: the equilibrium forms by forcing (the shore's profile, the ripple, the scour
-depth, the threshold channel), the exponential lag (Kriebel and Dean, summary), an event's result as a
-formula of its strength (DUNERULE, Larson et al.) so a hurricane carries its own within the fits'
-ranges, and a family of baked sections the weather's history chooses among. The world-clock parts are
-then a disturbance on top of whatever the calendar's state is at that date.
+**The calendar's rate against the morphological factor, weighed.** MORFAC (§6) is the published way a
+model runs a bed's clock faster than its water's, and it is the nearest published thing to a calendar
+rate, but the two are not the same size. W187's own figures, one to two calendar years in 100 to 200
+hours of play, are **about 45 to 175 calendar hours a real hour** (*derived*: 8,760 h / 200 h to
+17,520 h / 100 h), a factor of order 100. The only factor this page has *read* is XBeach's O(1–10), and
+its manual limits even that (no alongshore tidal current, accelerated water levels that do not change
+the hydrodynamics, a limited change a tidal cycle); the O(100) and the 60, 90 and 130 are summaries, and
+storms are run low. So in this page's reading:
+
+- **Inside the read range** (a factor up to about 10, no event under way, no alongshore tidal
+  current), a live bed may step its Exner update with the factor applied, as XBeach does.
+- **A calendar running past that range is not the morphological factor at all**: it is the jump
+  route, the slow state taken at a date from the equilibrium forms by forcing (the shore's profile, the
+  ripple, the scour depth, the threshold channel), the exponential lag (Kriebel and Dean, summary; the
+  EBEACH relaxation, read), an event's result as a formula of its strength (DUNERULE, Larson et al.) and
+  a family of baked sections the weather's history chooses among.
+- **During an event the quickening stays low or off**: a storm, a flood or a fresh obstacle is run at
+  the world clock (or a factor near 1), because the factor's linearity fails exactly where a threshold
+  is crossed and the bed changes the flow within the event (§6). **An event's strength is its
+  forcing's** — a hurricane's surge, height, period and duration are inputs to the event formulas,
+  within the ranges those fits were made on (§8) — not a property of the calendar's rate.
+
+A calendar that jumps ("it's winter now") takes the same route as one that runs fast: the slow state at
+the new date, then the world-clock parts as a disturbance on top of it.
 
 ### What "rivers stay mostly baked, the bed moves where something disturbs it" could mean
 
 A baked river bed is **in transport equilibrium, not at rest**: a threshold gravel channel moves its
 median at bankfull and a sand bed moves at most flows, so sediment passes through a reach whose bed
 does not change, ∇·**q** = 0. "Baked" is then that assumption, and a **live region** is one where the
-state's τ_b departs from the baked one: an obstacle, a footprint, a changed discharge, a dam. Its
-upstream edge must be fed the baked equilibrium transport or it scours from its inlet, and its
-downstream edge hands back whatever it does not keep: **the bed's analogue of the water's LOD seam**,
+state's τ_b departs from the baked one: an obstacle, a footprint, a changed discharge, a dam. **The
+seam rule**, this page's reading: a live region's upstream edge must be fed the baked equilibrium
+transport or it scours from its inlet, and its downstream edge hands back whatever it does not keep:
+**the bed's analogue of the water's LOD seam**,
 where sediment as well as water must be counted. A region goes back to baked when its δ has settled
 to a new equilibrium the calendar can carry.
 
@@ -595,9 +637,12 @@ to a new equilibrium the calendar can carry.
 - **The exchange's form**: E − D is closer to the physics and needs the near-bed profile; relaxation to
   C_eq is cheaper, has a single time constant, and is what graphics ships.
 - **What the renderer reads**: C per class times b from the class's diameter (or a measured value in
-  0.05–1.5 m²/g) gives visibility; colour needs an absorption per ground type that was not read.
+  the natural range of 0.05–1.5 m²/g, a summary of Neukermans et al. only) gives visibility; colour needs an absorption per ground type that was not read.
 - **Where a lying log differs from a pier**: the scour under a horizontal cylinder, a jam's backwater
   and the bank's attack were not read; the pier law is the only depth law on this page.
+- **A floor under the mobile layer**: capping a cell's outgoing flux by what its layer and its inflow
+  hold is this page's rule; Exner as read has none, and the published treatments of non-erodible
+  layers were not read. How the cap is made mass-conservative across a step is the design's.
 - **How far the calendar may jump a live region**: equilibrium forms exist for the shore, ripples,
   scour and channels; a river's bed between equilibria (a bar half built) has no closed form read here.
 
@@ -609,9 +654,10 @@ to a new equilibrium the calendar can carry.
 2. **The state gives out τ_b, h and u, and under waves the orbital velocity and excursion at the bed,
    and it carries generic scalars**, each with a source, a decay or a settling sink: the foam is one
    and the suspended classes are the next.
-3. **The bed has its own clocks**: it may step far less often than its water; its slow forms run on the
-   calendar at a published rate (MORFAC) and are obtainable at a date from equilibrium forms; and a
-   baked river is an equilibrium of transport, so a live region's inlet must be fed the baked load.
+3. **The bed has its own clocks**: it may step far less often than its water; a modest quickening
+   (the read O(1–10)) is the morphological factor, kept low during an event, while a calendar of order
+   100 or a jump is served by equilibrium forms, lagged responses and event formulas, not by stepping;
+   and a baked river is an equilibrium of transport, so a live region's inlet must be fed the baked load.
 
 ## The sources, how far each was read, and under what licence
 
