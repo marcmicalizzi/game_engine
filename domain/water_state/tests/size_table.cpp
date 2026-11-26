@@ -7,5 +7,6 @@
 
 using namespace engine;
 
-ENGINE_EXPECT_SIZE(48, 8, water_state::Ledger);
+ENGINE_EXPECT_SIZE(40, 8, water_state::CarriedLedger);
+ENGINE_EXPECT_SIZE(224, 8, water_state::Ledger);
 ENGINE_EXPECT_SIZE(4, 1, water_state::Edges);

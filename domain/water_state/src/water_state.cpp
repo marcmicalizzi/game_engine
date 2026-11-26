@@ -9,7 +9,7 @@
 #include <utility>
 
 // The scheme, with the paper and equation each part comes from (docs/subsystems/water_state.md,
-// "The scheme"):
+// "The step"):
 //   - the update U' = U - dt/dx (F(i+1/2, left side) - F(i-1/2, right side)), the bed's height at a
 //     face the larger of its two cells', each side's depth reconstructed hydrostatically against
 //     it, and the normal momentum's flux corrected on each side by g/2 (h^2 - h*^2): the
@@ -20,7 +20,10 @@
 //     one-sided speeds (2.13)-(2.14), applied across x faces and y faces in turn;
 //   - a velocity of zero below the dry depth (the same paper, section 2, eps = 1e-9);
 //   - Manning's friction, g n^2 |u| u / h^(1/3) (the grounding page's form), integrated linearly
-//     implicitly so it can stop a flow and never reverse it (derived on the page).
+//     implicitly so it can stop a flow and never reverse it (derived on the page);
+//   - the ground's take by Green and Ampt's rate, integrated implicitly (derived on the page);
+//   - the dissipation as the residual of each cell's energy balance, with the same flux formula
+//     carrying the energy across the faces (derived on the page).
 
 namespace engine::water_state {
 
@@ -30,6 +33,7 @@ struct Flux {
   f64 h;  // mass, m^2/s
   f64 n;  // normal momentum, m^3/s^2
   f64 t;  // transverse momentum, m^3/s^2
+  f64 g;  // energy over the density, per metre of face, m^4/s^3
 };
 
 inline f64 pressure(f64 g, f64 h) noexcept { return 0.5 * g * h * h; }
@@ -44,23 +48,33 @@ inline f64 min3(f64 a, f64 b, f64 c) noexcept {
   return m < c ? m : c;
 }
 
+// Energy over the density, per area, of a state on a bed z: h |u|^2 / 2 + g h^2 / 2 + g h z.
+inline f64 energy(f64 g, f64 h, f64 un, f64 ut, f64 z) noexcept {
+  return 0.5 * h * (un * un + ut * ut) + pressure(g, h) + g * h * z;
+}
+
+// Its flux across a face: u_n (h |u|^2 / 2 + g h^2 + g h z).
+inline f64 energy_flux(f64 g, f64 h, f64 un, f64 ut, f64 z) noexcept {
+  return un * (0.5 * h * (un * un + ut * ut) + 2.0 * pressure(g, h) + g * h * z);
+}
+
 // The flux of the system without a bed between two states, each a depth, a normal velocity and a
-// transverse velocity. Bollermann et al. (2014), (2.8), with the one-sided local speeds of
-// (2.13)-(2.14); the transverse momentum is the same formula's third component. Two identical
-// states give the exact flux of that state, which the formula equals in exact arithmetic and which
-// keeps a lake at rest exactly at rest in floating point (the flux and the reconstruction's
-// correction then cancel to the bit).
-inline Flux face_flux(f64 g, f64 hl, f64 ul, f64 vl, f64 hr, f64 ur, f64 vr) noexcept {
+// transverse velocity, on the face's bed z. Bollermann et al. (2014), (2.8), with the one-sided
+// local speeds of (2.13)-(2.14); the transverse momentum and the energy are the same formula's
+// further components. Two identical states give the exact flux of that state, which the formula
+// equals in exact arithmetic and which keeps a lake at rest exactly at rest in floating point (the
+// flux and the reconstruction's correction then cancel to the bit).
+inline Flux face_flux(f64 g, f64 z, f64 hl, f64 ul, f64 vl, f64 hr, f64 ur, f64 vr) noexcept {
   if (hl == hr && ul == ur && vl == vr) {
     const f64 q = hl * ul;
-    return {q, q * ul + pressure(g, hl), q * vl};
+    return {q, q * ul + pressure(g, hl), q * vl, energy_flux(g, hl, ul, vl, z)};
   }
   const f64 cl = std::sqrt(g * hl);
   const f64 cr = std::sqrt(g * hr);
   const f64 ap = max3(ur + cr, ul + cl, 0.0);
   const f64 am = min3(ur - cr, ul - cl, 0.0);
   const f64 span = ap - am;
-  if (!(span > 0.0)) return {0.0, 0.0, 0.0};
+  if (!(span > 0.0)) return {0.0, 0.0, 0.0, 0.0};
   const f64 ql = hl * ul;
   const f64 qr = hr * ur;
   const f64 apam = ap * am;
@@ -69,7 +83,10 @@ inline Flux face_flux(f64 g, f64 hl, f64 ul, f64 vl, f64 hr, f64 ur, f64 vr) noe
       (ap * (ql * ul + pressure(g, hl)) - am * (qr * ur + pressure(g, hr)) + apam * (qr - ql)) /
       span;
   const f64 ft = (ap * (ql * vl) - am * (qr * vr) + apam * (hr * vr - hl * vl)) / span;
-  return {fh, fn, ft};
+  const f64 fg = (ap * energy_flux(g, hl, ul, vl, z) - am * energy_flux(g, hr, ur, vr, z) +
+                  apam * (energy(g, hr, ur, vr, z) - energy(g, hl, ul, vl, z))) /
+                 span;
+  return {fh, fn, ft, fg};
 }
 
 // h^(1/3) from core/math's deterministic log and exp: the C library's cbrt and pow differ in the
@@ -114,28 +131,40 @@ Solver::Solver(const Config& config) : config_(config) {
   v_.resize(cells_, 0.0);
   row_a_.resize(ny, 0.0);
   row_b_.resize(ny, 0.0);
-  row_source_.resize(ny, 0.0);
-  row_open_.resize(ny, 0.0);
-  row_roundoff_.resize(ny, 0.0);
+  rows_.resize(ny);
   const u32 x_faces = (nx + 1) * ny;
   const u32 y_faces = nx * (ny + 1);
   fx_h_.resize(x_faces, 0.0);
   fx_nl_.resize(x_faces, 0.0);
   fx_nr_.resize(x_faces, 0.0);
   fx_t_.resize(x_faces, 0.0);
+  fx_g_.resize(x_faces, 0.0);
   fx_c_.resize(carried * x_faces, 0.0);
   fy_h_.resize(y_faces, 0.0);
   fy_nl_.resize(y_faces, 0.0);
   fy_nr_.resize(y_faces, 0.0);
   fy_t_.resize(y_faces, 0.0);
+  fy_g_.resize(y_faces, 0.0);
   fy_c_.resize(carried * y_faces, 0.0);
 }
 
 bool Solver::inputs_fit(const Inputs& in) const noexcept {
+  const auto fits = [this](std::span<const f64> s) { return s.empty() || s.size() == cells_; };
   if (cells_ == 0) return false;
   if (in.bed_m.size() != cells_) return false;
-  if (!in.manning.empty() && in.manning.size() != cells_) return false;
-  if (!in.source_m_per_s.empty() && in.source_m_per_s.size() != cells_) return false;
+  if (!fits(in.manning) || !fits(in.source_m_per_s)) return false;
+  const bool k = !in.ground_conductivity_m_per_s.empty();
+  const bool s = !in.ground_suction_m.empty();
+  const bool c = !in.ground_capacity_m.empty();
+  if (k != s || k != c) return false;
+  if (!fits(in.ground_conductivity_m_per_s) || !fits(in.ground_suction_m) ||
+      !fits(in.ground_capacity_m))
+    return false;
+  for (u32 q = 0; q < k_max_carried; ++q) {
+    if (!fits(in.carried_source[q]) || !fits(in.carried_exchange[q])) return false;
+    if (q >= config_.carried && (!in.carried_source[q].empty() || !in.carried_exchange[q].empty()))
+      return false;
+  }
   return true;
 }
 
@@ -189,63 +218,58 @@ f64 Solver::stable_step(jobs::JobSystem* jobs) {
   return config_.cfl * config_.cell_m / speed;
 }
 
-// One face between a left (or south) cell and a right (or north) cell. `ln`/`rn` are the cells'
-// velocities normal to the face (negated for a closed edge's mirrored ghost), `lt`/`rt` along it.
-// Writes the face's mass flux, its normal momentum's flux less each side's reconstructed pressure,
-// its transverse momentum's flux, and each carried quantity's flux (the mass flux times the
-// concentration of the cell it comes from).
-#define ENGINE_WATER_FACE(L, R, LN, LT, RN, RT, OUT_H, OUT_NL, OUT_NR, OUT_T, OUT_C, FACE, FACES) \
-  do {                                                                                            \
-    const f64 zl_ = bed[L];                                                                       \
-    const f64 zr_ = bed[R];                                                                       \
-    const f64 zf_ = zl_ > zr_ ? zl_ : zr_;                                                        \
-    const f64 el_ = h_[L] + zl_ - zf_;                                                            \
-    const f64 er_ = h_[R] + zr_ - zf_;                                                            \
-    const f64 hl_ = el_ > 0.0 ? el_ : 0.0;                                                        \
-    const f64 hr_ = er_ > 0.0 ? er_ : 0.0;                                                        \
-    const Flux f_ = face_flux(g, hl_, (LN), (LT), hr_, (RN), (RT));                               \
-    (OUT_H)[FACE] = f_.h;                                                                         \
-    (OUT_NL)[FACE] = f_.n - pressure(g, hl_);                                                     \
-    (OUT_NR)[FACE] = f_.n - pressure(g, hr_);                                                     \
-    (OUT_T)[FACE] = f_.t;                                                                         \
-    if (carried != 0) {                                                                           \
-      const u32 up_ = f_.h > 0.0 ? (L) : (R);                                                     \
-      const f64 hu_up_ = h_[up_];                                                                 \
-      for (u32 k_ = 0; k_ < carried; ++k_) {                                                      \
-        const f64 conc_ = hu_up_ >= dry ? carried_[k_ * cells_ + up_] / hu_up_ : 0.0;             \
-        (OUT_C)[k_ * (FACES) + (FACE)] = f_.h * conc_;                                            \
-      }                                                                                           \
-    }                                                                                             \
-  } while (false)
+// One face between a left (or south) cell l and a right (or north) cell r; l == r for an edge's
+// ghost. `ln`/`rn` are the cells' velocities normal to the face (negated for a closed edge's
+// mirrored ghost), `lt`/`rt` along it. Writes the face's mass flux, its normal momentum's flux less
+// each side's reconstructed pressure, its transverse momentum's flux, its energy's flux, and each
+// carried quantity's flux (the mass flux times the concentration of the cell it comes from).
+void Solver::face(const f64* bed, u32 l, u32 r, f64 ln, f64 lt, f64 rn, f64 rt, const Faces& out,
+                  u32 index) noexcept {
+  const f64 g = config_.gravity;
+  const f64 zl = bed[l];
+  const f64 zr = bed[r];
+  const f64 zf = zl > zr ? zl : zr;
+  const f64 el = h_[l] + zl - zf;
+  const f64 er = h_[r] + zr - zf;
+  const f64 hl = el > 0.0 ? el : 0.0;
+  const f64 hr = er > 0.0 ? er : 0.0;
+  const Flux f = face_flux(g, zf, hl, ln, lt, hr, rn, rt);
+  out.h[index] = f.h;
+  out.nl[index] = f.n - pressure(g, hl);
+  out.nr[index] = f.n - pressure(g, hr);
+  out.t[index] = f.t;
+  out.g[index] = f.g;
+  const u32 carried = config_.carried;
+  if (carried != 0) {
+    const u32 up = f.h > 0.0 ? l : r;
+    const f64 h_up = h_[up];
+    const bool wet = h_up >= config_.dry_depth_m;
+    for (u32 k = 0; k < carried; ++k) {
+      const f64 conc = wet ? carried_[k * cells_ + up] / h_up : 0.0;
+      out.c[k * out.count + index] = f.h * conc;
+    }
+  }
+}
 
 void Solver::x_face_rows(const Inputs& in, u32 begin, u32 end) noexcept {
   const u32 nx = config_.nx;
-  const u32 faces = (nx + 1) * config_.ny;
-  const f64 g = config_.gravity;
-  const f64 dry = config_.dry_depth_m;
-  const u32 carried = config_.carried;
+  const Faces out{fx_h_.data(), fx_nl_.data(), fx_nr_.data(),        fx_t_.data(),
+                  fx_g_.data(), fx_c_.data(),  (nx + 1) * config_.ny};
   const f64* bed = in.bed_m.data();
   const f64 west = config_.edges.west == Edge::closed ? -1.0 : 1.0;
   const f64 east = config_.edges.east == Edge::closed ? -1.0 : 1.0;
   for (u32 y = begin; y < end; ++y) {
     const u32 row = y * nx;
     const u32 frow = y * (nx + 1);
-    {
-      const u32 c = row;  // the west edge: a ghost of cell 0
-      ENGINE_WATER_FACE(c, c, west * u_[c], v_[c], u_[c], v_[c], fx_h_, fx_nl_, fx_nr_, fx_t_,
-                        fx_c_, frow, faces);
-    }
+    const u32 first = row;  // the west edge: a ghost of cell 0
+    face(bed, first, first, west * u_[first], v_[first], u_[first], v_[first], out, frow);
     for (u32 f = 1; f < nx; ++f) {
       const u32 l = row + f - 1;
       const u32 r = row + f;
-      ENGINE_WATER_FACE(l, r, u_[l], v_[l], u_[r], v_[r], fx_h_, fx_nl_, fx_nr_, fx_t_, fx_c_,
-                        frow + f, faces);
+      face(bed, l, r, u_[l], v_[l], u_[r], v_[r], out, frow + f);
     }
-    {
-      const u32 c = row + nx - 1;  // the east edge: a ghost of the last cell
-      ENGINE_WATER_FACE(c, c, u_[c], v_[c], east * u_[c], v_[c], fx_h_, fx_nl_, fx_nr_, fx_t_,
-                        fx_c_, frow + nx, faces);
-    }
+    const u32 last = row + nx - 1;  // the east edge: a ghost of the last cell
+    face(bed, last, last, u_[last], v_[last], east * u_[last], v_[last], out, frow + nx);
   }
 }
 
@@ -253,39 +277,30 @@ void Solver::x_face_rows(const Inputs& in, u32 begin, u32 end) noexcept {
 void Solver::y_face_rows(const Inputs& in, u32 begin, u32 end) noexcept {
   const u32 nx = config_.nx;
   const u32 ny = config_.ny;
-  const u32 faces = nx * (ny + 1);
-  const f64 g = config_.gravity;
-  const f64 dry = config_.dry_depth_m;
-  const u32 carried = config_.carried;
+  const Faces out{fy_h_.data(), fy_nl_.data(), fy_nr_.data(), fy_t_.data(),
+                  fy_g_.data(), fy_c_.data(),  nx * (ny + 1)};
   const f64* bed = in.bed_m.data();
   const f64 south = config_.edges.south == Edge::closed ? -1.0 : 1.0;
   const f64 north = config_.edges.north == Edge::closed ? -1.0 : 1.0;
   for (u32 r = begin; r < end; ++r) {
     const u32 frow = r * nx;
     if (r == 0) {
-      for (u32 x = 0; x < nx; ++x) {
-        const u32 c = x;
-        ENGINE_WATER_FACE(c, c, south * v_[c], u_[c], v_[c], u_[c], fy_h_, fy_nl_, fy_nr_, fy_t_,
-                          fy_c_, frow + x, faces);
-      }
+      for (u32 x = 0; x < nx; ++x)
+        face(bed, x, x, south * v_[x], u_[x], v_[x], u_[x], out, frow + x);
     } else if (r == ny) {
       for (u32 x = 0; x < nx; ++x) {
         const u32 c = (ny - 1) * nx + x;
-        ENGINE_WATER_FACE(c, c, v_[c], u_[c], north * v_[c], u_[c], fy_h_, fy_nl_, fy_nr_, fy_t_,
-                          fy_c_, frow + x, faces);
+        face(bed, c, c, v_[c], u_[c], north * v_[c], u_[c], out, frow + x);
       }
     } else {
       for (u32 x = 0; x < nx; ++x) {
         const u32 s = (r - 1) * nx + x;
         const u32 n = r * nx + x;
-        ENGINE_WATER_FACE(s, n, v_[s], u_[s], v_[n], u_[n], fy_h_, fy_nl_, fy_nr_, fy_t_, fy_c_,
-                          frow + x, faces);
+        face(bed, s, n, v_[s], u_[s], v_[n], u_[n], out, frow + x);
       }
     }
   }
 }
-
-#undef ENGINE_WATER_FACE
 
 void Solver::update_rows(const Inputs& in, f64 dt, u32 begin, u32 end) noexcept {
   const u32 nx = config_.nx;
@@ -299,22 +314,45 @@ void Solver::update_rows(const Inputs& in, f64 dt, u32 begin, u32 end) noexcept 
   const f64 lam = dt / config_.cell_m;
   const f64 edge_volume = dt * config_.cell_m;  // a face's flux times this is m^3
   const u32 carried = config_.carried;
+  const f64* bed = in.bed_m.data();
   const f64* manning = in.manning.empty() ? nullptr : in.manning.data();
   const f64* source = in.source_m_per_s.empty() ? nullptr : in.source_m_per_s.data();
+  const f64* ground_k =
+      in.ground_conductivity_m_per_s.empty() ? nullptr : in.ground_conductivity_m_per_s.data();
+  const f64* ground_s = in.ground_suction_m.data();
+  const f64* ground_cap = in.ground_capacity_m.data();
+  // Each quantity's decay over this step, the same factor in every cell.
+  std::array<f64, k_max_carried> keep{};
+  for (u32 k = 0; k < carried; ++k) {
+    const f64 tau = config_.carried_config[k].decay_s;
+    keep[k] = tau > 0.0 ? det::exp(-dt / tau) : 1.0;
+  }
   for (u32 y = begin; y < end; ++y) {
-    f64 row_source = 0.0;
-    f64 row_open = 0.0;
-    f64 row_roundoff = 0.0;
+    RowSums sums{};
     const u32 frow = y * (nx + 1);
-    if (config_.edges.west == Edge::open) row_open -= fx_h_[frow] * edge_volume;
-    if (config_.edges.east == Edge::open) row_open += fx_h_[frow + nx] * edge_volume;
+    if (config_.edges.west == Edge::open) {
+      sums.open -= fx_h_[frow] * edge_volume;
+      for (u32 k = 0; k < carried; ++k)
+        sums.carried[k].open_edge_out -= fx_c_[k * x_faces + frow] * edge_volume;
+    }
+    if (config_.edges.east == Edge::open) {
+      sums.open += fx_h_[frow + nx] * edge_volume;
+      for (u32 k = 0; k < carried; ++k)
+        sums.carried[k].open_edge_out += fx_c_[k * x_faces + frow + nx] * edge_volume;
+    }
     if (y == 0 && config_.edges.south == Edge::open) {
-      for (u32 x = 0; x < nx; ++x)
-        row_open -= fy_h_[x] * edge_volume;
+      for (u32 x = 0; x < nx; ++x) {
+        sums.open -= fy_h_[x] * edge_volume;
+        for (u32 k = 0; k < carried; ++k)
+          sums.carried[k].open_edge_out -= fy_c_[k * y_faces + x] * edge_volume;
+      }
     }
     if (y + 1 == ny && config_.edges.north == Edge::open) {
-      for (u32 x = 0; x < nx; ++x)
-        row_open += fy_h_[ny * nx + x] * edge_volume;
+      for (u32 x = 0; x < nx; ++x) {
+        sums.open += fy_h_[ny * nx + x] * edge_volume;
+        for (u32 k = 0; k < carried; ++k)
+          sums.carried[k].open_edge_out += fy_c_[k * y_faces + ny * nx + x] * edge_volume;
+      }
     }
     for (u32 x = 0; x < nx; ++x) {
       const u32 i = y * nx + x;
@@ -322,7 +360,10 @@ void Solver::update_rows(const Inputs& in, f64 dt, u32 begin, u32 end) noexcept 
       const u32 e = w + 1;
       const u32 s = y * nx + x;
       const u32 n = s + nx;
-      f64 h = h_[i] - lam * ((fx_h_[e] - fx_h_[w]) + (fy_h_[n] - fy_h_[s]));
+      const f64 z = bed[i];
+      const f64 h0 = h_[i];
+      const f64 energy0 = energy(g, h0, u_[i], v_[i], z);
+      f64 h = h0 - lam * ((fx_h_[e] - fx_h_[w]) + (fy_h_[n] - fy_h_[s]));
       f64 hu = hu_[i] - lam * ((fx_nl_[e] - fx_nr_[w]) + (fy_t_[n] - fy_t_[s]));
       f64 hv = hv_[i] - lam * ((fx_t_[e] - fx_t_[w]) + (fy_nl_[n] - fy_nr_[s]));
       for (u32 k = 0; k < carried; ++k) {
@@ -331,28 +372,60 @@ void Solver::update_rows(const Inputs& in, f64 dt, u32 begin, u32 end) noexcept 
         f64& q = carried_[k * cells_ + i];
         q = q - lam * ((fx_c_[xo + e] - fx_c_[xo + w]) + (fy_c_[yo + n] - fy_c_[yo + s]));
       }
+      // The dissipation: what the cell's energy lost over the transport that the energy's flux
+      // through its faces does not account for (docs/subsystems/water_state.md, "The dissipation").
+      f64 scheme_loss = 0.0;
+      {
+        const bool wet = h >= dry;
+        const f64 u1 = wet ? hu / h : 0.0;
+        const f64 v1 = wet ? hv / h : 0.0;
+        const f64 energy1 = energy(g, h > 0.0 ? h : 0.0, u1, v1, z);
+        const f64 through = (fx_g_[e] - fx_g_[w]) + (fy_g_[n] - fy_g_[s]);
+        scheme_loss = -rho * ((energy1 - energy0) / dt + through / config_.cell_m);
+      }
+      sums.scheme_loss += scheme_loss * area * dt;
       // Under the step's limit the depth cannot go negative in exact arithmetic
       // (docs/subsystems/water_state.md, "The step's length"); what rounding leaves below zero is
       // clamped and counted.
       if (h < 0.0) {
-        row_roundoff -= h * area;
+        sums.roundoff -= h * area;
         h = 0.0;
       }
       if (source != nullptr) {
         const f64 added = source[i] * dt;
         if (added >= 0.0) {
           h += added;
-          row_source += added * area;
+          sums.source += added * area;
         } else {
           const f64 taken = -added < h ? -added : h;
           h -= taken;
-          row_source -= taken * area;
+          sums.source -= taken * area;
+        }
+      }
+      if (ground_k != nullptr && h > 0.0) {
+        // Green and Ampt's rate f = K (1 + psi dtheta / F) integrated implicitly over the step:
+        // F' = F + dt K (1 + s / F') has the positive root below, finite from F = 0 on; the take is
+        // capped by the water there and the room the store has left.
+        const f64 stored = ground_[i];
+        const f64 room = ground_cap[i] - stored;
+        if (room > 0.0) {
+          const f64 kdt = ground_k[i] * dt;
+          const f64 b = stored + kdt;
+          const f64 next = 0.5 * (b + std::sqrt(b * b + 4.0 * kdt * ground_s[i]));
+          f64 take = next - stored;
+          take = take < h ? take : h;
+          take = take < room ? take : room;
+          if (take > 0.0) {
+            h -= take;
+            ground_[i] = stored + take;
+            sums.ground += take * area;
+          }
         }
       }
       f64 speed = 0.0;
       f64 tau_x = 0.0;
       f64 tau_y = 0.0;
-      f64 dissipation = 0.0;
+      f64 friction = 0.0;
       if (h >= dry) {
         if (manning != nullptr) {
           // Manning's friction, the momenta's source -g n^2 |u| u / h^(1/3), taken implicitly in
@@ -372,7 +445,7 @@ void Solver::update_rows(const Inputs& in, f64 dt, u32 begin, u32 end) noexcept 
           const f64 coeff = rho * g * nn * nn * speed / cb;
           tau_x = coeff * u1;
           tau_y = coeff * v1;
-          dissipation = coeff * speed * speed;
+          friction = coeff * speed * speed;
         } else {
           const f64 u1 = hu / h;
           const f64 v1 = hv / h;
@@ -382,6 +455,34 @@ void Solver::update_rows(const Inputs& in, f64 dt, u32 begin, u32 end) noexcept 
         hu = 0.0;
         hv = 0.0;
       }
+      sums.friction += friction * area * dt;
+      const f64 dissipation = (scheme_loss > 0.0 ? scheme_loss : 0.0) + friction;
+      for (u32 k = 0; k < carried; ++k) {
+        const CarriedConfig& cc = config_.carried_config[k];
+        CarriedLedger& account = sums.carried[k];
+        f64& q = carried_[k * cells_ + i];
+        if (cc.per_joule > 0.0 && speed >= cc.min_speed_m_per_s) {
+          const f64 made = cc.per_joule * dissipation * dt;
+          q += made;
+          account.from_dissipation += made * area;
+        }
+        if (!in.carried_source[k].empty()) {
+          const f64 added = in.carried_source[k][i] * dt;
+          q += added;
+          account.source += added * area;
+        }
+        if (!in.carried_exchange[k].empty()) {
+          f64 moved = in.carried_exchange[k][i] * dt;
+          if (moved < 0.0 && -moved > q) moved = -q;  // only what the water holds settles
+          q += moved;
+          account.exchange += moved * area;
+        }
+        if (keep[k] != 1.0) {
+          const f64 kept = q * keep[k];
+          account.decayed += (q - kept) * area;
+          q = kept;
+        }
+      }
       h_[i] = h;
       hu_[i] = hu;
       hv_[i] = hv;
@@ -390,9 +491,7 @@ void Solver::update_rows(const Inputs& in, f64 dt, u32 begin, u32 end) noexcept 
       tau_y_[i] = tau_y;
       dissipation_[i] = dissipation;
     }
-    row_source_[y] = row_source;
-    row_open_[y] = row_open;
-    row_roundoff_[y] = row_roundoff;
+    rows_[y] = sums;
   }
 }
 
@@ -406,9 +505,22 @@ f64 Solver::step(const Inputs& in, f64 max_dt, jobs::JobSystem* jobs) {
            [this, &in, dt](u32 begin, u32 end) { update_rows(in, dt, begin, end); });
   // The rows' sums, added in row order: the same bytes at any thread count.
   for (u32 y = 0; y < config_.ny; ++y) {
-    ledger_.source_m3 += row_source_[y];
-    ledger_.open_edge_out_m3 += row_open_[y];
-    ledger_.roundoff_m3 += row_roundoff_[y];
+    const RowSums& r = rows_[y];
+    ledger_.source_m3 += r.source;
+    ledger_.open_edge_out_m3 += r.open;
+    ledger_.roundoff_m3 += r.roundoff;
+    ledger_.ground_m3 += r.ground;
+    ledger_.scheme_loss_j += r.scheme_loss;
+    ledger_.friction_work_j += r.friction;
+    for (u32 k = 0; k < config_.carried; ++k) {
+      CarriedLedger& to = ledger_.carried[k];
+      const CarriedLedger& from = r.carried[k];
+      to.source += from.source;
+      to.from_dissipation += from.from_dissipation;
+      to.exchange += from.exchange;
+      to.decayed += from.decayed;
+      to.open_edge_out += from.open_edge_out;
+    }
   }
   ledger_.time_s += dt;
   ledger_.steps += 1;
@@ -440,6 +552,13 @@ f64 Solver::ground_volume_m3() const noexcept {
   f64 sum = 0.0;
   for (u32 i = 0; i < cells_; ++i)
     sum += ground_[i];
+  return sum * cell_area_m2();
+}
+
+f64 Solver::carried_total(u32 k) const noexcept {
+  f64 sum = 0.0;
+  for (u32 i = 0; i < cells_; ++i)
+    sum += carried_[k * cells_ + i];
   return sum * cell_area_m2();
 }
 
