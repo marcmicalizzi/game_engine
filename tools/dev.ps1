@@ -310,7 +310,24 @@ function Get-AffectedBuildTargets($result) {
   if (-not $ninja) { $ninja = 'ninja' }
   $lines = & $ninja -C $BuildDir -t targets all 2>$null
   if ($LASTEXITCODE -ne 0) { throw "ninja -t targets failed in $BuildDir ($LASTEXITCODE)" }
-  return Get-AffectedTargets -Modules $result.Modules -Apps $result.Apps -Available (ConvertFrom-NinjaTargets -Lines @($lines))
+  $available = @(ConvertFrom-NinjaTargets -Lines @($lines))
+  # A selected test's own executables that no module target brings (roadmap T225:
+  # `platform.error_mode` runs a probe of its own), read from the commands CTest holds.
+  $helpers = @()
+  $listing = Get-CTestListing
+  if ($listing) { $helpers = @(Get-TestHelperTargets -Json $listing -Filter $result.Filter -Available $available) }
+  return Get-AffectedTargets -Modules $result.Modules -Apps $result.Apps -Helpers $helpers -Available $available
+}
+
+# `ctest --show-only=json-v1` over the preset's tree, once per invocation; empty without a CTest file.
+function Get-CTestListing {
+  if ($null -ne $script:CTestListing) { return $script:CTestListing }
+  $script:CTestListing = ''
+  if ((Get-Command ctest -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath (Join-Path $BuildDir 'CTestTestfile.cmake'))) {
+    $text = (& ctest --test-dir $BuildDir --show-only=json-v1 2>$null) -join "`n"
+    if ($LASTEXITCODE -eq 0) { $script:CTestListing = $text }
+  }
+  return $script:CTestListing
 }
 
 # What the change against -Base can reach, from the preset's module graph (tools/lib/Affected.psm1).
@@ -336,9 +353,9 @@ function Get-AffectedOnce {
   # changed script selects those tests and not every tools.* test. No CTest file, no map, and the
   # rule runs every tools test for a change there, as before.
   $toolTests = $null
-  if ($rule -eq 'edges' -and (Get-Command ctest -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath (Join-Path $BuildDir 'CTestTestfile.cmake'))) {
-    $listing = (& ctest --test-dir $BuildDir --show-only=json-v1 2>$null) -join "`n"
-    if ($LASTEXITCODE -eq 0) { $toolTests = Get-ToolTests -Json $listing -Root $Root }
+  if ($rule -eq 'edges') {
+    $listing = Get-CTestListing
+    if ($listing) { $toolTests = Get-ToolTests -Json $listing -Root $Root }
   }
   $result = Get-AffectedTests -Modules $json.modules -Layers $json.layers -Changed $changed -Mentions $mentions -Rule $rule -Disabled @($json.disabled_capabilities) -ToolTests $toolTests
   Write-Host ("affected: {0} path(s) differ from {1} (rule: {2})" -f $changed.Count, $Base, $rule) -ForegroundColor Cyan
