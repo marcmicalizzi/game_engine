@@ -122,7 +122,7 @@ velocity at the bed.
 
 *Derived*, to give the scale: 1 mm sand under 0.5 m of water at 0.38 m/s with Manning's n of 0.03 has
 τ_b/ρ = g n² U² / h^(1/3) = 0.0016 m²/s², θ = 0.10, and moves by Meyer-Peter and Müller
-**q_b ≈ 1.2 × 10⁻⁵ m²/s** a metre of width (43 litres of grains an hour across each metre of bed).
+**q_b ≈ 1.2 × 10⁻⁵ m²/s** a metre of width (about 45 litres of solid grains an hour across each metre of bed).
 
 ### Suspended load, and the criterion between the two
 
@@ -130,7 +130,7 @@ velocity at the bed.
 
 | P | mode |
 |---|---|
-| > 7.5 | no motion |
+| > 7.5 | initiation of motion |
 | 2.5 – 7.5 | bedload |
 | 1.2 – 2.5 | suspended, 50 % |
 | 0.8 – 1.2 | suspended, 100 % |
@@ -208,7 +208,11 @@ the denominator vanishes near Fr = 1, where bed and surface interact strongly (a
 where splitting is weakest. Carraro et al. (2018; arXiv 1912.05245, abstract read) accelerate both mass
 equations (MASSPEED) with factors chosen from the flux matrix's approximate eigenvalues, adaptively, "in
 a way similar to the CFL condition"; Ranasinghe et al. (2011, abstract read) propose a critical
-acceleration from the CFL condition of bedform migration, its number not read.
+acceleration from the CFL condition of bedform migration, its number not read. Garres-Díaz, Castro
+Díaz, Koellermeier and Morales de Luna (2020, arXiv 2008.08449, abstract read) name the other weakness
+of a depth-averaged bed: what moves grains is the velocity near the bed, which a depth average only
+estimates; their moment model recovers the profile and solves the system coupled, with a scheme whose
+improvement rests on approximating the eigenvalue that belongs to the sediment.
 
 ## 4. Settling, and what a suspended load does to the water's look
 
@@ -256,9 +260,9 @@ So **what clouds water is silt and clay**: a gram of clay hides as much as sixty
 footprint's sand falls out of sight within a stride while its silt drifts on. **Colour** is the
 particles' absorption against their scattering: mineral-rich, small particles absorb more blue per
 mass than larger, more organic ones in the St Lawrence estuary (Mohammadpour et al. 2017, abstract
-read; its licence not read on the page, so its numbers are not taken); the absorption spectrum by mineral (iron-stained
-clay's red-brown, a glacial flour's milky blue-grey) was **not read** and is the ground type's to carry
-(W183). What the renderer would read is a concentration per class, a b per class from its diameter (or
+read; its licence not read on the page, so its numbers are not taken); the absorption spectrum by
+mineral (an iron-stained clay's red-brown, a glacial flour's milky blue-grey, both **memory**) was
+**not read** and is the ground type's to carry (W183). What the renderer would read is a concentration per class, a b per class from its diameter (or
 a measured value inside the natural range), and an absorption colour per ground type.
 
 ## 5. Scour and deposition round an obstacle
@@ -293,10 +297,13 @@ the channel).
 **Time.** Melville and Chiew (1999) define an equilibrium time t* that the same parameters govern as
 the depth, take equilibrium as the hole deepening less than 5 % of the pier's width in 24 hours, and
 find the hole at 50 to 80 % of its equilibrium depth after a tenth of t*, depending on the approach
-speed (search summaries of the abstract and of a paper quoting it: **summary**). Their t* formula and
-its hours or days were **not read** (the National Academies' report on wide piers, which carries both,
-reached only its contents page). The shape of the published curve, steep and then slow, is what matters
-first: a fresh obstacle's hole is mostly dug in the first part of its time.
+speed (search summaries of the abstract and of a paper quoting it: **summary**). Their t* formula was
+**not read** (the National Academies' report on wide piers, which carries it, reached only its contents
+page through the fetch); a search summary of that report gives the longest time to equilibrium as
+**28.96 a / V₁ days** with a/V₁ in seconds (**summary**, not used as a constant: it would put the
+0.4 m trunk above at about 19 days). The shape of the published curve, steep and then slow, is what
+matters first: a fresh obstacle's hole is mostly dug in the first part of its time, and the rest is
+days to weeks of a slowing tail.
 
 ## 6. The time scales, and the bed's quickened clock
 
@@ -308,7 +315,8 @@ first: a fresh obstacle's hole is mostly dug in the first part of its time.
 | the same cloud's silt clearing in a slow stream | minutes to an hour, carried hundreds of metres | §4 |
 | a 5 cm dent refilled by 1 mm bedload at θ 0.1 (q 1.2 × 10⁻⁵ m²/s, over 0.3 m, p 0.4) | about 12 minutes | §2, Exner |
 | sand laid against a log that stops that bedload, a metre of bed | about 7 cm an hour | the same |
-| a scour hole at a fresh obstacle | most of it in the first tenth of t*; t* **not read** | §5 |
+| a scour hole at a fresh obstacle | most of it in the first tenth of t*; t* days to weeks by a summary only | §5 |
+| wave ripples re-forming after a change of waves | tens of minutes to many hours (summaries); nothing below θ 0.043 | §7 |
 | a beach's storm cut | a storm: DUNERULE's reference is 5 hours | §8 |
 | a bar's offshore move | about 90 m in one storm (Duck, 1994) | §8 |
 | a dune foot's recovery | years: back to trend in about 15 at Walcheren after 1953 | §8 |
@@ -346,8 +354,10 @@ through. What the literature offers, each read where marked:
   threshold channel's grain ([channels](channels.md#the-bed)).
 - **A response that lags its forcing exponentially**: Kriebel and Dean (1993) write a profile's erosion
   as the convolution of a time-varying forcing with an exponential response, so the profile lags and
-  reaches only part of its equilibrium in a short storm (**summary** of the abstract). A state at a date
-  is then an integral over the weather's history, not a run.
+  reaches only part of its equilibrium in a short storm (**summary** of the abstract); their numerical
+  model relaxes the section towards Dean's profile at a rate set by the excess of the waves'
+  dissipation over the profile's own (§8, read). A state at a date is then an integral over the
+  weather's history, not a run.
 - **An event's result as a formula of its strength**: van Rijn's DUNERULE gives a storm's eroded volume a
   metre of shore from its surge, wave height, period, duration, grain and slope (§8, read), and Larson et
   al. 2004's impact law gives the dune's retreat from the run-up over its toe (read): **a hurricane can
@@ -400,10 +410,22 @@ is the owner's "different weather, tides, waves".
 
 **Combined waves and current**: the page gives the stress, ⟨τ_cw⟩ = τ_c [1 + 1.2 (τ_w / (τ_c + τ_w))^3.2]
 and the maximum with the angle between them (Soulsby et al. 1993), and no ripple predictor of its own.
-**What W179 must still read**: ripple migration speed and the time a ripple field takes to re-form after
-a change of forcing (neither on the page read), the current-ripple limit by grain, wave-current
-ripples, and ripples on a beach the tide has left (the swash's own forms). A hard bed carries none: the
-ground's type (W183) says where there is sand.
+**How fast a ripple field follows its waves.** Jin et al. (2020, *Geomorphology* 363, abstract read,
+the record's page all rights reserved, so facts only) stepped the waves in a laboratory: the time the
+ripples take to adjust, their hysteresis time scale, is proportional to the change of the orbital
+diameter, with a different coefficient for a growing and a shrinking one; **below a Shields number of
+0.043 the ripples do not change, or change extremely slowly**; and defects in the crests speed the
+adjustment. The numbers by search summaries only: minutes to hours, so a field is often out of
+equilibrium with a storm or a tide (Traykovski et al. 1999); of the order of 20 hours for low-mobility
+cases in a large flow tunnel (O'Donoghue and Clubb 2001); 30 to 40 minutes (Marsh et al. 1999); a
+reorientation that lags a change of wave direction by about an hour. So **a ripple field is a lagged
+state, not only a predictor**: relics of the last storm survive a calm, which is a reason to store its
+height and length where the waves fall under the threshold.
+
+**What W179 must still read**: ripple migration speed, the hysteresis coefficients themselves (Jin et
+al.'s numbers, Traykovski's and O'Donoghue and Clubb's times, all summaries here), the current-ripple
+limit by grain, wave-current ripples, and ripples on a beach the tide has left (the swash's own forms).
+A hard bed carries none: the ground's type (W183) says where there is sand.
 
 ## 8. A shore's section under a storm (W180)
 
@@ -442,7 +464,14 @@ gaps). What the storm does to it, read tonight:
 - **Models of the whole section**: process-based (XBeach; Jacobsen, Fredsøe and Jensen 2014;
   Dubarbier et al. 2015, which needs tuning to local observations; Marchesiello et al. 2022 in 3D),
   semi-empirical (Splinter et al. 2018's multiple bars), equilibrium (Li et al. 2021's barred profile)
-  — named on the sandbars page, none read. Kriebel and Dean's convolution (§6, **summary**).
+  — named on the sandbars page, none read. Kriebel and Dean's convolution (§6, **summary**). Their
+  numerical model's users' manual (EBEACH, Kriebel and Dean for Florida's Department of Natural
+  Resources, July 1984, read through the Government Printing Office's HTML, OCR damaged; no copyright
+  statement on the page) is **relaxation to the equilibrium profile**: the cross-shore transport is
+  Q_s = K (D − D_eq), D the wave energy dissipated per unit volume and D_eq the dissipation of Dean's
+  profile for the grain (h = A x^(2/3)), K 0.001144 ft⁴/lb (Moore 1982), checked against Hurricane
+  Eloise's dune erosion, stepped at half an hour; it stops the dune rebuilding because that would not
+  model nature, and lets the berm recover only while the dune stays cut.
 
 **What W180 must still read**: Kriebel and Dean's time scale itself and Vellinga's erosion profile (both
 named, not reached); a shoreline's equilibrium models against the wave climate (Miller and Dean 2004,
@@ -467,8 +496,8 @@ gravel shore's storm ridge rolls over ([coast](coast.md) has the mechanism).
 **The pattern.** Every real-time method read moves sediment by **relaxation towards a capacity**: the
 water carries a load that rises towards what its speed and slope can carry by a dissolving rate and
 falls towards it by a deposition rate (Mei et al.'s capacity is, from **memory**, C = K_c sin α |**v**|,
-the paper not read), which is the form of XBeach's (C_eq − C)/T_s (§2) with a capacity chosen for looks
-rather than from θ and the grain. Thermal erosion is the avalanching of §3. Layers enter as a stack of
+the paper not read), which is the form of XBeach's (C_eq − C)/T_s (§2) and of Kriebel and Dean's cross-shore
+transport (§8), with a capacity chosen for looks rather than from θ and the grain. Thermal erosion is the avalanching of §3. Layers enter as a stack of
 materials of different erodibility at each cell (Beneš and Forsbach; Štava's four). The limits stated:
 the water's time step, little erosion on flat ground (Mei et al., read), and the pipe model's missing
 momentum ([water-state-grounding](water-state-grounding.md#height-field-solvers-in-graphics)). None
@@ -498,12 +527,15 @@ Everything below is this page's reading of the above, for the design stage; it d
    (h C_eq − h C)/T_s (§2's second, the cheaper and the one graphics uses).
 4. **Bedload as a flux, not a store**: q_b from θ − θ_c per §2, along the bed stress with a downslope
    term, and avalanching past a slope (§3).
-5. **Ripples as a predictor, not a state, at first**: the equilibrium ripple for the cell's flow, waves
-   and grain (§7) is a function of what the state already gives out; only a field that lags its forcing
-   (re-forming after a storm) needs a stored height and phase, and its lag time is not yet read.
+5. **Ripples as a predictor where the bed is mobile, a stored relic where it is not**: the equilibrium
+   ripple for the cell's flow, waves and grain (§7) is a function of what the state already gives out,
+   and a field follows it over tens of minutes to hours (summaries); but under θ ≈ 0.043 a field does
+   not change at all (Jin et al., abstract), so the last storm's ripples stand through a calm. The
+   smallest state that holds that is a ripple height and length a cell (two more 16-bit numbers),
+   relaxed towards the predictor at a rate while θ is above the threshold and frozen below it.
 
 So, beside the water's 16 to 24 bytes a cell: **δ and one or two concentrations, 4 to 6 bytes at
-16 bits each** (*derived*), with the ground's static data (its stack, its D50 by layer) W183's. A scene
+16 bits each, 8 to 10 with a ripple relic** (*derived*), with the ground's static data (its stack, its D50 by layer) W183's. A scene
 with no mobile bed pays none of it.
 
 ### What the water's state must give out and take in
@@ -529,7 +561,7 @@ with no mobile bed pays none of it.
 | a cloud stirred by a foot or a fall | world | sand settles in seconds, silt in minutes (§4) |
 | a footprint's dent refilling | world | minutes under a moving bed (§6) |
 | scour and the deposit round a fresh obstacle | world, while it is in front of the eye; the calendar takes over its slow tail | most of a hole is dug early (§5) |
-| ripples re-forming as a flow changes | world near the eye; a predictor elsewhere | their size is an equilibrium function of the flow (§7); their lag not read |
+| ripples re-forming as a flow changes | world near the eye; the calendar's predictor elsewhere | an equilibrium function of the flow, followed over minutes to hours and frozen under θ 0.043 (§7) |
 | a bar's migration, a storm's cut, the calm's recovery | calendar | storms of hours, recoveries of years (§8) |
 | a river bed's long change, a channel's slow migration | calendar | under a metre an hour on sand, years for a reach (§6) |
 
@@ -597,6 +629,7 @@ to a new equilibrium the calendar can carry.
 | "A moment-based shallow water model for coupled bedload–suspended load transport with variable density", arXiv 2505.22278 (2025) | the coupled shallow-water, bedload, suspended and Exner system; E and D; the settling and Bradford forms | read (the first 100,000 characters) | CC BY 4.0 (stated) |
 | XBeach manual, "Processes and model formulation" (characters 100,000–200,000 for the sediment part) | the advection–diffusion with relaxation (eqs. 87, 88); Soulsby–van Rijn C_eq (eq. 100); bed update with f_mor (eq. 130), O(1–10); slope terms (eqs. 123, 124, 129) | read | documentation: no licence stated for its text; no code read |
 | Carraro, Vanzo, Caleffi, Valiani, Siviglia (2018), *Adv. Water Res.* 117, arXiv 1912.05245 | MORFAC accelerates only the sediment equation; MASSPEED; a CFL-like criterion | abstract | arXiv non-exclusive licence |
+| Garres-Díaz, Castro Díaz, Koellermeier, Morales de Luna (2020), arXiv 2008.08449 | the near-bed velocity a depth average only estimates; a regularised moment model solved coupled | abstract | arXiv non-exclusive licence |
 | Ranasinghe et al. (2011), ICCE 32, "Morphodynamic upscaling with the MORFAC approach" | no robust a-priori limit; a bed-form CFL criterion proposed | abstract | CC BY (the proceedings' page) |
 | Reyns et al. (2014), ICCE 34, the critical MORFAC in tidal conditions | the limit by geometry and time step; a morphological CFL | abstract (UNESCO's record) | none stated on the record |
 | Cordier, Le, Morales de Luna (2011), *Adv. Water Res.* | splitting's oscillations; MPM's coupled hyperbolicity under a velocity constraint | summary only (HAL refused) | — |
@@ -604,7 +637,9 @@ to a new equilibrium the calendar can carry.
 | Mohammadpour et al. (2017), *Biogeosciences* 14, 5297 | that mineral-rich small particles absorb more than organic ones (no number taken) | abstract | not read on the page |
 | NALMS, "The black disk" | the three measures only broadly correlated; method precisions | read | © NALMS, all rights reserved; facts only |
 | Ponce, HEC-18 pier-scour calculator page | the CSU equation's form and factors' meanings (HEC-18 5th ed., 2012) | read | no statement on the page; the equation is FHWA's |
+| Jin, Coco, Tinoco et al. (2020), *Geomorphology* 363, 107229 | the ripples' hysteresis time ∝ the change of orbital diameter, different up and down; no change under θ 0.043; defects speed it | abstract (Illinois Experts' record) | © the record's page, all rights reserved; facts only |
+| Kriebel, Dean (1984), *Beach Erosion Model (EBEACH) Users Manual*, Florida DNR, via the Government Printing Office's HTML | Q_s = K (D − D_eq), K 0.001144 ft⁴/lb (Moore 1982), Hurricane Eloise, half-hour steps, no dune rebuilding | read (OCR damaged) | no statement on the page |
 | WHOI, "Where the surf meets the turf" | a 1.8 m bar about 90 m seaward in a storm, Duck 1994 | read | © WHOI, all rights reserved; facts only |
 | Mei, Decaudin, Hu (2007), slides' text | the algorithm's steps, sizes, hardware, limits; Neidhold's and Beneš's rates | read (secondary to the paper) | no statement read |
-| Melville, Chiew (1999); Wong, Parker (2006); Kriebel, Dean (1993); Hoefel, Elgar (2003); Davies-Colley, Smith (2001); Boss, Slade, Hill (2009); Neukermans et al. (2012); Štava et al. (2008); Krištof et al. (2009); Schott et al. (2023); the MORFAC values 60, 90, 130, O(100), 1,000 | as marked where each appears | summaries only | — |
-| Not read at all | HEC-18 itself and its caps; the National Academies' wide-pier report (contents page only, all rights reserved); Melville and Chiew's t*; Wong and Parker's coefficients; Vellinga; Kriebel and Dean's T_s; Garcia and Parker 1991; Sumer and Fredsøe's pipeline scour; ripple migration and lag; mineral absorption spectra; Musgrave et al.; Beneš and Forsbach; Vanek et al.; Skorkovska; Miller and Dean; Yates et al.; ShoreFor | — | — |
+| Melville, Chiew (1999); Wong, Parker (2006); Kriebel, Dean (1993); Hoefel, Elgar (2003); Davies-Colley, Smith (2001); Boss, Slade, Hill (2009); Neukermans et al. (2012); Štava et al. (2008); Krištof et al. (2009); Schott et al. (2023); the MORFAC values 60, 90, 130, O(100), 1,000; Traykovski et al. (1999), O'Donoghue and Clubb (2001), Marsh et al. (1999) on ripples' lag; the wide-pier report's 28.96 a/V₁ days | as marked where each appears | summaries only | — |
+| Not read at all | HEC-18 itself and its caps; the National Academies' wide-pier report (contents page only, all rights reserved); Melville and Chiew's t*; Wong and Parker's coefficients; Vellinga; Kriebel and Dean's T_s; Garcia and Parker 1991; Sumer and Fredsøe's pipeline scour; ripple migration; mineral absorption spectra; Musgrave et al.; Beneš and Forsbach; Vanek et al.; Skorkovska; Miller and Dean; Yates et al.; ShoreFor | — | — |
