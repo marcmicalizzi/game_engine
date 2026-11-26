@@ -263,6 +263,80 @@ the default skip policy; separately registered cases such as engine_view.frame_l
 their normal run. This changes process grouping only, not assertions, the GPU lock, or its queue
 budget. Do not wrap these runs in an outer GPU lock or report a skipped range as passed.
 
+## A shared buffer's layout and the cases that pin it
+
+**A row that changes the layout of a buffer other modules read runs, with a driver, every case
+below for that buffer, wherever it lives** (roadmap T234). The affected run reaches those cases'
+modules, but in the no-driver form every one of them skips, and a row's own device cases are its
+feature's: R213 put a word behind the visible list's drop counts, ran the lamps' cases, and the
+merge's first gate went red on the renderer's arrival case, which held the list's old tail. A
+brief for such a row names these cases. The size tables (`tests/size_table.cpp`) are a compile:
+a size or an `offsetof` that moved stops the module's test executable from building, which the
+affected build sees without a driver. A file's cases run alone with doctest's filter,
+`build/<preset>/domain/gfx/engine_gfx_tests --source-file=*cull_tests.cpp` (the executable is
+`engine_<module>_tests` under the module's directory; `gfx` runs as `gfx.1` and `gfx.2`,
+`renderer` as `renderer.1` to `.4`).
+
+- **The visible list and its tail** (`GpuScene::make_run_buffer`: the runs' `uint2` entries, then
+  the two drop counts, the resolve's capped pixels and a pad word). `engine_renderer_tests`:
+  "dynamic instances: a tail's arrival lays the runs out at the first bound" (the tail's bytes),
+  "dynamic instances: runs sized by the frame draw the same, and a full run counts drops",
+  "dynamic instances: a refused lay-out of the runs leaves the scene as it was", and "lamp: the
+  cap on the shadow rays a pixel traces holds the picture, under traced shadows" (the capped
+  pixels). `engine_gfx_tests`: "normal cones: the cull pass drops backfacing clusters without
+  changing the picture" lays a list out by hand (`cone_tests.cpp`).
+- **The statistics words** (`scene_renderer.cpp`: sixteen a view, words 13 and 14 the drop
+  counts and 15 the capped pixels, then the pool's `DeformAlloc`, the chain's
+  `k_cluster_record_count_words`, the cascades' five each). The drop counts' and the capped
+  pixels' readers are the visible list's cases above. The chain's words: `engine_gfx_tests`,
+  every case of `clas_records_tests.cpp` ("clas records: a set sized under the frame keeps whole
+  instances, casters last", "clas records: past the capacity the cut keeps what rt_keep keeps"
+  read them by index). The vertex path's header: "vertex path: the indexed draw draws the cut's
+  own triangles, the same picture".
+- **`geometry::ClusterDesc` and `ClusterLodDesc`** (also on disk). `engine_geometry_tests`:
+  "determinism: the content build writes the committed bytes (raster clusters)" and "(ray-tracing
+  clusters)", and `cluster_file_tests.cpp` ("cluster file: a DAG with materials survives a round
+  trip array by array"). On the GPU, `engine_gfx_tests`: "cluster cull: GPU selection matches the
+  CPU reference and the cut covers the leaves", "visibility buffer: hardware and software
+  rasterization agree, resolve shows it", "ray query: primary visibility matches the rasterized
+  LOD cut".
+- **`gfx::MeshDesc` and `gfx::InstanceDesc`**. `engine_gfx_tests`: "scene: the pair cull, the
+  two rasterizers, ray tracing, and occlusion over instances", "occlusion lod: a crown behind a
+  screen is cut coarser, and only its slivers change", "world eye: instance_from_eye is
+  engine::relative to the bit, and moving by cells changes no bit", and every case of
+  `clas_records_tests.cpp`. `engine_renderer_tests`: "world translation: a scene and its camera moved by whole cells draw
+  the same bytes".
+- **`gfx::CullParams`** (read through an address; `k_cull_params_eye_offset`, which
+  `ClusterDrawParams::eye` reaches back from). `engine_gfx_tests`: the cull, scene, occlusion,
+  cone, stream and vertex-path files — "cluster cull: the streaming drawing rule is the CPU
+  reference, page for page", "occlusion culling: two passes draw fewer clusters and the same
+  picture", "vertex path: the baseline tier fills the visibility buffer like the mesh path" among
+  them. `engine_renderer_tests`: "dynamic instances: the cull draws the same with the pair table
+  read and searched", "... with instances culled first and not", "... with nodes before
+  instances".
+- **The material's record, `gfx::ResolveMaterial`** (and the word the mask test reads at 44,
+  `k_resolve_material_flags_offset`; a terrain's `TerrainRecord` is bit-cast into the same
+  table). `engine_gfx_tests`: "material resolve: metallic-roughness and normal maps", "material
+  resolve: emissive and occlusion maps, and the UV transform", and every case of
+  `shading_tests.cpp`, `stochastic_material_tests.cpp` and `water_shading_tests.cpp`.
+  `engine_renderer_tests`: every case of `alpha_mask_tests.cpp` ("alpha mask: every rasterizer
+  and the ray path write the same masked picture") and `terrain_materials_tests.cpp`.
+- **`gfx::ResolveParams`** (pushed by address, one block a view). `engine_gfx_tests`: every case
+  of `shading_tests.cpp`, `attributes_tests.cpp`, `ground_detail_tests.cpp`,
+  `tangent_convention_tests.cpp`, `authored_tangent_tests.cpp` and `water_shading_tests.cpp`,
+  which lay the blocks out by `sizeof`, and "visibility buffer: hardware and software
+  rasterization agree, resolve shows it".
+- **The frame record a flight writes** (`scene::FrameRecord`, `@version` in `scene.schema`).
+  `engine_renderer_tests`: "flythrough: every pass bucket of the record comes from the one pass
+  list" and "flythrough: the record carries the resolve's stop stage and the sun ray's rule".
+  `engine_engine_view_tests`: "engine-view: a window's long frames without records match the
+  records' and allocate nothing". `tools.frame_budget`, which reads the records the budgets judge.
+- **Push blocks checked against the shader's reflection** need no driver to fail:
+  "dynamic instances: the pair expansion's push constants are the shader's" (`PairExpandParams`).
+
+The list is what the source held on 2026-11-25; a case that lays one of these out by hand is
+added here in the commit that adds it.
+
 ## The gates the rules promised
 
 Four accepted rules had no machinery behind them until 2026-10-07 (roadmap T11, T20, T46, T48).
