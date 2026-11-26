@@ -185,13 +185,17 @@ per-build figures were taken with a job object instead. It is not run by the gat
 - **It builds only what those tests need** (since 2026-10-20, roadmap T68): each affected module's
   library, test executable and bench, the apps among them, every app when the tools' own tests run
   (they start them; [local Linux](local-linux.md#build--affected)), whatever those tests name with
-  `add_dependencies`, and **every target a selected test's command runs** (roadmap T225:
-  `platform.error_mode` is `add_test(... COMMAND engine_platform_error_mode_probe)`, an executable
-  no module target links or depends on, so it was selected, not built, and reported Not Run; an
-  argument of the command whose file name is a target counts too, which is how a script's test
-  names one by `$<TARGET_FILE:...>`). Those come from CTest's own listing (`Get-TestHelperTargets`),
-  which writes a target's file into the command whether it is built or not; on the tree of
-  2026-11-25 the probe is the only one (`cmake --build --preset <p> --target <list>`; `tools/dev.ps1 build -Affected`
+  `add_dependencies`, and **every target a selected test's command runs whose file is named
+  after the target** (roadmap T225: `platform.error_mode` is `add_test(... COMMAND
+  engine_platform_error_mode_probe)`, an executable no module target links or depends on, so it
+  was selected, not built, and reported Not Run). Those come from CTest's own listing
+  (`Get-TestHelperTargets`), which writes a target's file into the command whether it is built or
+  not: every argument that is an absolute path under the build directory and whose file name is a
+  target counts, which is also how a script's test names one by `$<TARGET_FILE:...>`, and CMake's
+  own phony targets (`all`, `test`, `install`, ...) never do. An app's file is its OUTPUT name
+  (`engine-host.exe` names no target), so an app is found this way never; its own targets and
+  `add_dependencies` cover it today. On the tree of 2026-11-25 the probe is the only helper found
+  (`cmake --build --preset <p> --target <list>`; `tools/dev.ps1 build -Affected`
   does the same without the tests, and `tools/dev.ps1 affected` prints the list). A fresh worktree's
   first build is where that counts: measured on the 2026-10-20 tree in `msvc-debug`, a change in
   `domain/flora`, a capability and so (under the rule of the day) everything above its layer, asks for 1,146 of the tree's 1,542

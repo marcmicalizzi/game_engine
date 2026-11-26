@@ -175,6 +175,15 @@ $t = Get-AffectedTargets -Modules $r.Modules -Helpers $h -Available $ninjaHelper
 Test-That 'the build list carries the helpers beside the module targets' {
   ($t -contains 'engine_physics_error_mode_probe') -and ($t -contains 'engine_physics_tests') -and -not ($t -contains 'engine_gfx_helper')
 }
+$phony = @{ kind = 'ctestInfo'; tests = @(
+    @{ name = 'physics.words'; command = @('C:/pwsh.exe', '-File', 'C:/src/tools/y.ps1', '-Mode', 'all', 'C:/src/test', 'C:/b/install') },
+    @{ name = 'physics.outside'; command = @('C:/elsewhere/engine_physics_probe2.exe') }) } | ConvertTo-Json -Depth 5
+$ninjaCmake = $ninjaHelpers + @('test', 'install', 'edit_cache')
+Test-That 'CMake''s own phony targets are never helpers, and under -BuildDir only paths under the build directory count' {
+  @(Get-TestHelperTargets -Json $phony -Filter $r.Filter -Available $ninjaCmake).Count -eq 1 -and
+    @(Get-TestHelperTargets -Json $phony -Filter $r.Filter -Available $ninjaCmake -BuildDir 'C:\b').Count -eq 0 -and
+    ((Get-TestHelperTargets -Json $listing -Filter $r.Filter -Available $ninjaHelpers -BuildDir 'C:\b') -join ',') -eq ($h -join ',')
+}
 Test-That 'everything selected takes every test''s helper, and an empty listing none' {
   ((Get-TestHelperTargets -Json $listing -Filter $null -Available $ninjaHelpers) -contains 'engine_gfx_helper') -and
   (@(Get-TestHelperTargets -Json '' -Filter $r.Filter -Available $ninjaHelpers).Count -eq 0)

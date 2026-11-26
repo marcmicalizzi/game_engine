@@ -315,7 +315,7 @@ function Get-AffectedBuildTargets($result) {
   # `platform.error_mode` runs a probe of its own), read from the commands CTest holds.
   $helpers = @()
   $listing = Get-CTestListing
-  if ($listing) { $helpers = @(Get-TestHelperTargets -Json $listing -Filter $result.Filter -Available $available) }
+  if ($listing) { $helpers = @(Get-TestHelperTargets -Json $listing -Filter $result.Filter -Available $available -BuildDir (Resolve-Path -LiteralPath $BuildDir).Path) }
   return Get-AffectedTargets -Modules $result.Modules -Apps $result.Apps -Helpers $helpers -Available $available
 }
 
