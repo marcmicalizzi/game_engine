@@ -410,9 +410,19 @@ The game's question about the water at a point keeps its guarantee (the same bit
 
 ### The budget
 
-**Not yet measured**, and set from the measurement, not before it. The target is the frame the engine is judged on: 3840 × 2160 with traced visibility and shadows. Four lines are the state's: **the step** (cells × sub-steps × rate); **the surface** (the pool's stage over the awake tiles' vertices); **the traced structures** (an awake tile's surface is rebuilt or refitted every tick); **the resolve's reads** (the tile's bed, level and foam in place of the depth map). For the step alone, the published 530 million cells a second in single precision on a 2010 card, scaled by memory bandwidth, suggests about 0.2 ms a sub-step for a million cells on the fastest card the engine is measured on and three to five times that on the oldest (*derived, an estimate to be replaced*); W175 measures it at three grids on both.
+**Measured for the step alone, on one card** (W175, 2026-11-26), and set from measurements, not before them. The target is the frame the engine is judged on: 3840 × 2160 with traced visibility and shadows. Four lines are the state's: **the step** (cells × sub-steps × rate); **the surface** (the pool's stage over the awake tiles' vertices); **the traced structures** (an awake tile's surface is rebuilt or refitted every tick); **the resolve's reads** (the tile's bed, level and foam in place of the depth map). For the step alone W175 measured, on the RTX 5090 beside other work (so an upper bound), 0.098 to 0.106 ms a sub-step at 2,048² cells, which is 0.023 to 0.025 ms for a million cells, for a lake, a stream's reach and a beach with friction and no sources, and one sub-step a 1/60 s tick at 0.5 m cells. That is about a tenth of what this page had estimated from a 2010 card's published figure. It does not yet include writing the stress at the bed, the dissipation or a carried scalar, the ground's take, or a source; the older card is not measured; and the surface, the traced structures and the resolve's reads are not measured at all.
 
-**By card** (proposed, to be fixed from W175's numbers): the fastest class runs up to two million live cells (about 120 MB); the middle class half a million; the oldest cards the engine is tested on run baked, with up to a hundred thousand live cells where a scene asks. Each is a ceiling the load checks against the scene's declared tiles.
+**By card** (proposed; W175's figure says the step is not what bounds the fastest class, so these ceilings wait on the surface's and the structures' cost): the fastest class runs up to two million live cells (about 120 MB); the middle class half a million; the oldest cards the engine is tested on run baked, with up to a hundred thousand live cells where a scene asks. Each is a ceiling the load checks against the scene's declared tiles.
+
+### What the first night showed
+
+(2026-11-26: W175's and W184's first results, each read independently before it was merged.)
+
+- **The step is cheap on the fastest card** (the budget, above), **and it is the same step**: the card's shader was read operation by operation against the reference, and the two agree on the dam breaks to about one part in ten million of the water. Not yet shown: a cell-by-cell comparison in two dimensions, the three other open edges, and any second device.
+- **A lake at rest needs the datum.** In single precision, with world heights near 2,000 m and no datum, every wet cell of a small lake moved (2,592 of 3,072 cells); with the bed as a height from the grid's own datum none did. One datum for a domain is a requirement of the first form, not a nicety.
+- **A slow exchange needs its own arithmetic.** A loam's take from a pond a metre deep came out 3.3 % short with the plain step, 0.4 % short applied every 64 steps, and 0.001 % short with a compensated sum that costs 8 bytes a cell. The compensated sum is the first form's.
+- **The same bytes on every device are not free, and not yet shown.** A step built from addition, subtraction and multiplication alone cost 17 to 59 % more than the native one on the one card measured, and no second device has been compared. The shaders must also be compiled with contraction forbidden by a flag, because the shading language's keyword alone was found to forbid nothing. ADR-0080's first decision for the owner stands as recommended until a second device is measured.
+- **The reference does not yet hold a lake's level over a lip the bed steps up to.** Where the bed rises between two cells by a fraction of the depth or more, the hydrostatic reconstruction carries too little of the discharge through the face and the level upstream stands too high: 38 and 48 % of the head over a half-metre wall in W184's hollow, the same at twice the cell. The mechanism is published, and the reference's own sections above and W176's specification give it. So the reference is trusted today for conservation, a lake at rest, dam breaks and bores, the ground's take and its bytes, and **not** for a dam's lip, a weir, a ledge in a stream, or thin water over terrain sampled coarser than its relief; a foam fed by dissipation would also light up wrongly there. The scheme needs a reconstruction that keeps moving water steady before W176's tie is built or W192's dam is judged: that is row W199.
 
 ### The stages
 
@@ -422,13 +432,14 @@ The game's question about the water at a point keeps its guarantee (the same bit
 | W175 | the step on the card, held to the reference and measured | W184 |
 | W176 | the check that a settled state stands where the steady solve says | W184 |
 | W191 | the state in a running scene: one domain, tiled from the start, one cell size; sources and events on the world clock; advanced by ticks; pools on first use; absent free | W184, W175 |
-| W192 | drawing reads the state: the surface, the shore per pixel, the traced structures; a pond that fills and a dam that spills, judged standing alone | W191 |
+| W192 | drawing reads the state: the surface, the shore per pixel, the traced structures; a pond that fills and a dam that spills, judged standing alone | W191, W199 |
 | W193 | the foam as a consequence: fed by the energy lost at a bore or a jump, carried, fading; a stream's white and a wave's the same | W192 |
 | W194 | the tiers: baked, live and mixed as the game's setting; waking by observers and retiring; the ledger at the seam; what a save carries | W192, W176 |
 | W195 | tiles by distance and nested two to one, the range and the memory by card, the state's lines in the frame budgets | W194 |
 | W196 | the surf: a corridor driven at an edge that generates the train and lets the reflected one leave (an edge the reference gains first), breaking as bores, the swash as a front | W193, W195 |
 | W197 | the ground's store drawn: wet ground as a consequence, a losing reach | W192 |
 | W198 | the first shortcuts, one switch each, each judged by the owner's eye | W195, T232 |
+| W199 | the reference holds moving water over a bed that steps between cells | W184, W176 |
 
 The bed (W178 to W180) attaches at W191 through the bed as an input, the stress and the wave's measure as outputs and a carried scalar with its exchange; bodies (W181) and plants (W182) at W192; the layered ground (W183) owns the mobile layer; the calendar (W187) is read from W194 on.
 
