@@ -276,7 +276,13 @@ below for that buffer, wherever it lives** (roadmap T234). The affected run reac
 modules, but in the no-driver form every one of them skips, and a row's own device cases are its
 feature's: R213 put a word behind the visible list's drop counts, ran the lamps' cases, and the
 merge's first gate went red on the renderer's arrival case, which held the list's old tail. A
-brief for such a row names these cases. The size tables (`tests/size_table.cpp`) are a compile:
+row that touches one names these cases in its plan. **The list covers the buffers and structs
+several modules read**; `domain/gfx/tests/size_table.cpp` alone pins about sixty types, many of
+them mirrored on the card and not named here (`SkyParams`, `ResolveLight`, `ShadowMapParams`,
+`FrameEye`, `DeformAlloc`, `ClusterDrawParams`, `ClusterRecordParams`, `VertexDrawHeader`,
+`WaterSurface`, `GroundDetailParams`, ...). For any mirrored struct, named here or not, find the
+cases with `git grep -l <Type> -- '*/tests/*'` and run every one of them with a driver. The size
+tables (`tests/size_table.cpp`) are a compile:
 a size or an `offsetof` that moved stops the module's test executable from building, which the
 affected build sees without a driver. A file's cases run alone with doctest's filter,
 `build/<preset>/domain/gfx/engine_gfx_tests --source-file=*cull_tests.cpp` (the executable is

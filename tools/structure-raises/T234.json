@@ -1,11 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "T234",
-  "reason": "T234: what-to-run.md names, for the visible list, the statistics words and each GPU-mirrored struct, the cases that pin their layout; AGENTS.md's size-table rule points at that section",
+  "reason": "T234: what-to-run.md names, for the buffers and structs several modules read, the cases that pin their layout, and the git grep for any other mirrored struct; AGENTS.md's size-table rule points at that section",
   "date": "2026-11-25",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:AGENTS.md": 251,
-    "page:docs/ci/what-to-run.md": 6004
+    "page:AGENTS.md": 355,
+    "page:docs/ci/what-to-run.md": 6524
   }
 }
