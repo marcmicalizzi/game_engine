@@ -46,7 +46,7 @@
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7869
+      "ceiling": 7870
     },
     {
       "id": "engine_view.run_view.lines",
@@ -77,7 +77,7 @@
       "file": "schemas/scene.schema",
       "struct": "Scene",
       "why": "every world feature's data",
-      "ceiling": 22
+      "ceiling": 23
     },
     {
       "id": "engine_view.main_cpp.if_engine_view",
@@ -107,19 +107,19 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 1586033
+      "ceiling": 1586976
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 789108
+      "ceiling": 790174
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 409730
+      "ceiling": 410425
     },
     {
       "id": "page:docs/subsystems/geometry.md",
@@ -179,7 +179,7 @@
       "id": "page:AGENTS.md",
       "measure": "page-bytes",
       "file": "AGENTS.md",
-      "ceiling": 76605
+      "ceiling": 76960
     },
     {
       "id": "page:docs/subsystems/rocks.md",
@@ -215,7 +215,7 @@
       "id": "page:docs/subsystems/scene_gen.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/scene_gen.md",
-      "ceiling": 103652
+      "ceiling": 111597
     },
     {
       "id": "page:docs/subsystems/texture.md",
@@ -227,7 +227,7 @@
       "id": "page:docs/ci/what-to-run.md",
       "measure": "page-bytes",
       "file": "docs/ci/what-to-run.md",
-      "ceiling": 123309
+      "ceiling": 130748
     },
     {
       "id": "page:docs/subsystems/animation.md",
@@ -245,13 +245,19 @@
       "id": "page:docs/subsystems/audio.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/audio.md",
-      "ceiling": 121278
+      "ceiling": 122431
     },
     {
       "id": "page:docs/subsystems/world_sound.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/world_sound.md",
-      "ceiling": 105205
+      "ceiling": 115120
+    },
+    {
+      "id": "page:docs/experiments/README.md",
+      "measure": "page-bytes",
+      "file": "docs/experiments/README.md",
+      "ceiling": 102564
     }
   ],
   "rebaselines": [
@@ -4820,6 +4826,142 @@
           "id": "page:docs/subsystems/world_sound.md",
           "old": 100000,
           "new": 105205
+        }
+      ]
+    },
+    {
+      "date": "2026-11-26",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "ba7a4d1ad",
+      "folded": [
+        {
+          "name": "S121-view-cases",
+          "reason": "S121's mend at the gate: apps.md's two testing notes say what engine-view's chirp case and its grove case hold under S121's still-air rule (the chirp case raises the world's calm threshold over the walk's speed; the calm leg hears the walker's own wind at the two ears and nothing else)",
+          "date": "2026-11-26",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 480
+          }
+        },
+        {
+          "name": "S121",
+          "reason": "S121: world_sound.md says how the wind at the ears is built (the level past the head, the spectrum from Nelke's published coefficients and the low-pass fitted to it, the shared gust and each ear's Weibull buffeting smoothed by the mixer's ramp, the gain kept at S112's A-weighted level) and its cases; audio.md says why the shaped-noise voice gains a low-pass after its bands and pins a session with it on",
+          "date": "2026-11-26",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/audio.md": 1153,
+            "page:docs/subsystems/world_sound.md": 9915
+          }
+        },
+        {
+          "name": "T225",
+          "reason": "T225: what-to-run.md says the affected build takes every target a selected test's command runs whose file is named after it, and why platform.error_mode's probe was selected and not built",
+          "date": "2026-11-25",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/ci/what-to-run.md": 915
+          }
+        },
+        {
+          "name": "T234",
+          "reason": "T234: what-to-run.md names, for the buffers and structs several modules read, the cases that pin their layout, and the git grep for any other mirrored struct; AGENTS.md's size-table rule points at that section",
+          "date": "2026-11-25",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:AGENTS.md": 355,
+            "page:docs/ci/what-to-run.md": 6524
+          }
+        },
+        {
+          "name": "W178",
+          "reason": "batch 76: the experiments index gained lines for T232, W178, R233 and W177, W185, W175, S121 and W186's pages; W178's line took it past the default",
+          "date": "2026-11-26",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/experiments/README.md": 2564
+          }
+        },
+        {
+          "name": "W185",
+          "reason": "W185: the civil sky's clock reaches the game runner (one wrapped call in engine-view's main.cpp) and apps.md says what --time-of-day, the summary's sky block and GameTick's clocks mean under it; renderer.md's sky paragraph names the civil form's four fields",
+          "date": "2026-11-26",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 1,
+            "page:docs/subsystems/renderer.md": 338,
+            "page:docs/subsystems/apps.md": 515
+          }
+        },
+        {
+          "name": "W186",
+          "reason": "W186: a scene carries where on the Earth it is: the scene root's georeference field, its section in scene_gen.md (the mirrors, the heights' bound, the foot grids), a paragraph each in gfx.md and renderer.md and a line in apps.md",
+          "date": "2026-11-26",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "schemas.scene_root.fields": 1,
+            "page:docs/subsystems/renderer.md": 605,
+            "page:docs/subsystems/apps.md": 71,
+            "page:docs/subsystems/gfx.md": 695,
+            "page:docs/subsystems/scene_gen.md": 7945
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7869,
+          "new": 7870
+        },
+        {
+          "id": "schemas.scene_root.fields",
+          "old": 22,
+          "new": 23
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 1586033,
+          "new": 1586976
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 789108,
+          "new": 790174
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 409730,
+          "new": 410425
+        },
+        {
+          "id": "page:AGENTS.md",
+          "old": 76605,
+          "new": 76960
+        },
+        {
+          "id": "page:docs/subsystems/scene_gen.md",
+          "old": 103652,
+          "new": 111597
+        },
+        {
+          "id": "page:docs/ci/what-to-run.md",
+          "old": 123309,
+          "new": 130748
+        },
+        {
+          "id": "page:docs/subsystems/audio.md",
+          "old": 121278,
+          "new": 122431
+        },
+        {
+          "id": "page:docs/subsystems/world_sound.md",
+          "old": 105205,
+          "new": 115120
+        },
+        {
+          "id": "page:docs/experiments/README.md",
+          "old": 100000,
+          "new": 102564
         }
       ]
     }
