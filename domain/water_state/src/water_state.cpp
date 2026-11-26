@@ -174,7 +174,12 @@ void Solver::for_rows(jobs::JobSystem* jobs, u32 rows, F&& body) {
     body(0u, rows);
     return;
   }
-  jobs->parallel_for(jobs::Pool::Performance, rows, config_.rows_per_job, std::forward<F>(body));
+  // jobs::parallel_for keeps its chunks in a small vector of 64 and allocates past that, so the
+  // rows are dealt in at most 64 chunks: a step allocates nothing at any grid (the bytes do not
+  // depend on the chunking).
+  const u32 fewest = (rows + 63) / 64;
+  const u32 grain = config_.rows_per_job > fewest ? config_.rows_per_job : fewest;
+  jobs->parallel_for(jobs::Pool::Performance, rows, grain, std::forward<F>(body));
 }
 
 void Solver::velocity_rows(u32 begin, u32 end) noexcept {

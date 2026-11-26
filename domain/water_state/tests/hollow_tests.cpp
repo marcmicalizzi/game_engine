@@ -237,7 +237,7 @@ TEST_CASE("water_state: a hollow fills to its lip and spills at critical depth o
   // the hollow's first metre; from the plan's level and from 2 E_c over the sill; 900 s each, the
   // four runs on threads of their own (each its own solver: the bytes do not depend on it). Held:
   // critical flow on the lip (check_hollow), settled, passing its inflow, its water counted, both
-  // starts, and the two discharges' heads in the ratio 5^(2/3) within the two bounds.
+  // starts, and the two discharges' crest energies in the ratio 5^(2/3) within the two bounds.
   HollowRun b1, a1, b2, a2;
   {
     std::thread t1([&] { b1 = run_hollow({0.1, 0.125, Start::below}); });
@@ -253,9 +253,13 @@ TEST_CASE("water_state: a hollow fills to its lip and spills at critical depth o
   check_hollow(0.02, b2, a2, true);
   const Crest c1 = crest_for(0.1);
   const Crest c2 = crest_for(0.02);
-  const f64 ratio = b1.level / b2.level;
+  // The ratio is taken from the crest's energies, which stand where the law puts them; the lakes'
+  // levels are each wrong by the step's loss and their ratio (2.73) would pass for the wrong
+  // reason.
+  const f64 ratio = b1.crest_energy / b2.crest_energy;
   const f64 law = std::cbrt(25.0);  // 5^(2/3)
-  MESSAGE("hollow: head ratio " << ratio << " against " << law);
+  MESSAGE("hollow: crest energies' ratio " << ratio << " against " << law << "; the lakes' "
+                                           << b1.level / b2.level);
   CHECK(std::fabs(ratio - law) <= law * (c1.bound / c1.ec + c2.bound / c2.ec));
 }
 
@@ -272,53 +276,108 @@ TEST_CASE("water_state: a hollow at twice the cell is recorded beside it") {
   check_hollow(0.1, b1, a1, false);
 }
 
-TEST_CASE("water_state: a hollow's crest in one dimension") {
-  // The hollow's section along x alone, one cell wide: the lake, the crest and the channel at
-  // W176's cell, the same unit discharge as Q = 0.1 over its 2 m crest (q = 0.05 m^2/s), so no
-  // flow contracts sideways into the crest. It separates what the two-dimensional case's level owes
-  // to the scheme at the crest's upstream step from what it owes to the entrance's contraction.
-  constexpr f64 dx = 0.125;
-  constexpr f64 q = 0.05;
+namespace {
+
+struct Crest1d {
+  f64 level = 0.0;   // the lake's mean over x 2..6, m over the sill
+  f64 lake_h = 0.0;  // the lake's last cell before the wall: its depth and speed
+  f64 lake_u = 0.0;
+  f64 entry_h = 0.0;  // the crest's first cell, past the wall
+  f64 entry_u = 0.0;
+  f64 lip_h = 0.0;       // the crest's last cell
+  f64 lip_energy = 0.0;  // its specific energy
+};
+
+// The hollow's section along x alone, one cell wide, at W176's cell and the unit discharge of Q =
+// 0.1 over its 2 m crest (q = 0.05 m^2/s), so no flow contracts sideways into the crest; 300 s,
+// over twenty of this lake's time constants.
+constexpr f64 k_q_1d = 0.05;
+constexpr f64 k_dx_1d = 0.125;
+
+Crest1d run_crest_1d() {
   Config config;
-  config.nx = static_cast<u32>(13.5 / dx + 0.5);
+  config.nx = static_cast<u32>(13.5 / k_dx_1d + 0.5);
   config.ny = 1;
-  config.cell_m = dx;
+  config.cell_m = k_dx_1d;
   config.gravity = k_g;
   config.edges.east = Edge::open;
   Solver solver(config);
   std::vector<f64> bed(config.nx), manning(config.nx, k_n), source(config.nx, 0.0);
+  u32 wall = 0;
+  u32 lip = 0;
   for (u32 x = 0; x < config.nx; ++x) {
-    const f64 cx = (x + 0.5) * dx;
+    const f64 cx = (x + 0.5) * k_dx_1d;
     bed[x] = cx < 8.0 ? k_floor : (cx < 8.5 ? 0.0 : -k_slope * (cx - 8.5));
     if (cx < 8.0) solver.depth()[x] = -0.02 - bed[x];
-    if (cx < 1.0) source[x] = q / 1.0;  // q per metre of width over the first metre
+    if (cx < 1.0) source[x] = k_q_1d / 1.0;  // q per metre of width over the first metre
+    if (cx < 8.0) wall = x;
+    if (cx > 8.0 && cx < 8.5) lip = x;
   }
   Inputs in;
   in.bed_m = bed;
   in.manning = manning;
   in.source_m_per_s = source;
   solver.advance(in, 300.0);
-  f64 level = 0.0;
+  Crest1d r;
   u32 count = 0;
   for (u32 x = 0; x < config.nx; ++x) {
-    const f64 cx = (x + 0.5) * dx;
+    const f64 cx = (x + 0.5) * k_dx_1d;
     if (cx > 2.0 && cx < 6.0) {
-      level += solver.depth()[x] + bed[x];
+      r.level += solver.depth()[x] + bed[x];
       ++count;
     }
   }
-  level /= count;
-  const Crest c = crest_for(q * k_crest_width);
-  u32 crest_cell = 0;
-  for (u32 x = 0; x < config.nx; ++x)
-    if ((x + 0.5) * dx > 8.0 && (x + 0.5) * dx < 8.5) crest_cell = x;
-  const f64 hc = solver.depth()[crest_cell];
-  const f64 uc = solver.momentum_x()[crest_cell] / hc;
-  MESSAGE("crest in 1-D: level " << level << " m over the sill against E_c " << c.ec
-                                 << "; the crest's last cell h " << hc << " (y_c " << c.yc
-                                 << "), its specific energy " << hc + uc * uc / (2.0 * k_g));
-  // Critical flow on the lip holds here too; the lake's excess is the step's alone.
-  CHECK(std::fabs(hc + uc * uc / (2.0 * k_g) - c.ec) <= c.bound);
-  CHECK(std::fabs(hc - c.yc) <= c.bound);
-  CHECK(level >= c.ec - c.bound);
+  r.level /= count;
+  const auto at = [&](u32 x, f64& h, f64& u) {
+    h = solver.depth()[x];
+    u = solver.momentum_x()[x] / h;
+  };
+  at(wall, r.lake_h, r.lake_u);
+  at(wall + 1, r.entry_h, r.entry_u);
+  f64 lip_u = 0.0;
+  at(lip, r.lip_h, lip_u);
+  r.lip_energy = r.lip_h + lip_u * lip_u / (2.0 * k_g);
+  return r;
+}
+
+}  // namespace
+
+TEST_CASE("water_state: a hollow's crest in one dimension") {
+  // It separates what the two-dimensional case's level owes to the wall from what it owes to the
+  // entrance's contraction, and pins the wall's loss against its derivation (docs/subsystems/
+  // water_state.md, "The hollow"): the reconstruction hands the face the lake's speed on a depth
+  // dz shallower, so its left state carries q H / h_L of the discharge, and in a steady state the
+  // central-upwind mass flux's numerical viscosity makes up the rest, which takes a depth
+  // difference across the face of H - h_1 = q dz / (h_L |a-|), a- = u_L - sqrt(g H). Held within 25
+  // %: the derivation drops the terms in a-/a+ and the crest's own friction.
+  const Crest1d r = run_crest_1d();
+  const Crest c = crest_for(k_q_1d * k_crest_width);
+  const f64 dz = -k_floor;
+  const f64 head = r.level;  // the face's left depth is the lake's level over the sill
+  const f64 a_minus = r.lake_u - std::sqrt(k_g * head);
+  const f64 predicted = k_q_1d * dz / (r.lake_h * std::fabs(a_minus));
+  const f64 measured = head - r.entry_h;
+  MESSAGE("crest in 1-D: level " << r.level << " m over the sill against E_c " << c.ec
+                                 << "; the lip's cell h " << r.lip_h << " (y_c " << c.yc
+                                 << "), its specific energy " << r.lip_energy
+                                 << "; across the wall H - h_1 " << measured << " m against q dz / "
+                                 << "(h_L |a-|) " << predicted << " m");
+  // Critical flow on the lip holds here too; the lake's excess is the wall's.
+  CHECK(std::fabs(r.lip_energy - c.ec) <= c.bound);
+  CHECK(std::fabs(r.lip_h - c.yc) <= c.bound);
+  CHECK(std::fabs(measured - predicted) <= 0.25 * predicted);
+}
+
+TEST_CASE(
+    "water_state: a hollow's lake stands at E_c plus the crest's friction over a vertical "
+    "wall" *
+    doctest::should_fail()) {
+  // W176's bound on the lake's level, |level - (E_c + friction)| <= max(0.05 E_c, 1 mm), held on
+  // the one-dimensional run. **It is expected to fail**: the reference stands 35 % of E_c too high
+  // over the wall (the case above says why). If this case ever passes, doctest reports the suite
+  // failed: that is the day a scheme holds moving water over a bed step, and this decoration, the
+  // page's "What does not" and the two-dimensional case's assertions are to be revisited with it.
+  const Crest1d r = run_crest_1d();
+  const Crest c = crest_for(k_q_1d * k_crest_width);
+  CHECK(std::fabs(r.level - (c.ec + c.friction_max)) <= c.bound);
 }

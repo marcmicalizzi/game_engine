@@ -27,6 +27,15 @@ not minimised. **What first order costs is measured below** — the dam breaks' 
 and a head lost at a bed step under moving water ("The hollow") that the next form of the scheme has
 to remove.
 
+**What it can be trusted for, and what not.** Trusted: conservation of water and of every carried
+quantity to the rounding of the sums; a depth that never goes negative; a lake at rest, exactly, over
+any bed; dam breaks and bores at first order, with the energy a bore loses; the ground's take by
+Green and Ampt; the same bytes at any thread count and on MSVC, GCC and Clang. **Not trusted: any
+steady flow over a bed that steps between neighbouring cells by a fraction of the depth or more** —
+a dam's lip, a weir, a ledge in a stream, terrain sampled coarser than its relief under thin water.
+There the level upstream stands too high by about q Δz / (h √(g h)) (q the discharge per width, Δz
+the step, h the depth beside it), and refining the cells does not help ("The hollow").
+
 **Owned data.** The state of one rectangle: depth, momenta, the ground's store and the carried
 quantities, and the ledger of what entered and left it. The bed, its roughness, the sources, the
 soil's parameters and the carried quantities' sources and exchange are the caller's and are read,
@@ -54,7 +63,8 @@ The outputs of the last step, the same layout: `speed()` (m/s), `bed_stress_x()`
 the velocities, the per-row maxima and sums, and for every x face (`nx + 1` a row) and y face (`ny +
 1` rows of `nx`) its mass flux, its normal momentum's flux twice (one per side), its transverse
 momentum's flux, its energy's flux and each carried quantity's flux — is the solver's, allocated once
-at construction; a step allocates nothing.
+at construction; a step allocates nothing, with or without a job system (the rows are dealt in at most
+64 chunks, which `jobs::parallel_for` holds without allocating; `rows_per_job` is raised to make it so).
 
 **Each face's flux is computed once and stored**, and both cells beside it take it from the store,
 one subtracting and the other adding the same number. That is what makes the water (and each
@@ -124,7 +134,11 @@ Then h' ≥ h (1 − 2 Δt/Δx (A + B)), non-negative for Δt (A + B)/Δx ≤ ½
 Positivity of the hydrostatic reconstruction under the homogeneous solver's step condition is
 Audusse et al. (2004)'s result, read here through the 2016 paper; this is the same argument for the
 flux used. The same bound makes a carried concentration a convex combination of its neighbours'
-(the depth after the outflow alone is non-negative), so it makes no new extremum.
+(the depth after the outflow alone is non-negative), so **the transport** makes no new extremum. The
+rest of the step can: a drain, a sink and the ground's take remove water and leave the carried
+amount, so the concentration rises; a cell drained to nothing keeps a stranded amount with no water
+to carry it; and a cell under the dry depth still exports mass at a face but no carried quantity.
+Whether a sink takes its share of what the water carries is the design's to decide (W173).
 
 **Edges.** Each of the four is `closed` (a ghost mirroring the edge cell with its normal velocity
 negated: the mass flux through it is zero to the bit) or `open` (a ghost copying the edge cell: what
@@ -154,10 +168,15 @@ update, with the energy's flux G carried through each face by the same central-u
 other components (*derived* here; the residual of each cell's balance). Summed over the cells the
 faces' fluxes cancel, so the total is exactly the scheme's loss of energy (`Ledger::scheme_loss_j`,
 signed); in a cell it is the loss at a bore or a jump where one stands and a small residue elsewhere,
-of either sign, which falls with the cell. `dissipation()` gives out its positive part plus the bed
+of either sign (expected to fall with the cell; measured at one grid only). `dissipation()` gives out its positive part plus the bed
 friction's work ρ g n² |**u**|³ / h^(1/3) (`Ledger::friction_work_j`). At a bore it is the grounding
 page's reading ([§4](../experiments/water-state-grounding.md#4-breaking-as-something-simulated)): the jump's head
-loss (h₂ − h₁)³ / (4 h₁ h₂) times the flux through it, which the bore's case holds.
+loss (h₂ − h₁)³ / (4 h₁ h₂) times the flux through it, which the bore's case holds to 25 % for the
+signed loss (+9 % measured) and to 50 % for the given-out figure (+27 %, larger because the positive
+part drops the negative residues that cancel in the sum). **A head the scheme loses for no physical
+reason is given out as dissipation too**: the loss at the hollow's wall ("The hollow") appears as a
+dissipation at a calm lake's lip, and a foam fed by it would make foam there; a consequence of that
+defect, which goes with it.
 
 **The carried quantities.** Each rides the mass fluxes (step 2), and after the water's own update
 (step 9) takes, in this order: what the dissipation makes, `CarriedConfig::per_joule` × D × Δt where
@@ -188,10 +207,11 @@ why. Measured on MSVC 14.51, `msvc-debug` unless named, 2026-11-25:
 | `two carried quantities are counted and the step does not know which is which` | the rough slope with a foam made by the dissipation (decay 4 s) and a sediment settling and lifted, 30 s; again with the two swapped | each account closes to 1e-12; swapped, every byte of each quantity and of the water is the same | foam 0, sediment 1.9e-14 |
 | `a carried concentration makes no new extremum` | a concentration in [0.2, 0.8] over a dam's break on a bumpy bed, 20 s | inside [0.2, 0.8] to 1e-12 in every cell over 1 µm deep | 0.20023 to 0.79940 |
 | `a bore's dissipation is the jump's head loss times the flux through it` | Stoker's case at 800 cells, 4 s to 6 s | the step's loss rate within 25 % of Bélanger's; the given-out dissipation within 50 %, four fifths of it within 0.5 m of the bore | +9 %; +27 %; 93 % |
-| `a bowl's water sloshes as Thacker's planar surface` | SWASHES §4.2.2, one period at 0.08 and 0.04 m cells | L1 order ≥ 0.5; the finest L1 ≤ 0.27 and its mean velocity's error ≤ 0.32 of the speed (measured and 15 %) | L1 0.417, 0.233 (order 0.84); velocity off 0.50, 0.28 |
-| `a hollow fills to its lip and spills at critical depth over it` | W176's geometry (below), 0.125 m cells, Q 0.1 and 0.02 m³/s, both starts, 900 s; optimised builds only | critical flow on the lip, settled, outflow, count, both starts, the heads' ratio (below) | below |
+| `a bowl's water sloshes as Thacker's planar surface` | SWASHES §4.2.2, one period at 0.08 and 0.04 m cells | L1 order ≥ 0.5, the check with teeth; the finest L1 ≤ 0.27 and its mean velocity's error ≤ 0.32 of the speed are regression pins (measured and 15 %), not bounds of correctness | L1 0.417, 0.233 (order 0.84); velocity off 0.50, 0.28 |
+| `a hollow fills to its lip and spills at critical depth over it` | W176's geometry (below), 0.125 m cells, Q 0.1 and 0.02 m³/s, both starts, 900 s; optimised builds only | critical flow on the lip, settled, outflow, count, both starts, the crest energies' ratio (below); the lake's level is not held | below |
 | `a hollow at twice the cell is recorded beside it` | the same at 0.25 m, Q 0.1 | the same less the lip | below |
-| `a hollow's crest in one dimension` | the section alone, one cell wide, q 0.05 m²/s | critical flow on the lip | below |
+| `a hollow's crest in one dimension` | the section alone, one cell wide, q 0.05 m²/s | critical flow on the lip; the depth lost across the wall within 25 % of q Δz / (h_L abs(a⁻)) | below |
+| `a hollow's lake stands at E_c plus the crest's friction over a vertical wall` | the same run against W176's bound on the lake's level | **an expected failure** (`doctest::should_fail`): it fails today; the day it passes the suite fails and says a scheme holds moving water over a step | fails, as expected |
 | `the same bytes twice and at any thread count` | the rough slope with everything on, 20 s: twice on one thread, once on four workers three rows a job | the same state hash all three times | equal |
 | `the slope's bytes are the same on every toolchain` | the same run's hash | the hash MSVC gave, 17390608002821259899 | pinned |
 | `a step refuses inputs that do not fit the grid` | a bed of the wrong size | nothing changes, the step returns 0 | |
@@ -213,7 +233,7 @@ the friction over the crest at most 1.2 and 1.8 mm, the bound max(0.05 E_c, 1 mm
 returns everything a run measured, so W176's comparison against the steady solve is a case beside
 these on the same runs.
 
-**What holds** (`msvc-release`, the four runs on threads of their own): the crest's last column of cells stands at the critical section's specific energy, 0.0947 m against E_c = 0.0951 m at Q = 0.1 (its depth 0.0644 m against y_c = 0.0634 m) and 0.0322 m against 0.0325 m at Q = 0.02, inside the bound; the lake is settled (its 10 s mean moved 9e-9 m and 1.5e-5 m over the last τ, its range over the last 10 s 1.3e-9 m and 1.4e-6 m); the outflow over the last 10 s is 0.1000 and 0.01999 m³/s; the water is counted to 1.3e-11 m³ of 90 m³ and 1.6e-11 of 18; the two starts end within 2e-5 m of each other; and the heads' ratio is 2.728 against 5^(2/3) = 2.924, inside the two bounds' sum (0.29). A run is 81,142 and 73,971 steps; the four took 86 s on four threads in `msvc-release` on a shared machine. At 0.25 m cells the lip's column reads 0.0927 m (the crest two cells long, not asserted) and the lake 0.1309 m.
+**What holds** (`msvc-release`, the four runs on threads of their own): the crest's last column of cells stands at the critical section's specific energy, 0.0947 m against E_c = 0.0951 m at Q = 0.1 (its depth 0.0644 m against y_c = 0.0634 m) and 0.0322 m against 0.0325 m at Q = 0.02, inside the bound; the lake is settled (its 10 s mean moved 9e-9 m and 1.5e-5 m over the last τ, its range over the last 10 s 1.3e-9 m and 1.4e-6 m); the outflow over the last 10 s is 0.1000 and 0.01999 m³/s; the water is counted to 1.3e-11 m³ of 90 m³ and 1.6e-11 of 18; the two starts end within 2e-5 m of each other; and the crest energies' ratio is 2.944 against the law's 5^(2/3) = 2.924, inside the two bounds' sum (0.29). (The lakes' levels' ratio, 2.728, would pass the same test, but for the wrong reason: each level is wrong by the step's loss.) A run is 81,142 and 73,971 steps; the four took 86 s on four threads in `msvc-release` on a shared machine. At 0.25 m cells the lip's column reads 0.0927 m (the crest two cells long, not asserted) and the lake 0.1309 m.
 
 **What does not: the lake stands too high, because of the step.** The lake's level over the sill is
 0.1315 m at Q = 0.1 (38 % over E_c) and 0.0482 m at 0.02 (48 % over), at 0.125 m cells and the same at
@@ -223,16 +243,35 @@ places it: with no sideways contraction the crest's last cell stands at y_c (0.0
 0.0634 m) with the critical section's specific energy (0.0947 m against 0.0951 m) — the flux sets
 critical flow on the lip, as W176's specification expects — while the lake stands at 0.1279 m: a head
 of 0.033 m (35 % of E_c) is lost at the hollow's upstream face, where the bed steps up 0.5 m under
-0.13 m of water; the entrance's contraction in two dimensions adds about 4 mm. That is the hydrostatic
-reconstruction under moving water (*derived* from the cases, not from a source): it keeps each cell's
-velocity and cuts its depth to the face's (3.3), so the lake's side of the step offers the face
-water a fifth as deep at the lake's slow speed, and the face's flux, a Riemann problem between that
-nearly still state and the crest's flow, passes Q only with more head than Bernoulli across the step
-would ask. It does not fall with the cell (0.1315 m at 0.125, 0.1309 m at 0.25), because the step
-stays a step. A lake at rest is exactly at rest over it; a lake that carries an outflow over a
-step is not at the right level. **This is the first thing the next form of the scheme has to fix**:
-a reconstruction that keeps a moving steady state (the "moving-water equilibria" literature) — read
-first, then held by this case with W176's bound.
+0.13 m of water; the entrance's contraction in two dimensions adds about 4 mm.
+
+**Why** (*derived* from the scheme and the cases; the published account below is read only as far as
+its abstract). At the face between the lake's last cell (depth h_L, speed u_L) and the crest the
+reconstruction (3.3) hands the face the lake's speed on the depth over the crest, H = h_L − Δz, so
+the face's left state carries only q H / h_L of the discharge q. In a steady state the rest can come
+only from the central-upwind mass flux's numerical viscosity, a⁺a⁻ (h_R − h_L)/(a⁺ − a⁻), which needs a
+depth difference across the face of about H − h_1 ≈ q Δz / (h_L ∣a⁻∣), a⁻ ≈ u_L − √(g H): 0.037 m at
+Q = 0.1 (39 % of E_c) and 0.014 m at Q = 0.02 (42 %). Δx does not appear in it, which is why the
+loss does not fall with the cell (0.1315 m at 0.125, 0.1309 m at 0.25) and why a second-order form,
+which still meets a step at a face, would not remove it. The one-dimensional case holds the measured
+H − h_1 to this within 25 %. Sun and Xing (2023, arXiv 2308.09265; abstract read) describe the same
+artifact for first-order schemes at a discontinuous bed: a spurious spike from the numerical
+viscosity in the water height at the step, which refinement does not shrink and which for subsonic
+flow makes the scheme converge to a wrong solution; they propose a central flux for the mass at the
+step. A lake at rest is exactly at rest over the step; a lake that carries an outflow over it is
+not at the right level.
+
+**What it asks of the scheme.** A reconstruction that keeps moving steady states, not only the lake
+at rest, at a bed discontinuity. The smallest published candidate found: Berthon and
+Michel-Dansac's fully well-balanced hydrodynamic reconstruction (arXiv 2501.03975; abstract read;
+its text under CC BY-NC-ND 4.0, so only what a reading of the paper itself justifies may be taken,
+and nothing copied), which extends the hydrostatic reconstruction to moving steady states with any
+flux and reduces to it at rest; its positivity is not stated in the abstract. To be read whole
+before it is built, then held by W176's bound. **W176 is changing its specification**: a vertical
+wall is a bed discontinuity on which no shallow-water scheme is owed a unique answer, so the 5 %
+bound moves to a graded approach (the bed's rise across a face near the sill a small fraction of the
+local depth), at Δx and Δx/2 with the error falling, and the vertical wall stays a reported case;
+the graded approach is not built here yet.
 
 ## Determinism
 
@@ -276,6 +315,9 @@ device and need nothing.
   closed and open edges.
 - A second-order form (in space, with a limiter, and in time), and a reconstruction that keeps a
   moving steady state across a bed step ("The hollow").
+- **A case of moving water over a bed that changes from cell to cell with a closed form**: a steady
+  flow over a smooth bump, subcritical and transcritical, against its closed form. No case holds
+  that today; it is owed, with W176's graded hollow.
 - The ground's store draining and drying between wettings, and a water table for gaining reaches.
 - A law for the carried quantities' exchange with the bed (W178's): the hook is in, the law is not.
 
@@ -296,6 +338,8 @@ Read on 2026-11-25 through the fetch tool, as HTML renderings; equations only we
 | Bollermann, Chen, Kurganov, Noelle (2014), arXiv 1412.3580 | the central-upwind flux (2.8), the one-sided speeds (2.13)–(2.14), the step condition (2.15), ε = 10⁻⁹ | read (ar5iv rendering) | arXiv's; not shown on the rendering |
 | Delestre et al., SWASHES, arXiv 1110.0288 | Stoker's (§4.1.1) and Ritter's (§4.1.2) solutions and their parameters, Thacker's planar surface in a paraboloid (§4.2.2) | read (ar5iv rendering, those sections) | the paper's text arXiv's; its code is CeCILL-V2 and was **not** read or used |
 | Green and Ampt (1911), Bélanger's jump, Rawls et al. (1993) | the infiltration rate, the jump's head loss, the soils' K and ψ | through the grounding page (§3, §4), which read them in the encyclopaedia's articles and TxDOT's manual | as the grounding page records |
+| Sun, Xing (2023), arXiv 2308.09265 | the artifact at a discontinuous bed: numerical viscosity, not shrinking under refinement, wrong convergence for subsonic flow | abstract | arXiv's non-exclusive distribution licence |
+| Berthon, Michel-Dansac (2025), arXiv 2501.03975 | a fully well-balanced extension of the hydrostatic reconstruction, named as the candidate; nothing taken | abstract | CC BY-NC-ND 4.0 |
 | W176's specification of the hollow | the geometry, the closed form at the crest, the bounds, the settling time | the roadmap row's own page section | the engine's |
 
 ## The design: a state in a world

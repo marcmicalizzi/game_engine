@@ -4,10 +4,8 @@
 # OPTIONAL creates ENGINE_WITH_WATER_STATE (ON by default): switching it off, or configuring with
 # ENGINE_MINIMAL=ON, removes this module, its tests, and its bench from the build, and the rest
 # of the tree still builds and passes. That is the proof that the capability is additive.
-# WHOLE_ARCHIVE keeps the module's static registration objects — the scheduler entry, tunables,
-# schema types — from being dropped by the linker because nothing references them.
 
-engine_module(NAME water_state LAYER domain OPTIONAL WHOLE_ARCHIVE
+engine_module(NAME water_state LAYER domain OPTIONAL
   DEPS base containers math jobs
   SOURCES src/water_state.cpp)
 
