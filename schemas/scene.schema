@@ -1384,13 +1384,32 @@ enum SkyExposure : u8 {
   Adapted = 2
 }
 
+/// A day of the Gregorian calendar (`Sky.date`; W185, docs/subsystems/sky.md, "The sky by place
+/// and civil time").
+struct SkyDate @version(1) {
+  /// The year, [1900, 2100]: where the ephemeris's low-precision formulae hold.
+  year: i32 = 2000
+  /// The month, [1, 12].
+  month: u32 = 1
+  /// The day of the month, [1, its last].
+  day: u32 = 1
+}
+
 /// A scene's sky (docs/subsystems/sky.md, ADR-0048): a physical atmosphere lit by a sun and a moon
 /// that a sky provider places on the world's calendar at the scene's latitude, from the one clock the
 /// ground's wind reads (game time since the world's epoch, which is midnight), with stars over it.
 /// **Absent, the scene draws exactly what it drew before**: the renderer's stand-in, a flat sky colour
 /// and a sun that is a direction. Append-only: a field added later has a default that draws what the
 /// block drew before it.
-struct Sky @version(3) {
+///
+/// **Two forms** (version 4, W185): the solar form gives `day_of_year` and `moon_age_days` by hand and
+/// its hour is local solar time; the **civil form** gives `longitude_deg`, `date`, `time_of_day_h`
+/// and `utc_offset_h`, all four, and the provider's ephemeris finds the sun's and the moon's places
+/// and the moon's age from them. `latitude_deg` is both forms'. A sky that gives the civil form and
+/// also a `day_of_year` or a `moon_age_days` other than its default is refused with a sentence
+/// naming the field to drop, as is a scene whose terrain gives a `time` (its hour by hand) beside a
+/// civil sky. With none of the four, the sky draws exactly what it drew.
+struct Sky @version(4) @additive(4) {
   /// The sky provider that draws it, by the name it registered under (docs/subsystems/scene_gen.md):
   /// "earth", the sky capability's. Empty: "earth". A name the executable does not carry is refused
   /// with a sentence naming it.
@@ -1438,6 +1457,18 @@ struct Sky @version(3) {
   /// (`wind_follow`) and names no swell of its own draws it in its table and brings it ashore as its
   /// train. Null, the default: no swell, and every reader draws what it drew.
   swell: Swell? @since(3)
+  /// The civil form (W185): degrees east of Greenwich (negative west), [-180, 180]. Toronto is
+  /// -79.38. With the other three, the sky's local sidereal time is Greenwich's plus it.
+  longitude_deg: f64? = null @since(4) @unit(deg)
+  /// The civil form: the date on the scene's clock where the sky's clock starts (game time 0 is
+  /// `time_of_day_h` on it). The date advances as the hour passes midnight.
+  date: SkyDate? @since(4)
+  /// The civil form: the clock's time of day at game time 0, hours in [0, 24) (15.5 is 15:30), on
+  /// the clock `utc_offset_h` names, daylight saving included when the clock keeps it.
+  time_of_day_h: f64? = null @since(4)
+  /// The civil form: the clock's offset from UTC, hours in [-14, 14], east positive: -4 is Toronto
+  /// in summer (EDT), -5 in winter (EST), 0 UTC, 11 Sydney in summer (AEDT).
+  utc_offset_h: f64? = null @since(4)
 }
 
 /// A fire's smoke (docs/subsystems/volumetrics.md, "Fire"): a plume leaving the flame's top, rising

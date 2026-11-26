@@ -249,6 +249,121 @@ TEST_CASE("sky: the star table has the sky's counts, its colours and a Milky Way
   CHECK(star_irradiance(0.0) == doctest::Approx(1.99e-11).epsilon(0.01));
 }
 
+TEST_CASE("sky: the civil calendar counts the Gregorian days") {
+  CHECK(days_from_civil(2000, 1, 1) == 0);
+  CHECK(days_from_civil(1970, 1, 1) == -10957);  // JD 2440587.5 against J2000's 2451545.0
+  CHECK(days_from_civil(2000, 3, 1) == 60);      // 2000 is a leap year (divisible by 400)
+  CHECK(days_from_civil(2100, 3, 1) - days_from_civil(2100, 2, 28) == 1);  // 2100 is not
+  CHECK(valid_civil_date(2024, 2, 29));
+  CHECK_FALSE(valid_civil_date(2025, 2, 29));
+  CHECK_FALSE(valid_civil_date(1900, 2, 29));
+  CHECK_FALSE(valid_civil_date(2025, 4, 31));
+  CHECK_FALSE(valid_civil_date(2025, 13, 1));
+  CHECK_FALSE(valid_civil_date(2025, 1, 0));
+  for (i64 d = -40000; d < 40000; d += 7) {
+    i32 y = 0;
+    u32 m = 0;
+    u32 day = 0;
+    civil_from_days(d, y, m, day);
+    REQUIRE(days_from_civil(y, m, day) == d);
+  }
+  // J2000.0 is 2000-01-01 12:00 UT; 07:00 at UTC-5 is the same moment.
+  CHECK(days_from_j2000(2000, 1, 1, 12.0, 0.0) == 0.0);
+  CHECK(days_from_j2000(2000, 1, 1, 7.0, -5.0) == 0.0);
+}
+
+namespace {
+
+f64 azimuth_deg(const Direction& d) {  // clockwise from north (-z) through east (+x)
+  const f64 a = std::atan2(d.x, -d.z) * k_deg;
+  return a < 0.0 ? a + 360.0 : a;
+}
+
+struct AlmanacCase {
+  const char* place;
+  f64 latitude;
+  f64 longitude;
+  i32 year;
+  u32 month;
+  u32 day;
+  f64 clock_h;
+  f64 offset_h;
+  f64 sun_azimuth;    // JPL Horizons (DE441), airless apparent, topocentric, degrees
+  f64 sun_elevation;  // degrees
+  f64 moon_lit;       // Horizons' Illu%, as a fraction
+};
+
+}  // namespace
+
+TEST_CASE("sky: the civil form's sun and moon against an almanac at three places") {
+  // JPL Horizons' observer tables (docs/experiments/sky-by-place-and-civil-time.md): airless, so
+  // they are held to the geometry the engine draws. Toronto on a summer afternoon on EDT; Sydney on
+  // a March morning on AEDT, whose UT is still the day before; Tromso at the June solstice under
+  // the midnight sun, four degrees over the northern horizon.
+  const AlmanacCase cases[] = {
+      {"Toronto", 43.65, -79.38, 2025, 7, 15, 15.0, -4.0, 229.673850, 60.076466, 0.7482665},
+      {"Sydney", -33.87, 151.21, 2025, 3, 10, 10.0, 11.0, 65.825220, 37.687365, 0.8235261},
+      {"Tromso", 69.65, 18.96, 2025, 6, 21, 23.5, 2.0, 342.550866, 4.084453, 0.1727881},
+  };
+  for (const AlmanacCase& c : cases) {
+    CivilCalendar cal;
+    cal.latitude_deg = c.latitude;
+    cal.longitude_deg = c.longitude;
+    cal.utc_offset_h = c.offset_h;
+    cal.days_j2000 = days_from_j2000(c.year, c.month, c.day, c.clock_h, c.offset_h);
+    Ephemeris e;
+    ephemeris(cal, 0.0, e);
+    const f64 d_el = elevation_deg(e.sun) - c.sun_elevation;
+    f64 d_az = azimuth_deg(e.sun) - c.sun_azimuth;
+    if (d_az > 180.0) d_az -= 360.0;
+    if (d_az < -180.0) d_az += 360.0;
+    // On the sky, an azimuth's error counts its cosine of elevation.
+    const f64 d_az_sky = d_az * std::cos(c.sun_elevation / k_deg);
+    const f64 d_lit = e.moon_lit - c.moon_lit;
+    MESSAGE(std::string(c.place) << ": sun elevation " << elevation_deg(e.sun) << " (" << d_el
+                                 << "), azimuth " << azimuth_deg(e.sun) << " (" << d_az
+                                 << "), moon lit " << e.moon_lit << " (" << d_lit << ")");
+    CHECK(std::fabs(d_el) < 0.05);
+    CHECK(std::fabs(d_az_sky) < 0.05);
+    CHECK(std::fabs(d_lit) < 0.02);
+    // The pole still stands the latitude high.
+    CHECK(std::fabs(elevation_deg(e.celestial_z) - c.latitude) < 1e-9);
+  }
+}
+
+TEST_CASE("sky: the civil form's clock runs on through midnight and a year's end") {
+  // Toronto at 23:00 EST on 2025-12-31; two hours on it is 01:00 on 2026-01-01, the same moment
+  // whichever way it is given.
+  CivilCalendar start;
+  start.latitude_deg = 43.65;
+  start.longitude_deg = -79.38;
+  start.utc_offset_h = -5.0;
+  start.days_j2000 = days_from_j2000(2025, 12, 31, 23.0, -5.0);
+  CivilCalendar after = start;
+  after.days_j2000 = days_from_j2000(2026, 1, 1, 1.0, -5.0);
+  Ephemeris before_midnight, carried, direct;
+  ephemeris(start, 0.0, before_midnight);
+  ephemeris(start, 2.0 * 3600.0, carried);
+  ephemeris(after, 0.0, direct);
+  CHECK(before_midnight.day_of_year == doctest::Approx(365.0 + 23.0 / 24.0).epsilon(1e-12));
+  CHECK(carried.day_of_year == doctest::Approx(1.0 + 1.0 / 24.0).epsilon(1e-9));
+  CHECK(angle_deg(carried.sun, direct.sun) < 1e-7);
+  CHECK(angle_deg(carried.moon, direct.moon) < 1e-7);
+  CHECK(std::fabs(carried.moon_lit - direct.moon_lit) < 1e-9);
+  // A minute either side of midnight the sky moves a minute's worth, not a day's.
+  Ephemeris a, b;
+  ephemeris(start, 3600.0 - 60.0, a);
+  ephemeris(start, 3600.0 + 60.0, b);
+  CHECK(angle_deg(a.sun, b.sun) < 0.6);
+  CHECK(a.day_of_year > 365.99);
+  CHECK(b.day_of_year < 1.01);
+  // The hour is local apparent solar time: about 79.38 / 15 hours behind UT, and the equation of
+  // time's few minutes.
+  const f64 ut_h = 23.0 + 5.0 - 24.0;  // 04:00 UT
+  const f64 mean_solar = ut_h - 79.38 / 15.0 + 24.0;
+  CHECK(std::fabs(before_midnight.hour - mean_solar) < 0.25);
+}
+
 TEST_CASE("sky: the provider \"earth\" through the registry, on the world's clock") {
   const scene_gen::SkyProviderDesc* desc =
       scene_gen::GeneratorRegistry::global().find_sky(scene_gen::k_default_sky);
@@ -297,4 +412,82 @@ TEST_CASE("sky: the provider \"earth\" through the registry, on the world's cloc
   entry.turbidity = 0.5f;
   CHECK_FALSE(desc->make(entry, refused, &error));
   CHECK(error.find("turbidity") != std::string::npos);
+}
+
+TEST_CASE("sky: the provider takes a sky by place and civil time, and refuses a mixed one") {
+  const scene_gen::SkyProviderDesc* desc =
+      scene_gen::GeneratorRegistry::global().find_sky(scene_gen::k_default_sky);
+  REQUIRE(desc != nullptr);
+  scene::Sky entry;
+  entry.latitude_deg = 43.65f;
+  entry.longitude_deg = -79.38;
+  entry.date = scene::SkyDate{};
+  entry.date->year = 2025;
+  entry.date->month = 7;
+  entry.date->day = 15;
+  entry.time_of_day_h = 15.0;
+  entry.utc_offset_h = -4.0;
+  entry.stars = false;
+  scene_gen::SkyProvider provider;
+  std::string error;
+  REQUIRE_MESSAGE(desc->make(entry, provider, &error), error);
+  // The state is the civil ephemeris from the entry's moment.
+  CivilCalendar c;
+  c.latitude_deg = static_cast<f64>(entry.latitude_deg);
+  c.longitude_deg = -79.38;
+  c.utc_offset_h = -4.0;
+  c.days_j2000 = days_from_j2000(2025, 7, 15, 15.0, -4.0);
+  for (const f64 t : {0.0, 5000.0, 30.0 * 86400.0}) {
+    Ephemeris e;
+    ephemeris(c, t, e);
+    scene_gen::SkyState s;
+    provider.state(t, s);
+    CHECK(s.sun.x == static_cast<f32>(e.sun.x));
+    CHECK(s.sun.y == static_cast<f32>(e.sun.y));
+    CHECK(s.moon.z == static_cast<f32>(e.moon.z));
+    CHECK(s.moon_lit == static_cast<f32>(e.moon_lit));
+    CHECK(s.day_of_year == e.day_of_year);
+    CHECK(s.hour == e.hour);
+  }
+  scene_gen::SkyState s0;
+  provider.state(0.0, s0);
+  CHECK(s0.day_of_year == doctest::Approx(196.0 + 15.0 / 24.0).epsilon(1e-9));  // July 15
+  // Refused: a civil form missing a field, named.
+  scene_gen::SkyProvider refused;
+  scene::Sky partial = entry;
+  partial.utc_offset_h.reset();
+  CHECK_FALSE(desc->make(partial, refused, &error));
+  CHECK(error.find("this one has no sky.utc_offset_h") != std::string::npos);
+  CHECK(error.find("sky.utc_offset_h,") == std::string::npos);  // only the one it lacks
+  // Refused: the solar form's day or moon age beside it, naming the field to drop.
+  scene::Sky mixed = entry;
+  mixed.day_of_year = 196.0f;
+  CHECK_FALSE(desc->make(mixed, refused, &error));
+  CHECK(error.find("drop sky.day_of_year") != std::string::npos);
+  mixed = entry;
+  mixed.moon_age_days = 12.0f;
+  CHECK_FALSE(desc->make(mixed, refused, &error));
+  CHECK(error.find("drop sky.moon_age_days") != std::string::npos);
+  // Refused: a day the calendar has not, a year outside the formulae's span, a bad hour or offset.
+  scene::Sky bad = entry;
+  bad.date->month = 2;
+  bad.date->day = 29;
+  CHECK_FALSE(desc->make(bad, refused, &error));
+  CHECK(error.find("not a day of the calendar") != std::string::npos);
+  bad = entry;
+  bad.date->year = 1800;
+  CHECK_FALSE(desc->make(bad, refused, &error));
+  CHECK(error.find("sky.date.year") != std::string::npos);
+  bad = entry;
+  bad.time_of_day_h = 24.0;
+  CHECK_FALSE(desc->make(bad, refused, &error));
+  CHECK(error.find("sky.time_of_day_h") != std::string::npos);
+  bad = entry;
+  bad.utc_offset_h = 15.0;
+  CHECK_FALSE(desc->make(bad, refused, &error));
+  CHECK(error.find("sky.utc_offset_h") != std::string::npos);
+  bad = entry;
+  bad.longitude_deg = 200.0;
+  CHECK_FALSE(desc->make(bad, refused, &error));
+  CHECK(error.find("sky.longitude_deg") != std::string::npos);
 }

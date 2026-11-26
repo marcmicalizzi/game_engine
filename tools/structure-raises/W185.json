@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W185",
+  "reason": "W185: the scene format's sky paragraph names the civil form's four fields and points at sky.md for the rules",
+  "date": "2026-11-25",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 338
+  }
+}

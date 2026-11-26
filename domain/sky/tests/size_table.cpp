@@ -12,3 +12,5 @@ ENGINE_EXPECT_SIZE(28, 4, scene_gen::Star);
 // Five directions, and the calendar and the distances in doubles.
 ENGINE_EXPECT_SIZE(24, 8, sky::Direction);
 ENGINE_EXPECT_SIZE(24, 8, sky::Calendar);
+// The civil form's (W185): a latitude, a longitude, the moment and the clock's offset.
+ENGINE_EXPECT_SIZE(32, 8, sky::CivilCalendar);

@@ -401,6 +401,27 @@ TEST_CASE("request: the wire's refusals") {
   CHECK(!rates_refused(0.0, 0.125));
 }
 
+TEST_CASE("request: --time-of-day over a sky by place and civil time is its clock's hour") {
+  // W185 (sky.md, "The sky by place and civil time"): the sky's clock starts at the scene's own
+  // time of day, so 18:00 asked over a 15:00 scene is three hours on, and 09:00 six hours back.
+  renderer::SceneData scene;
+  scene.sky.emplace();
+  scene.sky->longitude_deg = -79.38;
+  scene.sky->date = scene::SkyDate{};
+  scene.sky->time_of_day_h = 15.0;
+  scene.sky->utc_offset_h = -4.0;
+  renderer::ClockRequest clock;
+  clock.time_of_day_h = 18.0;
+  CHECK(renderer::frame_clock(clock, scene).sky_start_s == 3.0 * 3600.0);
+  clock.time_of_day_h = 9.0;
+  CHECK(renderer::frame_clock(clock, scene).sky_start_s == -6.0 * 3600.0);
+  // No hour asked: the scene's own moment.
+  CHECK(renderer::frame_clock(renderer::ClockRequest{}, scene).sky_start_s == 0.0);
+  // The solar form is untouched: the hour from its midnight.
+  scene.sky.emplace();
+  CHECK(renderer::frame_clock(clock, scene).sky_start_s == 9.0 * 3600.0);
+}
+
 TEST_CASE("request: the frame's clock is the one engine-view's --time-of-day and --sun-rate set") {
   renderer::SceneData scene;
   renderer::ClockRequest clock;
