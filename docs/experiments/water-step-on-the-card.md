@@ -14,21 +14,23 @@ Roadmap W175, under W173 (the water's design and its decision record). The capab
 
 Three forms: `step` (each cell computes its own four faces, the default), `faces` (every face computed once into a buffer, then the update), `fixed` (the default's faces with division, square root and cube root built from + − × alone).
 
-**Machine state** (the harness's `machine_state`, run of 2026-11-25 23:34 local): other processes at 45 % of the CPU at the start and 71 % at the end; the GPU 2 % busy at both samples (6.9 of 32.6 GB in use), its SM clock 480 MHz at the idle start and 2,617 of 3,090 MHz at the end; **the GPU lock held by others at both samples** — another row's water tests at the start, a 4K capture session at the end. The bench took the lock after 38 minutes in the queue, then waited the 30 minutes `--wait-quiet` allows for a quiet CPU that never came, and its lease ran out before its first benchmark refreshed it (the harness refreshes between benchmarks only), so the measured minutes were not under its own lock. Every number below is an **upper bound**; the three forms were measured in the same run, so their ratios stand better than their absolutes.
+**Machine state** (the harness's `machine_state`, run of 2026-11-25 23:34 local): other processes at 45 % of the CPU at the start and 71 % at the end; the GPU 2 % busy at both samples (6.9 of 32.6 GB in use), its SM clock 480 MHz at the idle start and 2,617 of 3,090 MHz at the end; **the GPU lock held by others at both samples** — another row's water tests at the start, a 4K capture session at the end. The bench took the lock after 38 minutes in the queue, then waited the 30 minutes `--wait-quiet` allows for a quiet CPU that never came, and its lease ran out before its first benchmark refreshed it (the harness refreshes between benchmarks only), so the measured minutes were not under its own lock. Its numbers are **upper bounds**; the gather and the stored faces were measured in the same run, so their ratio stands better than either absolute. Its fixed-operation rows are discarded: the bench found that form producing NaN where friction meets a still cell (its square root of zero overflowed in the Newton steps), which the device cases then confirmed and the form's guards now prevent.
 
 GPU time of one step (the step's length pass and the update; the faces pass too for `faces`), median and p95 over the steps measured, in ms:
 
-| grid | state | step (gather) | p95 | faces (stored) | p95 | fixed ops | mean dt (s) |
-|---|---|---|---|---|---|---|---|
-| 512² | lake | 0.0084 | 0.0099 | 0.0118 | 0.0153 | (pending) | 0.0359 |
-| 512² | stream | 0.0074 | 0.0084 | 0.0108 | 0.0141 | 0.0088 | 0.0363 |
-| 512² | beach | 0.0074 | 0.0084 | 0.0109 | 0.0137 | (pending) | 0.0229 |
-| 1,024² | lake | 0.0220 | 0.0232 | 0.0336 | 0.0370 | (pending) | 0.0359 |
-| 1,024² | stream | 0.0206 | 0.0223 | 0.0321 | 0.0346 | 0.0241 | 0.0358 |
-| 1,024² | beach | 0.0200 | 0.0216 | 0.0317 | 0.0343 | (pending) | 0.0227 |
-| 2,048² | lake | 0.1047 | 0.1062 | 0.3260 | 0.3372 | (pending) | 0.0359 |
-| 2,048² | stream | 0.0971 | 0.0985 | 0.3021 | 0.3113 | 0.1141 | 0.0364 |
-| 2,048² | beach | 0.0991 | 0.1012 | 0.3102 | 0.3194 | (pending) | 0.0227 |
+| grid | state | step (gather) | p95 | faces (stored) | p95 | fixed ops | p95 | mean dt (s) |
+|---|---|---|---|---|---|---|---|---|
+| 512² | lake | 0.0084 | 0.0093 | 0.0118 | 0.0153 | 0.0104 | 0.0112 | 0.0359 |
+| 512² | stream | 0.0074 | 0.0081 | 0.0108 | 0.0141 | 0.0118 | 0.0130 | 0.0359 |
+| 512² | beach | 0.0075 | 0.0083 | 0.0109 | 0.0137 | 0.0101 | 0.0111 | 0.0229 |
+| 1,024² | lake | 0.0220 | 0.0233 | 0.0336 | 0.0370 | 0.0268 | 0.0284 | 0.0359 |
+| 1,024² | stream | 0.0205 | 0.0220 | 0.0321 | 0.0346 | 0.0306 | 0.0336 | 0.0362 |
+| 1,024² | beach | 0.0200 | 0.0213 | 0.0317 | 0.0343 | 0.0267 | 0.0289 | 0.0227 |
+| 2,048² | lake | 0.1062 | 0.1083 | 0.3260 | 0.3372 | 0.1248 | 0.1265 | 0.0359 |
+| 2,048² | stream | 0.0978 | 0.0998 | 0.3021 | 0.3113 | 0.1369 | 0.1402 | 0.0373 |
+| 2,048² | beach | 0.0982 | 0.0997 | 0.3102 | 0.3194 | 0.1151 | 0.1170 | 0.0227 |
+
+The gather and the fixed columns come from a second run (2026-11-26 00:0x local), the two back to back under the run's own GPU lock: other processes at 23–27 % of the CPU (100 % at the fixed run's last sample), the GPU 0 % busy at every sample, its SM clock 2,895–2,910 MHz. The gather's numbers there agree with the first run's within 1.5 %. The stored faces are the first run's only.
 
 Of each gather step, the step's length pass (one workgroup reducing a record per 256 cells) is 0.0007 ms at 512² and 1,024² and 0.0016 ms at 2,048²; the rest is the update. The batch's own span over its 16 steps, barriers and bubbles included, is within 0.001 ms of the zones' sum.
 
@@ -60,8 +62,8 @@ Measured on this card in `msvc-debug`, 2026-11-25 (the step's numbers do not dep
 | Ritter, L1 | orders ≥ 0.5, finest ≤ 0.0058 | 0.01228, 0.00798, 0.00502; orders 0.62, 0.67 | the same |
 | Ritter, card against reference | S × 2⁻²³ (7.5e-5 at 629 steps) | 5.9e-8, 9.7e-8, 1.6e-7 | 4.8e-8, 7.3e-8, 1.3e-7 |
 | dam volume (800 cells) | S × 2⁻²⁴ | 4.0e-8 (Stoker), 1.1e-7 (Ritter) | 4.6e-8, 7.7e-8 |
-| count of water: steps, volume, outflow | S × 2⁻²³ of the water against the reference | 824 steps (reference 824), 7.44407 m³ (7.44407), 27.9762 m³ out (27.9762) | (pending) |
-| count of water: the card's own balance | S × 2⁻²⁴ of the water involved (1.8e-3 m³) | −6.4e-7 m³, no round-off clamped | (pending) |
+| count of water: steps, volume, outflow | S × 2⁻²³ of the water against the reference | 824 steps (reference 824), 7.44407 m³ (7.44407), 27.9762 m³ out (27.9762) | the same |
+| count of water: the card's own balance | S × 2⁻²⁴ of the water involved (1.8e-3 m³) | −6.4e-7 m³, no round-off clamped | 3.2e-6 m³, none clamped |
 | closed basin, 1,000 steps, 140 m³ | S × cells × 2⁻²⁴ × h_max × area (1.8e-2 m³) | −2.0e-6 m³ | −1.4e-6 m³ |
 | same bytes twice; gather and stored faces | equal hashes | equal | equal |
 
@@ -99,11 +101,11 @@ ADR-0010's "hashed" asks for the same bytes twice; W173's design asks whether th
 
 **Contraction.** A driver may fuse a multiply and an add into one rounding unless the SPIR-V forbids it with NoContraction. **Slang 2026.17.1's `precise` emits no NoContraction when it writes SPIR-V directly** (`-emit-spirv-directly`, which `engine_shaders()` uses): a two-line probe and this shader, every line `precise`, came out with 2,579 float add, subtract, multiply and divide instructions and not one decoration. The compile option `-fp-mode precise` puts it on every float operation (2,581 decorations; no GLSL.std.450 Fma), so `water_live` compiles with it (`engine_shaders(... FLAGS -fp-mode precise)`), and a case counts the decorations in the embedded module. The same holds for every shader in the tree that relies on `precise` today (ADR-0074's `rt_keep` key in `clas_records.slang` among them): as compiled, their `precise` lines forbid nothing, which is a finding for those rows, not one this row changes.
 
-**Division, the square root, the cube root.** Vulkan's SPIR-V environment allows division 2.5 ulp and the square root its inverse-square-root's error, so two conformant devices may round them differently; addition, subtraction and multiplication are correctly rounded wherever contraction is forbidden. `Ops::fixed` builds the three from those alone: an estimate from the operand's bits (integer arithmetic, exact everywhere), then a fixed number of Newton steps — four for 1/x, three for 1/√x, four for ∛x — with the edges a bit trick does not cover answered explicitly (zero and the denormals, and reciprocals below the smallest normal). Its cost on this card: (pending). Its accuracy: the dam breaks and the lakes agree with the native form to the digits in the cases' table.
+**Division, the square root, the cube root.** Vulkan's SPIR-V environment allows division 2.5 ulp and the square root its inverse-square-root's error, so two conformant devices may round them differently; addition, subtraction and multiplication are correctly rounded wherever contraction is forbidden. `Ops::fixed` builds the three from those alone: an estimate from the operand's bits (integer arithmetic, exact everywhere), then a fixed number of Newton steps — four for 1/x, three for 1/√x, four for ∛x — with the edges a bit trick does not cover answered explicitly (zero and the denormals, and reciprocals below the smallest normal). Its cost on this card, back to back with the native form: 17–24 % more a step for the lake and the beach at every grid, 40–59 % more for the stream, whose dry half and wet-dry faces take the friction and the reconstruction's branches the native form answers with one instruction (0.137 against 0.098 ms at 2,048²); still about 0.03 ms per million cells. Its accuracy: the dam breaks and the lakes agree with the native form to the digits in the cases' table.
 
 **Denormals.** The SPIR-V carries no DenormPreserve or DenormFlushToZero execution mode, so each device uses its default; on this driver `shaderDenormPreserveFloat32` and `shaderDenormFlushToZeroFloat32` are both false (vulkaninfo), so neither can be asked for: a device that flushes and one that does not would disagree wherever a value passes 2⁻¹²⁶. The step's values stay far above it — the dry depth is 1e-9 m, and a depth below it has its momenta zeroed — and the fixed form answers zero and denormal operands itself; but nothing yet clamps every intermediate (a product of two small momenta can still underflow), so the same bytes across devices needs that clamp too, or a device that can be told its denormal mode.
 
-**What was measured.** The same bytes twice on this card, in both forms (a case). The hash after 400 steps of the count's flow: native 3142517362989380888, fixed (pending). The older card's hash is owed (see the roadmap row).
+**What was measured.** The same bytes twice on this card, in both forms (a case). The hash after 400 steps of the count's flow: native 3142517362989380888, fixed 18440459637061453408 — different, as they should be, since the two forms round their divisions differently; each is the same twice, and the same in the gather and the stored faces. The older card's hash is owed (see the roadmap row).
 
 ## What it means for the design
 
