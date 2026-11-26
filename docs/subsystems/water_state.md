@@ -175,6 +175,10 @@ Read on 2026-11-25 through the fetch tool, as HTML renderings; equations only we
 | Bollermann, Chen, Kurganov, Noelle (2014), arXiv 1412.3580 | the central-upwind flux (2.8), the one-sided speeds (2.13)–(2.14), the step condition (2.15), ε = 10⁻⁹ | read (ar5iv rendering) | arXiv's; not shown on the rendering |
 | Delestre et al., SWASHES, arXiv 1110.0288 | Stoker's (§4.1.1) and Ritter's (§4.1.2) solutions and their parameters; Thacker's bowl (§4.2.2) and the lakes at rest (§3.1) for the next stage | read (ar5iv rendering, those sections) | the paper's text arXiv's; its code is CeCILL-V2 and was **not** read or used |
 
+## The design: a state in a world
+
+(Roadmap W173. The design of the state in a running world is written in its own change.)
+
 ## Capability contract (ADR-0027)
 
 This is a capability: it was added without editing `core/`, `foundation/`, the render graph,
