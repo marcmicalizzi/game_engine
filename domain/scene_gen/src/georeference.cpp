@@ -66,6 +66,17 @@ bool validate_georeference(const scene::Georeference& g, std::string* why) {
   return true;
 }
 
+bool georeference_mirrored(const scene::Georeference& g) noexcept {
+  // The unit vectors east and north point along, and the y of their cross product: +1 when east x
+  // north is the engine's up (a rotation of the map), -1 when it is down (its mirror image).
+  auto component = [](scene::EngineAxis a, int axis) {
+    return axis_index(a) == axis ? (negative(a) ? -1 : 1) : 0;
+  };
+  const int up = component(g.east, 2) * component(g.north, 0) -
+                 component(g.east, 0) * component(g.north, 2);
+  return up < 0;
+}
+
 MapCoord map_from_world(const scene::Georeference& g, WorldPos p) noexcept {
   MapCoord m;
   m.easting = g.origin_easting + along(p, g.east) / g.unit_m;

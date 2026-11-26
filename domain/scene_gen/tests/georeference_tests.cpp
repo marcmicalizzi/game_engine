@@ -159,7 +159,8 @@ TEST_CASE("georeference: the round trip from the map returns its bits at a natio
     u32 exact = 0;
     f64 worst_world = 0.0;
     for (u32 i = 0; i < 20000; ++i) {
-      // Anywhere within 50 km of the origin, heights from -50 m to 2 km, at full f64 precision.
+      // Anywhere within 50 km of the origin, at full f64 precision; heights within a factor of two of
+      // the origin's (38 to 114 m about 76 m), where the claim of bits holds (the next case is outside).
       const MapCoord m{g.origin_easting + (draw.next() * 2.0 - 1.0) * 50000.0,
                        g.origin_northing + (draw.next() * 2.0 - 1.0) * 50000.0,
                        g.origin_height + (draw.next() * 2.0 - 1.0) * 38.0};
@@ -168,7 +169,8 @@ TEST_CASE("georeference: the round trip from the map returns its bits at a natio
                         std::bit_cast<u64>(back.northing) == std::bit_cast<u64>(m.northing) &&
                         std::bit_cast<u64>(back.height) == std::bit_cast<u64>(m.height);
       exact += same ? 1u : 0u;
-      // And from the world: within half an ulp of the map coordinate's magnitude.
+      // And from the world: within half an ulp of the map coordinate where it is within a factor of two,
+      // its heights (-424 to 576 m) outside the band and held to an ulp of |y| + |origin| instead.
       const WorldPos p{(draw.next() * 2.0 - 1.0) * 50000.0, (draw.next() * 2.0 - 1.0) * 500.0,
                        (draw.next() * 2.0 - 1.0) * 50000.0};
       const WorldPos q = world_from_map(g, map_from_world(g, p));
@@ -195,6 +197,7 @@ TEST_CASE("georeference: the axes in both common mappings, for a system of eithe
   const MapCoord b = map_from_world(g, WorldPos{10.0, 2.0, 20.0});
   CHECK(b == a);
   CHECK(world_from_map(g, b) == WorldPos{10.0, 2.0, 20.0});
+  CHECK(georeference_mirrored(g));
   // A system whose own order is northing first (DHDN / 3-degree Gauss-Kruger zone 3) names the
   // same two numbers by the same names: the block never says first or second.
   scene::Georeference gk = toronto();
@@ -204,11 +207,19 @@ TEST_CASE("georeference: the axes in both common mappings, for a system of eithe
   const MapCoord c = map_from_world(gk, WorldPos{10.0, 0.0, -20.0});
   CHECK(c.easting == 3500010.0);
   CHECK(c.northing == 5400020.0);
-  // East along -z and north along +x: still a rotation, a quarter turn of the first.
+  // East along -z and north along -x: a quarter turn of the first, still a rotation. The point 10 m
+  // east and 20 m north is at z = -10 and x = -20: -x is north, so a step along +x is south.
   gk.east = scene::EngineAxis::MinusZ;
-  gk.north = scene::EngineAxis::PlusX;
-  const MapCoord d = map_from_world(gk, WorldPos{20.0, 0.0, -10.0});
+  gk.north = scene::EngineAxis::MinusX;
+  CHECK_FALSE(georeference_mirrored(gk));
+  const MapCoord d = map_from_world(gk, WorldPos{-20.0, 0.0, -10.0});
   CHECK(d == c);
+  CHECK(map_from_world(gk, WorldPos{1.0, 0.0, 0.0}).northing == 5399999.0);
+  CHECK(world_from_map(gk, MapCoord{3500000.0, 5400001.0, 76.0}) == WorldPos{-1.0, 0.0, 0.0});
+  // East along -z and north along +x is not: east x north is -y, the map's mirror image.
+  gk.north = scene::EngineAxis::PlusX;
+  CHECK(georeference_mirrored(gk));
+  CHECK(map_from_world(gk, WorldPos{20.0, 0.0, -10.0}) == c);
   // A foot grid: a world metre is 1 / 0.3048006096012192 survey feet of easting.
   scene::Georeference ft = toronto();
   ft.unit_m = 0.3048006096012192;
@@ -228,4 +239,56 @@ TEST_CASE("georeference: a scene with no block reads none and writes it as nothi
   REQUIRE(read_scene(written, back));
   CHECK_FALSE(back.georeference.has_value());
   CHECK(back == file);
+}
+
+TEST_CASE("georeference: a height outside the origin's band comes back within an ulp") {
+  // The origin at 76 m; ground at 0.1 m, 10 m, 200 m, 2 km, below sea level and at 0. The difference
+  // and the sum each round there, so these come back within an ulp of |h| + |origin|, not to bits.
+  const scene::Georeference g = toronto();
+  const f64 heights[] = {0.1, 10.0, 200.0, 2000.0, -12.3, -400.7, 0.0, 1e-9, 37.9, 152.1};
+  for (const f64 h : heights) {
+    const MapCoord m{g.origin_easting + 12.5, g.origin_northing - 7.25, h};
+    const MapCoord back = map_from_world(g, world_from_map(g, m));
+    const f64 sum = std::fabs(h) + std::fabs(g.origin_height);  // the bound's magnitude
+    const f64 ulp = std::nextafter(sum, std::numeric_limits<f64>::infinity()) - sum;
+    CHECK_MESSAGE(std::fabs(back.height - h) <= ulp, h);
+    CHECK(back.easting == m.easting);
+    CHECK(back.northing == m.northing);
+  }
+  // With the origin's height 0 every height comes back to its bits.
+  scene::Georeference sea = g;
+  sea.origin_height = 0.0;
+  for (const f64 h : heights) {
+    const f64 back = map_from_world(sea, world_from_map(sea, MapCoord{0.0, 0.0, h})).height;
+    CHECK(std::bit_cast<u64>(back) == std::bit_cast<u64>(h));
+  }
+}
+
+TEST_CASE("georeference: of the eight pairs of axes four are rotations and four mirrors") {
+  using A = scene::EngineAxis;
+  struct Pair {
+    A east, north;
+    bool mirrored;
+  };
+  const Pair pairs[] = {
+      {A::PlusX, A::MinusZ, false}, {A::MinusZ, A::MinusX, false}, {A::MinusX, A::PlusZ, false},
+      {A::PlusZ, A::PlusX, false},  {A::PlusX, A::PlusZ, true},    {A::MinusZ, A::PlusX, true},
+      {A::MinusX, A::MinusZ, true}, {A::PlusZ, A::MinusX, true},
+  };
+  u32 mirrors = 0;
+  for (const Pair& p : pairs) {
+    scene::Georeference g = toronto();
+    g.east = p.east;
+    g.north = p.north;
+    REQUIRE(validate_georeference(g, nullptr));
+    CHECK(georeference_mirrored(g) == p.mirrored);
+    mirrors += georeference_mirrored(g) ? 1u : 0u;
+    // Mirror or not, the point one metre east and one north is measured back as that point.
+    const WorldPos p1 = world_from_map(g, MapCoord{g.origin_easting + 1.0, g.origin_northing + 1.0,
+                                                   g.origin_height});
+    const MapCoord m = map_from_world(g, p1);
+    CHECK(m.easting == g.origin_easting + 1.0);
+    CHECK(m.northing == g.origin_northing + 1.0);
+  }
+  CHECK(mirrors == 4u);
 }

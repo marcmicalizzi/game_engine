@@ -1984,7 +1984,9 @@ void add_render_methods(protocol::Dispatcher& d) {
                                                        &render_scenes>(
       "render.scenes",
       "The scenes this host holds, in load order: where each came from, its counts, whether its "
-      "GPU state is built and at what size, and what the process uses of the device's memory.")));
+      "GPU state is built and at what size, where on the Earth a scene file says it is "
+      "(georeference, carried as the file gave it), and what the process uses of the device's "
+      "memory.")));
 }
 
 }  // namespace engine::host

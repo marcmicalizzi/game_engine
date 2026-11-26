@@ -31,14 +31,27 @@ struct MapCoord {
 // east and north both stated and on two different engine axes. False with a sentence in `why`.
 bool validate_georeference(const scene::Georeference& g, std::string* why);
 
+// Whether the block's engine axes are the map's mirror image: east x north points down (-y) rather
+// than up. Of the eight valid pairs four are rotations (east +x north -z, east -z north -x, east -x
+// north +z, east +z north +x) and four mirrors. A mirrored world is the map's reflection: a tool that
+// writes (easting, height, northing) into (x, y, z) makes one, and must also reverse its triangles'
+// winding, since the engine's front faces are counter-clockwise; nothing in the engine (a sky's
+// azimuth, for one) corrects for it.
+bool georeference_mirrored(const scene::Georeference& g) noexcept;
+
 // The map coordinate of a world position, and the world position of a map coordinate. Pure, and
-// meaningful only for a block `validate_georeference` accepts.
+// meaningful only for a block `validate_georeference` accepts. Heights are metres whatever the
+// vertical system's unit: the block names that system and its unit is not applied.
 //
-// **The round trip from the map is exact** for a metre system (`unit_m` 1) wherever a coordinate is
-// within a factor of two of the origin's on its axis, which every point of a scene on a national
-// grid is (Sterbenz: the difference is exact, and adding it back gives the coordinate): the bits a
-// map coordinate starts with are the bits it comes back with. From the world the round trip is
-// within half an ulp of the map coordinate's magnitude (0.5 nm at five million metres).
+// **From the map, for a metre system (`unit_m` 1):** an easting or a northing within a factor of
+// two of the origin's (every point of a scene on a national grid) comes back to its bits — the
+// difference is exact (Sterbenz) and adding it back gives the coordinate. A height comes back to
+// its bits within a factor of two of `origin_height`, or when that is 0; any other comes back
+// within one ulp of |height| + |origin_height|, since the difference and the sum each round. A foot
+// grid's divide and multiply round once each, and its round trip is not claimed to return its bits.
+// **From the world:** within half an ulp of the map coordinate where that is within a factor of two
+// of the origin (at most 2^-31 m below 2^23 m, 2^-30 m to 2^24 m: a southern UTM northing), and
+// within one ulp of |coordinate| + |origin| otherwise (a height, a local grid's origin near 0).
 MapCoord map_from_world(const scene::Georeference& g, WorldPos p) noexcept;
 WorldPos world_from_map(const scene::Georeference& g, MapCoord m) noexcept;
 
