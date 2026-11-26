@@ -352,8 +352,8 @@ $readme = @"
 # The engine's game SDK
 
 Everything a game module needs from the engine, in one folder: the headers a module compiles
-against, the schema compiler, the build command, engine-view to run it in, two scenes to start
-from, and the tool that packs a build for a tester. It was exported from engine commit
+against, the schema compiler, the build command, engine-view to run it in, engine-content to
+build its content with, two scenes to start from, and the tool that packs a build for a tester. It was exported from engine commit
 ``$commitShort``$(if ($stamp.dirty) { ' (with local changes)' }), preset ``$Preset``, CPU baseline ``$cpuBaseline``,
 hotload ABI $abi (``sdk.json`` has every field). A game repository pins this folder and that commit;
 ``tools/new-game-repo.ps1`` in the engine's tree makes one from it.

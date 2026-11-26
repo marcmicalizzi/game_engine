@@ -143,13 +143,19 @@ of its own, with its own numbers, rather than leaving it to the viewer's load on
 runs `matgen` for the engine's generated material sets ([matgen](subsystems/matgen.md)). It is a
 static executable like `engine-view`, linking no third-party library the viewer does not.
 
-**It follows the viewer's rule: outside a checkout, every root is named.** In the engine's tree both
-find the derived-data root and the material pack by walking up from the executable to the
-directory holding `AGENTS.md` (`geometry::find_ddc_root`, `materials::default_pack_dir`); in an SDK
-there is none above them, so neither finds anything by itself and nothing is written beside the
-SDK. A command that would use the cache is given `--ddc <repo>/ddc`, `matgen` is given `--out`, and
-a host reads the sets with `--materials`; `matgen` with no `--out` outside a checkout refuses,
-naming the flag. From a game repository, with the SDK at `$sdk`:
+**Outside a checkout, every root is named, for the content tool as for the viewer.** In the
+engine's tree both find the derived-data root and the material pack by walking up from the
+executable to the directory holding `AGENTS.md` (`geometry::find_ddc_root`,
+`materials::default_pack_dir`); in an SDK there is usually none above them, so neither finds a root
+by itself. They differ in what they do then: `engine-view` given no `--ddc` falls back to a `ddc/`
+beside each scene ([above](#where-a-games-derived-data-goes)), while `engine-content` refuses —
+`build --cache` with no `--ddc` and `matgen` with no `--out` each exit naming the flag — so the
+content tool never writes beside the SDK. A command that would use the cache is given
+`--ddc <repo>/ddc`, `matgen` is given `--out`, and a host reads the sets with `--materials`. **An SDK
+unpacked anywhere under a folder that holds an `AGENTS.md`** (a workspace kept for agents, say) is
+not outside a checkout to either tool: both would take that folder's `ddc/` and
+`content/materials` by themselves, so keep an SDK out of such a tree or name every root anyway.
+From a game repository, with the SDK at `$sdk`:
 
 ```powershell
 & "$sdk/bin/engine-content.exe" build meshes/crate.gltf --cache --ddc ./ddc           # the entry engine-view --ddc ./ddc then loads without building
@@ -158,6 +164,13 @@ naming the flag. From a game repository, with the SDK at `$sdk`:
 & "$sdk/bin/engine-content.exe" matgen --out ./content/materials/generated            # the generated sets, once (minutes at the default size)
 ./run.ps1 -EngineArgs "--materials content/materials"                                  # a session that draws with them
 ```
+
+**The viewer's load takes what the tool built** (checked 2026-11-25 from an SDK outside any
+checkout): after `build meshes/ramp.gltf --cache --ddc ./ddc`, the SDK's `engine-view --offscreen
+--mesh meshes/ramp.gltf --ddc ./ddc` reported that entry, `ddc/clusters/c047377eda7ff3af.clusters`,
+as its summary's `load.meshes[0].path`, and the file was not rewritten; the only thing the run added
+under `ddc/` was its pipeline cache. The load's own `cache` field (`hit`, `miss` or `file`) is in the
+renderer's "mesh loaded" log line, which the default log level does not print.
 
 The template has no content step of its own (no `content.ps1`): a game's meshes are the author's,
 so these lines are where to start one. `--materials` names one directory, read as its own
