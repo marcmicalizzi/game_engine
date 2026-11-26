@@ -91,6 +91,7 @@ One page per module, created in the same change that creates the module. Templat
 | structures | domain | [structures.md](structures.md) |
 | dwellings | domain | [dwellings.md](dwellings.md) |
 | village | domain | [village.md](village.md) |
+| water_state | domain | [water_state.md](water_state.md) |
 | renderer | systems | [renderer.md](renderer.md) |
 | animation | systems | [animation.md](animation.md) |
 | audio_system (capability) | systems | [audio_system.md](audio_system.md) |
