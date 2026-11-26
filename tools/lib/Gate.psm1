@@ -433,8 +433,11 @@ function Start-GateProcess {
     # with the two log files and waits for it, so the leg inherits only its handles, and the id
     # returned is alive exactly as long as the leg, whose exit code it exits with.
     $q = { param($v) "'" + ("$v" -replace "'", "''") + "'" }
-    $inner = "`$p = Start-Process -FilePath $(& $q $pwsh) -ArgumentList $(& $q $line) -WorkingDirectory $(& $q $WorkingDirectory) " +
-             "-RedirectStandardOutput $(& $q $Log) -RedirectStandardError $(& $q "$Log.err") -NoNewWindow -PassThru; " +
+    # A start that fails in the wrapper would die in its hidden console with no leg and no verdict,
+    # so its error goes to "$Log.err" and the wrapper exits 1 (T231's mend).
+    $inner = "try { `$p = Start-Process -FilePath $(& $q $pwsh) -ArgumentList $(& $q $line) -WorkingDirectory $(& $q $WorkingDirectory) " +
+             "-RedirectStandardOutput $(& $q $Log) -RedirectStandardError $(& $q "$Log.err") -NoNewWindow -PassThru -ErrorAction Stop } " +
+             "catch { try { Set-Content -LiteralPath $(& $q "$Log.err") -Value ('the leg did not start: ' + `$_.Exception.Message) } catch { }; exit 1 }; " +
              "`$null = `$p.Handle; `$p.WaitForExit(); exit `$p.ExitCode"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($inner))
     $sp = @{ FilePath = $pwsh; ArgumentList = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"

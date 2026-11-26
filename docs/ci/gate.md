@@ -81,7 +81,12 @@ through `cmd` or a Unix shell. In order:
    (<id>), its verdict will be <file>`, so a reader of the output knows the gate is done. WMI's
    `Win32_Process.Create` would detach as well, but its process takes the user's default
    environment rather than the gate's, and a `cmd /c` with redirection would have to quote every
-   argument for cmd's metacharacters. On Linux the leg is started as `-NoWait` is.
+   argument for cmd's metacharacters. On Linux the leg is started as `-NoWait` is. **The id the
+   gate prints is the wrapper's**, not the leg's: stopping it leaves the leg and its ssh running
+   (stop the process tree); if the wrapper dies, the leg runs on orphaned and the gate's line no
+   longer says it trails; and a start that fails inside the wrapper (a log it cannot open) writes
+   the error to `<batch>-server.log.err` and exits 1, so no leg runs and none is said to trail. The
+   gate's verdict depends on neither: the server's is its own file.
 2. **The documentation check and the lint**, then **the four Windows builds** (configured when a
    preset has no build tree; three attempts each, each after the short wait for memory described in
    [how long things take](what-to-run.md#how-long-things-take)). A failed check or build runs no suite.
@@ -259,10 +264,11 @@ and cannot fail it.
   medians on the baseline, and the same tail in the previous batch's binary flown back to back).
   Fail-safe (a false red). The step is still never flown again into a pass: a red budget is read
   against the previous gated binary flown beside the tip, both in the record, and a merge past it
-  is the owner's to take. Since 2026-11-25 the share is also sampled through every pinned flight,
-  and an over with a mean share past a **provisional** 2 % is busy, flown again, instead of red
+  is the owner's to take. Since 2026-11-25 `frame-budget.ps1 -GpuShare` (off by default, and the
+  gate does not pass it) samples the share through a pinned flight and prints it beside the
+  verdict; **it decides nothing**, and a red budget stays red whatever it reads
   ([bench](../subsystems/bench.md#frame-budgets), "Other programs' share of the GPU through a
-  flight"); the threshold waits for the measurement the row names, so T230 stays open.
+  flight", says what is left before it may: T230 stays open).
 
 **What the scripts deliberately do not do**: take or wait on the GPU lock (every test takes it,
 ADR-0049); stop a process, theirs included; reset, stack or cherry-pick the gate worktree (the

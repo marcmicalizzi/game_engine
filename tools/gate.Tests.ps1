@@ -397,6 +397,15 @@ try {
     Test-That 'and the leg runs to its end, its output in its own log and its id alive as long as it is' {
       (Test-Path -LiteralPath $mark) -and ((Get-Content -LiteralPath (Join-Path $fx 'sleeper.log') -Raw) -match 'stub leg started')
     }
+    # A start that fails inside the wrapper (here the log is a directory, so the redirect cannot open
+    # it) is written to "<log>.err" and the wrapper exits 1, rather than dying in a hidden console.
+    $badLog = Join-Path $fx 'log-is-a-directory'
+    New-Item -ItemType Directory -Force -Path $badLog | Out-Null
+    $w = Start-GateProcess -Script $stub -Log $badLog -WorkingDirectory $fx -Detached
+    $wDone = $w.WaitForExit(60000)
+    Test-That 'a leg the wrapper cannot start leaves its error in <log>.err and the wrapper exits 1' {
+      $wDone -and $w.ExitCode -eq 1 -and ((Get-Content -LiteralPath "$badLog.err" -Raw) -match 'the leg did not start')
+    }
   }
   Test-That 'an unknown -Skip name is refused with exit 2' {
     $o = (& pwsh -NoProfile -File $gateScript -Root $fx -Batch x -Logs (Join-Path $base 'skip-logs') -Skip 'linux,budget' *>&1 | Out-String)
