@@ -352,7 +352,7 @@ TEST_CASE("world ears: in a 3 m/s wind the stander hears the gust come and go in
   const Tunable solo("audio.world.solo", "3");
   const test::TempDir tmp("world_ears_wind");
   listen(3.0, 0.0, 60.0, tmp.file("stand.wav"));
-  listen(3.0, 1.5, 12.0, tmp.file("walk.wav"));
+  listen(3.0, 1.5, 60.0, tmp.file("walk.wav"));
   listen(3.0, 5.0, 12.0, tmp.file("run.wav"));
   const Heard stand = hear(read_wav(tmp.file("stand.wav")));
   const Heard walk = hear(read_wav(tmp.file("walk.wav")));
@@ -362,10 +362,10 @@ TEST_CASE("world ears: in a 3 m/s wind the stander hears the gust come and go in
   print("running 5 m/s into 3 m/s", run);
   const f64 u = head_wind(3.0);
   // The law at the mean wind past the head, give or take the turbulence: the mean of the fourth
-  // power of a turbulent speed stands over the fourth power of its mean. Since S121's Weibull
-  // buffeting the walker reads 2.01 dB over the law (the Gaussian's read 1.9), so its bound is 2.5.
+  // power of a turbulent speed stands over the fourth power of its mean. The walker hears the
+  // stander's minute: 12 s sampled too little of the gust to hold its mean within 2 dB.
   CHECK(std::fabs(stand.level_db - law_db(u)) < 2.0);
-  CHECK(std::fabs(walk.level_db - law_db(u + 1.5)) < 2.5);
+  CHECK(std::fabs(walk.level_db - law_db(u + 1.5)) < 2.0);
   CHECK(std::fabs(run.level_db - law_db(u + 5.0)) < 2.0);
   CHECK(run.level_db > walk.level_db);
   CHECK(walk.level_db > stand.level_db);
@@ -463,7 +463,7 @@ TEST_CASE("world ears: the head's turbulence is the same wherever in the world t
 }
 
 // The hold on the mean (S121): the world's ceiling holds on the ears' mean, so in a gale the hold
-// follows the wind and never an ear's 40 ms buffeting: tick to tick it moves as the gust and the
+// follows the wind and never an ear's buffeting, a draw a 20 ms frame held through it: tick to tick it moves as the gust and the
 // head's turbulence do (a quarter of a decibel a tick at most, 0.23 at the 95th percentile when
 // this was written), not as the buffeting's factor (several decibels between its frames). The
 // refreshes, 8 a second, step the crowns. The ears are set 9.5 dB over the default (-16.5, batch

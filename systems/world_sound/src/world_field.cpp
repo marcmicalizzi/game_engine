@@ -139,7 +139,7 @@ constexpr f64 k_ears_lowpass_least_hz = 200.0;
 // into the flow; the 8 Hz top and the six sines are choices. The turbulence the head makes is each
 // ear's own: Nelke's short-term gain (Eq. 3.54 of the 2016 dissertation [F]), one value a 20 ms
 // frame of the world's clock, so a held clock holds it, Weibull-distributed with κ 2.71 (Fig. 3.22
-// [F]; its λ, 1.53, cancels in the power's factor). Γ(1 + 2 / κ) is computed here (Lanczos).
+// [F]; its λ, 1.53, cancels in the power's factor). Γ(1 + 2 / κ), 0.916389, was computed once (Lanczos' series) and is the constant below.
 constexpr f64 k_head_kaimal_length_m = 8.1 * 0.7 * 1.7;
 constexpr f64 k_head_turbulence_f_high = 8.0;
 constexpr u32 k_head_turbulence_sines = 6;
