@@ -29,7 +29,7 @@ reached through Europe PMC, Crossref, Semantic Scholar, OpenAlex and AGRIS. Each
 **secondary** (a page that restates it), **search summary only** (not read: never used as a
 constant) — and under what licence its text or data stands, where that was stated. **No code was
 read from any source.** Two leaf spectral libraries were found under CC BY 4.0 with both faces
-measured; their files are 7 to 14 MB of spectra and were **not reduced tonight** (a fetch tool
+measured; their files are 7 to 14 MB of spectra and were **not reduced** for this page (a fetch tool
 cannot average a few hundred columns of a CSV faithfully), so no ratio by band on this page comes
 from them. A number derived on this page from read numbers is marked *derived*, with its arithmetic.
 
@@ -95,7 +95,7 @@ from them. A number derived on this page from read numbers is marked *derived*, 
   et al. 2005); a cuticle's specular reflection is fully polarised near 55° (Grant 1987, through
   E-TRAINEE, secondary). That the waxy upper face is the glossier and the hairy or stomatal lower
   face the matter is the common botanical reading; **no measurement of each face's specular lobe
-  was read** tonight.
+  was read**.
 
 ### Which species are two-coloured
 
@@ -110,11 +110,14 @@ from them. A number derived on this page from read numbers is marked *derived*, 
 
 **The engine's broadleaves** ([flora](../subsystems/flora.md#shared-growth-rules-and-named-species-g85)):
 maple, oak, elm, walnut, beech, ash, birch, willow, the orchard's apple and the default
-`broadleaf` (an oak). Measured with both faces in what was read: Norway maple and sycamore (maple),
-pedunculate oak, a weeping Siberian elm (elm, the nearest), beech, silver birch, goat willow
-(willow, the nearest genus; the weeping willow itself was not found), rowan and whitebeam (*Sorbus*,
-nearest to the orchard's *Malus* among the rosaceous trees, which is a guess of the genus's
-neighbour, not a measurement). **Not found measured on both faces: walnut, ash, apple.** No paper
+`broadleaf` (an oak). Measured with both faces in what was read: Norway maple (Hovi et al., in
+the library) and sycamore (Lukeš et al., abstract only, no open data) for maple; pedunculate oak
+(the library); a weeping Siberian elm (elm, the nearest; Lu et al. 2018's figures only); beech
+(Lukeš et al., abstract only, no open data); silver birch (the library); goat willow (willow, the
+nearest genus, the library; the weeping willow itself was not found); rowan (*Sorbus aucuparia*,
+the library), the nearest to the orchard's *Malus* of the pome-fruit trees measured, which is a
+guess of the genus's neighbour, not a measurement. Whitebeam's nearly white underside is a
+description, not a measurement. **Not found measured on both faces: walnut, ash, apple.** No paper
 read names one of the engine's species among the felted ones.
 
 ### PROSPECT and the two faces
@@ -203,8 +206,9 @@ their tips rather than their bases is a search summary only.
 ### Flutter before it
 
 - Vortex shedding off a bluff body at Reynolds numbers 10² to 10⁵ is at a Strouhal number of about
-  0.2 (Gosselin 2019, read): a 10 cm leaf at 5 m/s would shed at about 10 Hz (*derived*,
-  f = 0.2 U / L), which is a scale for the fastest flutter, not a measurement of a leaf.
+  0.2 (Gosselin 2019, read): shedding is set by the dimension across the flow, so a
+  blade 5 cm wide at 5 m/s would shed at about 20 Hz (*derived*, f = 0.2 U / w, w the width the
+  wind meets), which is a scale for the fastest flutter, not a measurement of a leaf.
 - A quaking aspen's leaf flutters at about 3 to 5 Hz in 2 to 4 m/s of wind (a review's figure, a
   search summary only); Roden (2003, search summary only) drove a modelled aspen leaf at 3 Hz; a
   model cottonwood leaf's flutter rose with the speed to about 4.5 Hz at 16 knots (search summary
@@ -242,31 +246,44 @@ inside, so that a rolled leaf shows its underside, is the question that joins W1
 
 ## 5. A reading for R233, kept apart from the sources
 
-- **What the ratio is to be, by band.** For a broadleaf the lower face's reflectance over the
-  upper's is above 1 in all three visible bands (every read source agrees), larger for felted
-  leaves (white poplar, silver maple, whitebeam) than for the rest, and below 1 in the near infrared,
-  which the renderer does not draw. **Its value by band is not in what was read**, so the row's
+- **What the ratio is to be, by band.** What was read says it is above 1 in the visible: Hovi et
+  al. 2017 as a statement of the region for the group (abaxial visible reflectance notably higher,
+  particularly in broadleaves; their values by band and species are in a figure that was not
+  read), and Lu et al. 2018 over 400 to 700 nm for every one of its seven species. That it holds
+  in each of the renderer's three bands, and for each species, is what the library's reduction has
+  to confirm. It is larger for felted leaves (white poplar and oleaster measured; silver maple and
+  whitebeam by description) than for the rest, and below 1 in the near infrared, which the renderer
+  does not draw. **Its value by band is not in what was read**, so the row's
   first step is a reduction of Hovi and Rautiainen's library (CC BY 4.0; credit the authors and the
   dataset's DOI on the page that takes a number) — for each species, the mean of `B` over `A` in the
   bands the renderer's colours stand for, sun and shade leaves apart — done by a tool outside the
   repository and its numbers written on this page with the method. Until then **zero is the
   stand-in**, as the row's text says: a material that declares no back face draws what it drew.
-- **The groups the numbers would fill.** The engine's maple, oak, beech and birch from their own
-  species in the library (Norway maple and sycamore, pedunculate oak, beech through Lukeš et al.'s
-  set, silver birch); elm from the Siberian elm's figure, the nearest measured; willow from goat
-  willow; walnut, ash and the apple from the group's mean until one is measured; and a felted group
-  (white poplar, silver maple, whitebeam) for an asset that declares it.
-- **The transmitted share takes one colour whichever face is lit.** Hovi et al. found no effect of
-  the side on visible transmittance, and a leaf's transmittance is reciprocal, so the light through
-  a leaf is the same lit from above or below. The engine states transmission as a share of the
+- **The groups the numbers would fill.** From the library: maple from Norway maple, oak (and the
+  default `broadleaf`) from pedunculate oak, birch from silver birch, willow from goat willow, the
+  apple from rowan (section 1's nearest genus). Elm from the Siberian elm in Lu et al. 2018, whose
+  values are in figures only: they would have to be digitised from the figures (the article is CC
+  BY, so it is allowed), and the page that takes them says so. **Beech and sycamore are not
+  reachable**: Lukeš et al. measured them, but only the abstract was read and their data is not
+  open, so beech takes the library's broadleaf mean until a measurement is reached. Walnut and ash
+  take the same mean until one is measured. A felted group (white poplar and oleaster from Lu et
+  al.'s figures, the same digitising) serves an asset that declares it.
+- **The transmitted share takes one colour whichever face is lit.** Hovi et al. found the visible
+  transmittance not affected by the leaf's side (in the near and shortwave infrared it was: the
+  lower face reflected less and transmitted more), so in the bands the renderer draws the light
+  through a leaf may be taken as the same lit from above or below. That rests on their measurement,
+  the one read source that measured transmittance on both faces, not on a general rule. The engine states transmission as a share of the
   reflectance ([foliage](foliage-two-sided-light.md#the-model)); with a second face's albedo, the
   share must stay **a share of the upper face's** (or be stated as a colour of its own), never of
   whichever face the eye sees, or a turned leaf would transmit more for being paler.
-- **Which face of a card is the upper.** In the solver's sprays the winding's front faces the
-  spray's `upper` direction (`build_spray` in `domain/flora/src/kit.cpp` emits every face with it as
-  the hint), and the spray's `side` decides whether that is the sky's side (a broadleaf's sprays
-  are laid level to face the sky, which a case has yet to hold); the leaf image is mapped the same
-  on both faces. A bought plant's glTF says only which winding is the front. The row must settle that **the
+- **Which face of a card is the upper.** Each of the three leaf builders in
+  `domain/flora/src/kit.cpp` winds a blade's front towards a normal it computes, and each of those
+  normals points up: `build_spray`'s `upper` is the up direction's component perpendicular to the
+  twig (the crown passes a `side` across the twig and level, so `upper` is `up` less its part
+  along the twig); `build_simple_leaves` (and `build_compound_leaves`, whose normal is built the
+  same way from a level lateral) and `build_leaf_card` flip their normal whenever its y is below 0.
+  So the front is the sky's side by construction, which a case has yet to hold; the leaf image is
+  mapped the same on both faces. A bought plant's glTF says only which winding is the front. The row must settle that **the
   front is the upper face** for every two-sided material that declares a back, hold the solver's
   sprays to it with a case, and say so for imported assets.
 - **The specular lobe.** Nothing measured was read for either face; the common reading (a glossier,
@@ -281,10 +298,10 @@ inside, so that a rolled leaf shows its underside, is the question that joins W1
   tree, the poroelastic theory) and its drag coefficient on the reconfigured area taken as fixed,
   the frontal area falls as U₀ / U past an onset speed U₀ (*derived*: U² A(U) ∝ U^(2+V) with
   V = −1). A blade folded about its midrib with each half turned by φ from flat shows cos φ of its
-  area to a wind square on, so **φ(U) = acos(min(1, U₀ / U))** (*derived*): with U₀ at 5 m/s,
-  60° at 10 m/s, 76° at 20 m/s, 80° at the owner's 28 m/s. A blade rolled into a tube of one turn
+  area to a wind square on, so **φ(U) = acos(min(1, U₀ / U))** (*derived*): with U₀ at 5 m/s (chosen
+  for illustration; no source gives it), 60° at 10 m/s, 76° at 20 m/s, 80° at the owner's 28 m/s. A blade rolled into a tube of one turn
   shows 2r / w = 1/π, 0.32 of its width (*derived*), about where three hardwoods' crowns stood at
-  20 m/s (20 to 37 %). U₀ is not published for a leaf (section 4): Vogel's leaves were reconfiguring
+  20 m/s (20 to 37 %). No U₀ for a leaf was found published (section 4): Vogel's leaves were reconfiguring
   at 10 m/s, and C_Y ≈ 1 is where to compute one from a blade's stiffness, which this page did not
   read. These are a reading's curves, to be checked against Vogel's and Shao's pictures, not a model
   read from a source.
@@ -295,17 +312,37 @@ inside, so that a rolled leaf shows its underside, is the question that joins W1
   halves each. So **a fold drawn as geometry matters within about ten metres**, its shading out to a
   few tens, and past where a leaf is under a pixel only its effect on the crown's mean colour
   (more underside, less area) is left, which R233's albedo and the crown's lean already carry.
-- **What two triangles cannot do.** A card in `build_spray` is two triangles from the twig to the
-  tip, sharing its twig vertices with the next card, and the leaf image's midrib runs along the
-  card's middle (the image is mapped whole), not along the shared diagonal: a fold about the
-  midrib needs a row of vertices along it, two more triangles a card, so a near card's leaves cost
-  twice their triangles. A roll needs more rows still. The maple's and the other named profiles'
-  single quads are the same shape.
-- **What the shading alone could carry.** A normal turned across the card's width by the fold's
-  angle, computed per pixel from the card's own u (each card spans u from i to i + 1) and the
-  frame's load, needs no vertex and costs the resolve a few instructions on foliage pixels; because
-  the twig vertices are shared between neighbouring cards a per-vertex normal cannot cup one card
-  without the next. It shows a cupped leaf's light, not its outline.
+- **Which builder makes which leaf.** Three builders in `domain/flora/src/kit.cpp` make the
+  broadleaves' blades, and `crown_emit_leaves` chooses by the profile's leaf placement
+  (`species.cpp`):
+  - `build_simple_leaves`: the named branching profiles' leaves — maple (`opposite_simple`), oak,
+    elm, beech and the rest of the branching family (`alternate_simple`) — and the willow's
+    curtains, the birch's full-detail path and the ancient tree's simple crowns. Each blade is its
+    own rectangle of four vertices and two triangles, u from 0 to 1 across it and v along it, with
+    **no vertex shared** with another blade (the code says so). `build_compound_leaves` makes ash's
+    (`opposite_compound`) and walnut's (`alternate_compound`) leaflets the same way, on the
+    unmerged rung only.
+  - `build_spray`: whatever crown keeps the `spray` placement (the orchard tree's spurs through
+    `emit_spray_part`, the birch's aggregate-card ladder) and a compound profile's merged rungs;
+    the conifers' `build_bough` is the same strip, folded. A strip of cards along the twig, two triangles a card, **the twig
+    vertices shared** between neighbouring cards, each card u from i to i + 1.
+  - `build_leaf_card`: a spray's terminal leaf and the understory's blades. A diamond of four
+    vertices whose two triangles share the edge from base to tip, u = 0.5 on it.
+- **What two triangles cannot do.** On a rectangle of `build_simple_leaves` or
+  `build_compound_leaves` the midrib runs at u = 0.5 from the base to the tip, and the triangles
+  share the diagonal from one base corner to the opposite tip corner: a fold about the midrib needs
+  a vertex pair on it, two more triangles a blade, so a near blade's leaves cost twice their
+  triangles. The same holds for a `build_spray` card. **`build_leaf_card`'s diamond is the
+  exception**: its shared edge is its midrib, so a fold there moves the two side vertices and needs
+  no new vertex. A roll needs more rows on every builder.
+- **What the shading alone could carry.** On the forest's named species (separate blades) a normal
+  tilted per vertex across the blade's width — the two vertices at u = 0 one way, the two at u = 1
+  the other — cups each blade on its own, since no vertex is another blade's; written by the flora
+  stage from the frame's load it costs no triangle, and whether the deformed-vertex pool carries a
+  normal for it to write is a question for the row. On a `build_spray` card the twig vertices are
+  shared with the neighbouring cards, so a per-vertex normal cannot cup one card without the next;
+  there the cup has to come per pixel, from the card's own u (i to i + 1) and the load, a few
+  instructions on foliage pixels. Either shows a cupped leaf's light, not its outline.
 - **Questions the row must answer, with the evidence each way.**
   - *Geometry near, shading farther, nothing past.* The pixels above favour it; the cost is near
     cards' leaf triangles doubled, which the pool's flora stage pays per cut, as the sway does.
