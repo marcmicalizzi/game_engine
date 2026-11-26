@@ -12,7 +12,10 @@
   run.ps1 (the SDK's run-game.ps1 replaying the synthetic walk, with --report), check the report
   has `exit`, `machine`, `frames` and a `game` block whose `ticks` is positive, then pack it with
   the SDK's package-game.ps1 (-ModuleDll on that module, the SDK's desert scene) and check the zip
-  holds package.json, run.cmd and the module. The refusals are checked too: an export inside the
+  holds package.json, run.cmd and the module. Before the module is built, the SDK's own
+  engine-content (T233), from the repository with every root named there: a mesh built into its ddc/ and read back with `info`,
+  one generated material set into its content/materials/generated, and matgen's refusal when no
+  --out is named outside a checkout. The refusals are checked too: an export inside the
   repository, a template name that is not an identifier.
 
   It owns nothing outside its scratch directory — a fresh GUID under the system temp directory, so
@@ -116,7 +119,8 @@ try {
   $t = Get-Date
   $export = Run (Join-Path $Root 'tools/export-game-sdk.ps1') @('-Preset', $preset, '-BuildDir', $BuildDir, '-Out', $sdk)
   Check ($export.Code -eq 0) "export-game-sdk exits 0 ($([int]((Get-Date) - $t).TotalSeconds) s): $($export.Output.Substring(0, [Math]::Min(300, $export.Output.Length)))"
-  foreach ($rel in @('sdk.json', 'README.md', 'LICENSE', 'bin/engine-view.exe', 'bin/schemac.exe', 'bin/game/walk_poc.dll',
+  foreach ($rel in @('sdk.json', 'README.md', 'LICENSE', 'NOTICE', 'third_party/LICENSES.md', 'bin/engine-view.exe', 'bin/schemac.exe',
+                     'bin/engine-content.exe', 'bin/game/walk_poc.dll',
                      'cmake/build_config.cmake', 'cmake/EngineGameModuleBuild.cmake',
                      'include/foundation/hotload/module_abi.h', 'include/core/base/types.h', 'schemas/README.md',
                      'content/test-scenes/desert-endless/scene.json', 'content/test-scenes/ruins-walk/kit/kit.json',
@@ -240,6 +244,37 @@ int sdk_common_names_check() {
   $pin = Get-Content -LiteralPath (Join-Path $repo 'engine-sdk.json') -Raw | ConvertFrom-Json -Depth 8
   Check ($pin.commit -eq $sdkJson.commit -and $pin.sdk -eq '../sdk') 'engine-sdk.json pins the SDK and its commit'
   Check ((Select-String -LiteralPath (Join-Path $repo "src/$name.cpp") -Pattern '@@NAME@@' -Quiet) -ne $true) 'no placeholder is left in the module'
+
+  # ---- content from the SDK's own engine-content, in the repository (T233) ----------------------
+  # Outside a checkout the content tool finds no derived-data root or pack by itself, as the SDK's
+  # engine-view does not, so each command names the repository's (docs/game-authoring.md,
+  # "Building content from the SDK"): a container into its ddc/ through the cache, read back by
+  # `info`, and one generated material set into its content/materials/generated at 64 texels.
+  $content = Join-Path $sdk 'bin/engine-content.exe'
+  $meshDir = Join-Path $repo 'meshes'
+  New-Item -ItemType Directory -Force -Path $meshDir | Out-Null
+  Copy-Item -LiteralPath (Join-Path $Root 'content/test-scenes/tree-bases/ramp.gltf') -Destination $meshDir
+  # These run before the module is built and run, because they open no device and so never wait for
+  # the GPU lock, and a run that waited past its budget exits 75 before anything after it.
+  $t = Get-Date
+  $built = & $content build (Join-Path $meshDir 'ramp.gltf') --cache --ddc (Join-Path $repo 'ddc') 2>&1 | Out-String -Width 400
+  $builtCode = $LASTEXITCODE
+  $container = @(Get-ChildItem -LiteralPath (Join-Path $repo 'ddc/clusters') -Filter '*.clusters' -File -ErrorAction SilentlyContinue)
+  Check ($builtCode -eq 0 -and $container.Count -eq 1) "the SDK's engine-content builds a container into the repository's ddc/ ($([int]((Get-Date) - $t).TotalSeconds) s): $($built.Trim().Substring(0, [Math]::Min(200, $built.Trim().Length)))"
+  if ($container.Count -eq 1) {
+    $info = & $content info $container[0].FullName 2>$null | Out-String -Width 400
+    $infoJson = $null
+    try { $infoJson = $info | ConvertFrom-Json -Depth 16 } catch { }
+    Check ($LASTEXITCODE -eq 0 -and $null -ne $infoJson) "engine-content info reads it back as one JSON line"
+  }
+  $t = Get-Date
+  $packOut = Join-Path $repo 'content/materials/generated'
+  $gen = & $content matgen --out $packOut --texels 64 --role gravel/bed 2>&1 | Out-String -Width 400
+  Check ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $packOut 'pack.json')) -and (Test-Path -LiteralPath (Join-Path $packOut 'gravel/bed/base_color.png'))) "engine-content matgen writes a set into the repository's content/materials/generated ($([int]((Get-Date) - $t).TotalSeconds) s): $($gen.Trim().Substring(0, [Math]::Min(200, $gen.Trim().Length)))"
+  $nameless = & $content matgen --texels 64 --role gravel/bed 2>&1 | Out-String -Width 400
+  Check ($LASTEXITCODE -ne 0 -and $nameless -match 'name --out') "and with no --out it refuses, outside a checkout, naming the flag"
+  # The run below is checked for making the repository's ddc/ itself, so this one goes.
+  Remove-Item -LiteralPath (Join-Path $repo 'ddc') -Recurse -Force -ErrorAction SilentlyContinue
 
   # ---- build, run offscreen, read the report ----------------------------------------------------
   $t = Get-Date
