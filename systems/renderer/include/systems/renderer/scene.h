@@ -744,6 +744,9 @@ struct SceneDesc {
   // The file's `lamps` (`engine.scene.Lamp`, fire.h's `read_lamp`), at their world positions, at
   // most `k_max_lamps`. Empty: none.
   Vector<FireDesc> lamps;
+  // Where on the Earth the scene is (`engine.scene.Georeference`, W186; scene_gen's
+  // georeference.h), its form checked and nothing in it read. Null: the file says nothing of it.
+  std::optional<scene::Georeference> georeference;
   // ---- content classes (C64; renderer.md, "Content classes at load") ---------------------------
   // **The policy the scene is made under** (ADR-0073 decision 5): every instance is decided on it
   // when it is admitted (`admit_instance`), before its mesh's geometry is read. `agent-default`
@@ -1191,6 +1194,9 @@ struct SceneData {
   // `FireSet`.
   Vector<FireDesc> fires;
   Vector<FireDesc> lamps;
+  // Carried from the `SceneDesc`: where on the Earth the scene is (W186), for `render.scenes` and
+  // tools; the picture never reads it.
+  std::optional<scene::Georeference> georeference;
   // ---- what the scene was made under (C64; docs/content-classes.md, "What decided at
   // instantiation means") -----------------------------------------------------------------------
   // The policy it was loaded with (`SceneDesc::view_policy`), its game caps resolved against

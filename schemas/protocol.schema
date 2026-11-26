@@ -1389,8 +1389,8 @@ struct RenderUnloadResult @version(2) {
   scenes_left: u32 = 0
 }
 
-/// One scene the host holds, in `render.scenes`.
-struct RenderLoadedScene @version(2) {
+/// One scene the host holds, in `render.scenes`. Version 3: `georeference` (W186).
+struct RenderLoadedScene @version(3) @additive(3) {
   scene: string
   /// "mesh", "scene" (a scene file) or "procedural", and the path it was loaded from or the
   /// procedural scene's name.
@@ -1421,6 +1421,10 @@ struct RenderLoadedScene @version(2) {
   /// copies would have taken (as in `RenderUnloadResult`). 0 until built.
   textures_shared: u32 = 0 @since(2)
   texture_bytes_saved: u64 = 0 @since(2)
+  /// Where on the Earth a scene file says it is (`engine.scene.Georeference`, W186), as the file gave
+  /// it: what a tile-building tool compares. Null for a scene that says nothing of it, a mesh and a
+  /// procedural scene.
+  georeference: engine.scene.Georeference? @since(3)
 }
 
 /// Result of `render.scenes`: every scene the host holds, in load order.

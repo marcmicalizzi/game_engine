@@ -25,6 +25,7 @@
 #include <domain/materials/materials.h>
 #include <domain/scene_gen/derived_root.h>
 #include <domain/scene_gen/far_tile.h>
+#include <domain/scene_gen/georeference.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/scene_gen/sky.h>
 #include <domain/scene_gen/water_channel.h>
@@ -2757,6 +2758,16 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   if (!read_scene_fires(file, path, out, error)) return false;
   // The lamps (`engine.scene.Lamp`, R86): steady lights placed and lit as the fires' are.
   if (!read_scene_lamps(file, path, out, error)) return false;
+  // Where on the Earth it is (`engine.scene.Georeference`, W186): its form checked, carried for
+  // tools, and never read by anything that draws.
+  if (file.georeference.has_value()) {
+    std::string why;
+    if (!scene_gen::validate_georeference(*file.georeference, &why)) {
+      error = path + ": " + why;
+      return false;
+    }
+    out.georeference = file.georeference;
+  }
 
   // The overlay: a map from content hash to a local file, read before the meshes so that a mesh
   // it names is loaded from there and checked against the hash the scene gave for it.
@@ -3897,6 +3908,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.props = resolved.props;
   out.fires = resolved.fires;
   out.lamps = resolved.lamps;
+  out.georeference = resolved.georeference;
   // The drawn leaves, by the loaded instances: a leaf whose house or own instance the load did not
   // keep is left out (S91).
   out.leaves.clear();

@@ -1,0 +1,14 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W186",
+  "reason": "W186: a scene carries where on the Earth it is: the scene root's georeference field, its section in scene_gen.md, a paragraph each in gfx.md and renderer.md and a line in apps.md",
+  "date": "2026-11-25",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "schemas.scene_root.fields": 1,
+    "page:docs/subsystems/renderer.md": 605,
+    "page:docs/subsystems/apps.md": 71,
+    "page:docs/subsystems/gfx.md": 695,
+    "page:docs/subsystems/scene_gen.md": 5686
+  }
+}

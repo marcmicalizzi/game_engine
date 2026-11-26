@@ -1989,11 +1989,51 @@ struct Sound @version(1) {
   clips: SoundClip[]
 }
 
+/// Which engine axis a map axis lies along (`Georeference`, W186). The engine's up is +y, and its
+/// two horizontal axes are x and z.
+enum EngineAxis : u8 {
+  /// Not stated: refused, so that no reader guesses.
+  Unset = 0
+  PlusX = 1
+  MinusX = 2
+  PlusZ = 3
+  MinusZ = 4
+}
+
+/// **Where on the Earth a scene is** (W186; docs/subsystems/scene_gen.md, "Where on the Earth a
+/// scene is"): the systems its world coordinates are measured in, named as ISO 19111 names them,
+/// and where its world origin stands in them. **Carried, never interpreted**: the engine does no
+/// projection, no datum shift and no lookup of a name; `scene_gen::map_from_world` and
+/// `world_from_map` are an origin, two signed axes and a unit, nothing more.
+struct Georeference @version(1) {
+  /// The horizontal (projected) coordinate reference system: an authority and its code,
+  /// "EPSG:2952", or the system's well-known text (ISO 19162) when it has no code.
+  horizontal_crs: string
+  /// The vertical coordinate reference system the engine's up measures heights in, named the same
+  /// way: "EPSG:6647" (CGVD2013(CGG2013) height).
+  vertical_crs: string
+  /// The world origin's map coordinates, in the horizontal system's unit. Named by what they mean,
+  /// never by their place in the system's own axis order, which is northing first in some
+  /// (EPSG:31467) and easting first in others (EPSG:2952).
+  origin_easting: f64 = 0
+  origin_northing: f64 = 0
+  /// The world origin's height in the vertical system, metres.
+  origin_height: f64 = 0 @unit(m)
+  /// The engine axes east and north lie along: two different axes, both stated. +x east and -z
+  /// north is a rotation of the map (the engine is right-handed, y up); +x east and +z north is its
+  /// mirror image, which a tool writing (easting, height, northing) into (x, y, z) makes.
+  east: EngineAxis = Unset
+  north: EngineAxis = Unset
+  /// The length of the horizontal system's unit in metres: 1 for a metre grid, 0.3048006096012192
+  /// for the US survey foot.
+  unit_m: f64 = 1
+}
+
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,
 /// version 6 `sky`, version 7 `props`, version 8 `water` and `medium`, version 9 `fires`, version 10
 /// `formation`, version 11 `water_channels`, version 12 `sound`, version 13 `lamps` (R86)
-/// and a mesh's `sound` (S112, `Mesh` version 3).
-struct Scene @version(13) {
+/// and a mesh's `sound` (S112, `Mesh` version 3), version 14 `georeference` (W186).
+struct Scene @version(14) @additive(14) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
   name: string
@@ -2055,6 +2095,9 @@ struct Scene @version(13) {
   /// lights, at most 64 with the placed props' (a file naming more is refused with the count).
   /// Empty: none, and the scene reads and draws exactly as it did.
   lamps: Lamp[] @since(13)
+  /// Where on the Earth the scene is (`Georeference`, W186): carried for tools and never read by
+  /// the picture. Null: the scene says nothing of it, and reads and draws exactly as it did.
+  georeference: Georeference? @since(14)
 }
 
 /// Where the owner's replacements for a scene's placeholders are: a local file, never committed.

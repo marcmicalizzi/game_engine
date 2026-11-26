@@ -1686,6 +1686,7 @@ bool render_scenes(protocol::Context& ctx, protocol::RenderScenesResult& out, pr
     entry.shadows = renderer::resolved_shadow_name(scene->resolved);
     entry.built = scene->gpu != nullptr && scene->view != nullptr;
     entry.reference = scene->reference != nullptr;
+    entry.georeference = scene->data.georeference;  // W186: as the file gave it
     if (entry.built) {
       entry.width = scene->view->width();
       entry.height = scene->view->height();
