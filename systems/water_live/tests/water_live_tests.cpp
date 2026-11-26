@@ -4,8 +4,10 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <vector>
 #include <shaders/water_step.spv.h>
 #include <string_view>
 
@@ -64,13 +66,21 @@ TEST_CASE("water_live: the step's SPIR-V forbids contraction and asks for no fus
   };
   REQUIRE(word(0) == 0x07230203u);
   u32 no_contraction = 0, float_arith = 0, fma = 0, glsl_set = ~0u;
+  std::vector<u32> decorated, results;  // NoContraction targets; float arithmetic results
   for (usize i = 5; i < words;) {
     const u32 head = word(i);
     const u32 count = head >> 16;
     const u32 op = head & 0xffffu;
     if (count == 0 || i + count > words) break;
-    if (op == 71 && count >= 3 && word(i + 2) == 42) ++no_contraction;  // OpDecorate NoContraction
-    if (op == 129 || op == 131 || op == 133 || op == 136) ++float_arith;  // FAdd FSub FMul FDiv
+    if (op == 71 && count >= 3 && word(i + 2) == 42) {  // OpDecorate NoContraction
+      ++no_contraction;
+      decorated.push_back(word(i + 1));
+    }
+    // FAdd FSub FMul FDiv, VectorTimesScalar, Dot: each result must carry the decoration.
+    if (op == 129 || op == 131 || op == 133 || op == 136 || op == 142 || op == 148) {
+      ++float_arith;
+      if (count >= 3) results.push_back(word(i + 2));
+    }
     if (op == 11) {  // OpExtInstImport: is it GLSL.std.450?
       char name[16] = {};
       std::memcpy(name, shaders::k_water_step_spirv + 4 * (i + 2), count > 2 ? 12 : 0);
@@ -85,5 +95,10 @@ TEST_CASE("water_live: the step's SPIR-V forbids contraction and asks for no fus
   // results), so there are at least as many decorations as those operations.
   CHECK(float_arith > 0u);
   CHECK(no_contraction >= float_arith);
+  std::sort(decorated.begin(), decorated.end());
+  u32 undecorated = 0;
+  for (const u32 id : results)
+    if (!std::binary_search(decorated.begin(), decorated.end(), id)) ++undecorated;
+  CHECK(undecorated == 0u);
   CHECK(fma == 0u);
 }

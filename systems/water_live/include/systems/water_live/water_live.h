@@ -5,7 +5,7 @@
 // The water's shallow-water step on the card: domain/water_state's reference scheme as a compute
 // shader in single precision (shaders/water_step.slang), the smallest host code that runs it on a
 // device, its device cases against the reference and its bench. It is the capability that will
-// later run the water's state in a scene; tonight it holds no scene, draws nothing, adds no pass to
+// later run the water's state in a scene; as of 2026-11-25 it holds no scene, draws nothing, adds no pass to
 // a frame and has no scheduler entry. docs/subsystems/water_live.md is the contract; the
 // measurements are docs/experiments/water-step-on-the-card.md.
 //
@@ -200,7 +200,8 @@ class DeviceStep {
   /// `count` steps, submitted and waited for.
   bool run_steps(u32 count, f32 max_dt, std::string* error = nullptr);
   /// Steps until `duration_s` has passed, the last step shortened to land on it; returns the
-  /// steps taken (0 on an error). The time left is kept on the card in float.
+  /// steps taken (0 on an error). The time left is kept on the card in float. Refused (0) while a
+  /// source is on a coarser clock (set_source's `every` > 1), which holds with run_steps only.
   u64 advance(f64 duration_s, std::string* error = nullptr);
 
   /// FNV-1a over the state's float bytes (every plane); 0 on an error.

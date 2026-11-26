@@ -541,6 +541,13 @@ u64 DeviceStep::advance(f64 duration_s, std::string* error) {
     return 0;
   }
   if (!(duration_s > 0.0)) return 0;
+  // A source on a coarser clock is counted in steps on the host: it would count the zero-length
+  // steps that pad an advance's last batch, and `every` times one step's dt is the skipped steps'
+  // sum only while dt is constant. It holds with run_steps at a fixed max_dt only.
+  if ((flags_ & k_flag_source) != 0u && source_every_ > 1) {
+    fail(error, "water_live: advance refuses a source on a coarser clock (set_source every > 1)");
+    return 0;
+  }
   // The steps a batch records; those after the time runs out choose a length of zero and leave the
   // state as it is (update_main copies it).
   constexpr u32 k_batch = 64;

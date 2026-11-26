@@ -101,6 +101,7 @@ f64 dam_depth(f64 x, f64 t, f64 hl, f64 hr) {
 struct DamResult {
   f64 l1_relative = 0.0;   // the card against the closed form
   f64 l1_vs_reference = 0.0;  // the card against the reference, sum |h - h_ref| / sum h_ref
+  f64 linf_vs_reference = 0.0;  // the largest |h - h_ref| of a cell, m
   f64 min_depth = 0.0;
   f64 volume_error = 0.0;
   u64 steps = 0;
@@ -143,6 +144,7 @@ DamResult run_dam(gfx::Device& device, Ops ops, u32 nx, f64 hr) {
     err += std::fabs(got[x] - exact);
     norm += exact;
     diff += std::fabs(got[x] - reference.depth()[x]);
+    r.linf_vs_reference = std::max(r.linf_vs_reference, std::fabs(got[x] - reference.depth()[x]));
     ref_norm += reference.depth()[x];
     r.min_depth = std::min(r.min_depth, got[x]);
     after += got[x];
@@ -164,7 +166,9 @@ void check_dam(gfx::Device& device, f64 hr, f64 finest_bound, const std::string&
     MESSAGE(name << " on the card (" << ops_name(ops) << "): L1 " << r200.l1_relative << ", "
                  << r400.l1_relative << ", " << r800.l1_relative << "; orders " << order_a << ", "
                  << order_b << "; against the reference " << r200.l1_vs_reference << ", "
-                 << r400.l1_vs_reference << ", " << r800.l1_vs_reference << "; volume "
+                 << r400.l1_vs_reference << ", " << r800.l1_vs_reference << "; largest cell "
+                 << r200.linf_vs_reference << ", " << r400.linf_vs_reference << ", "
+                 << r800.linf_vs_reference << " m; volume "
                  << r800.volume_error << " over " << r800.steps << " steps");
     // The reference's own bounds on the scheme.
     CHECK(order_a >= 0.5);
@@ -173,7 +177,11 @@ void check_dam(gfx::Device& device, f64 hr, f64 finest_bound, const std::string&
     CHECK(r800.min_depth >= 0.0);
     // Single precision's: S x 2^-23 of the water against the reference, S x 2^-24 of the volume
     // (each step's update rounds each cell's depth by half an ulp at most).
+    // And cell by cell, where an L1 over all the water could hide a front placed a cell off: eight
+    // sqrt(S) ulps of the deepest water (h_l, ulp 2^-31 m), rounding that walks at random.
+    const f64 deep_ulp = 1.0 / 2147483648.0;
     for (const DamResult* r : {&r200, &r400, &r800}) {
+      CHECK(r->linf_vs_reference <= 8.0 * std::sqrt(static_cast<f64>(r->steps)) * deep_ulp);
       CHECK(r->l1_vs_reference <= static_cast<f64>(r->steps) * 2.0 * k_ulp_f32);
       CHECK(r->volume_error <= static_cast<f64>(r->steps) * k_ulp_f32);
     }
@@ -284,12 +292,17 @@ struct Slope {
   std::vector<f64> bed, manning, source, h;
 };
 
-Slope slope_case() {
+Slope slope_case(bool all_open = false) {
   Slope s;
   s.config.nx = 48;
   s.config.ny = 40;
   s.config.cell_m = 0.5;
   s.config.edges.east = Edge::open;
+  if (all_open) {
+    s.config.edges.west = Edge::open;
+    s.config.edges.south = Edge::open;
+    s.config.edges.north = Edge::open;
+  }
   const u32 cells = s.config.nx * s.config.ny;
   s.bed.resize(cells);
   s.manning.assign(cells, 0.03);
@@ -368,6 +381,13 @@ TEST_CASE("water_live: a lake at rest over an inexact bed stays at rest to singl
     CHECK(low.surface_drift <= drift_bound);
     CHECK(low.fastest <= speed_bound);
     CHECK(low.hash == high.hash);
+    // The datum is what holds it: in world heights at 2,000 m the surface's ulp is 2^-13 m and the
+    // lake's surface moves by at least half of one, past the drift bound above, which the speed
+    // bound alone is too loose to tell. (Both runs move most cells by an ulp of their own depth,
+    // so the count of moved cells cannot tell them apart.)
+    CHECK(world.moved > 0u);
+    CHECK(world.surface_drift >= 0.5 / 8192.0);
+    CHECK(world.surface_drift > drift_bound);
   }
 }
 
@@ -394,7 +414,9 @@ TEST_CASE("water_live: water is counted to the last cell as the reference counts
   gfx::Device opened;
   if (!open_device(opened)) return;
   gfx::Device* device = &opened;
-  const Slope s = slope_case();
+  for (const bool all_open : {false, true}) {
+  CAPTURE(all_open);
+  const Slope s = slope_case(all_open);
   Solver reference(s.config);
   std::copy(s.h.begin(), s.h.end(), reference.depth().begin());
   Inputs in;
@@ -462,6 +484,30 @@ TEST_CASE("water_live: water is counted to the last cell as the reference counts
     CHECK(std::fabs(ledger.open_edge_out_m3 - ref_out) <=
           static_cast<f64>(steps) * 2.0 * k_ulp_f32 * involved);
     CHECK(fastest_flux < 10.0);
+    // Cell by cell (W175 review): L1 of each field over the reference's, held to the same
+    // S x 2^-23; the largest cell difference reported beside it (a wet-dry front a cell apart is
+    // a difference of a whole depth, which no rounding bound covers).
+    f64 dh = 0.0, du = 0.0, dv = 0.0, nh = 0.0, nu = 0.0, nv = 0.0, mh = 0.0, mu = 0.0, mv = 0.0;
+    for (u32 i = 0; i < cells; ++i) {
+      const f64 eh = std::fabs(h[i] - reference.depth()[i]);
+      const f64 eu = std::fabs(hu[i] - reference.momentum_x()[i]);
+      const f64 ev = std::fabs(hv[i] - reference.momentum_y()[i]);
+      dh += eh;
+      du += eu;
+      dv += ev;
+      nh += std::fabs(reference.depth()[i]);
+      nu += std::fabs(reference.momentum_x()[i]);
+      nv += std::fabs(reference.momentum_y()[i]);
+      mh = std::max(mh, eh);
+      mu = std::max(mu, eu);
+      mv = std::max(mv, ev);
+    }
+    MESSAGE("count cell by cell (" << ops_name(ops) << ", all open " << all_open << "): L1 h "
+                                   << dh / nh << ", hu " << du / nu << ", hv " << dv / nv
+                                   << "; largest " << mh << " m, " << mu << ", " << mv << " m2/s");
+    CHECK(dh / nh <= static_cast<f64>(steps) * 2.0 * k_ulp_f32);
+    CHECK(du / nu <= static_cast<f64>(steps) * 2.0 * k_ulp_f32);
+  }
   }
 }
 
@@ -580,6 +626,8 @@ TEST_CASE("water_live: an exchange under the depth's last bit is kept by the com
     REQUIRE(step.set_bed(bed, 0.0, &error));
     REQUIRE(step.set_source(sink, form.every, form.compensate, &error));
     REQUIRE(step.write_state(h, zero, zero, &error));
+    // A coarser clock counts steps on the host, so advance() refuses it (water_live.h).
+    if (form.every > 1) CHECK(step.advance(1.0, &error) == 0u);
     for (u32 batch = 0; batch < k_steps / 1000; ++batch)
       REQUIRE_MESSAGE(step.run_steps(1000, k_frame, &error), error);
     std::vector<f64> got(cells), hu(cells), hv(cells);
