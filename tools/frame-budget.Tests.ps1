@@ -109,43 +109,58 @@ Test-That 'a pass other than the total goes over by itself' { $r.Verdict -eq 'ov
 $r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -cpu 0.8)
 Test-That 'the frame thread''s cpu_ms has its own tolerance' { $r.Verdict -eq 'over' -and (Row $r 'cpu_ms' 'median').Over }
 
-Write-Host "other programs' share of the GPU through a flight (T230)"
-# The counters' instances as Get-Counter names them: the flight's own process (4242) is left out,
-# the others are summed per engine, and the busiest engine is the share.
+Write-Host "other programs' share of the GPU through a flight (T230): sampled on request, deciding nothing"
+# The counters' instances as the WMI class names them. The flight (4242) has its device on adapter
+# c3a1; another adapter's engines and a video decode engine do not count; the others on the 3D,
+# compute and copy engines of c3a1 are summed per engine and the busiest is the share.
 $looks = @(
-  @{ Path = '\\h\gpu engine(pid_4242_luid_0x00000000_0x0000c3a1_phys_0_eng_0_engtype_3d)\utilization percentage'; CookedValue = 90.0 },
-  @{ Path = '\\h\gpu engine(pid_100_luid_0x00000000_0x0000c3a1_phys_0_eng_0_engtype_3d)\utilization percentage'; CookedValue = 3.0 },
-  @{ Path = '\\h\gpu engine(pid_200_luid_0x00000000_0x0000c3a1_phys_0_eng_0_engtype_3d)\utilization percentage'; CookedValue = 1.5 },
-  @{ Path = '\\h\gpu engine(pid_100_luid_0x00000000_0x0000c3a1_phys_0_eng_3_engtype_videodecode)\utilization percentage'; CookedValue = 2.0 }
+  @{ Path = 'pid_4242_luid_0x00000000_0x0000c3a1_phys_0_eng_0_engtype_3D'; CookedValue = 90.0 },
+  @{ Path = 'pid_100_luid_0x00000000_0x0000c3a1_phys_0_eng_0_engtype_3D'; CookedValue = 3.0 },
+  @{ Path = 'pid_200_luid_0x00000000_0x0000c3a1_phys_0_eng_0_engtype_3D'; CookedValue = 1.5 },
+  @{ Path = 'pid_300_luid_0x00000000_0x0000c3a1_phys_0_eng_2_engtype_Copy'; CookedValue = 4.0 },
+  @{ Path = 'pid_100_luid_0x00000000_0x0000c3a1_phys_0_eng_3_engtype_VideoDecode'; CookedValue = 30.0 },
+  @{ Path = 'pid_500_luid_0x00000000_0x0000ffff_phys_0_eng_0_engtype_3D'; CookedValue = 50.0 }
 ) | ForEach-Object { [pscustomobject]$_ }
-Test-That 'a look sums the other processes on each engine and takes the busiest, never the flight''s own' {
+Test-That 'a look sums the others on each 3D, compute and copy engine of the flight''s adapter and takes the busiest' {
   [math]::Abs((ConvertFrom-GpuEngineSamples -Samples $looks -ExcludePid 4242) - 4.5) -lt 1e-9
 }
-Test-That 'a look with no engine instance is no reading, and a look of the flight alone is zero' {
-  $null -eq (ConvertFrom-GpuEngineSamples -Samples @([pscustomobject]@{ Path = '\\h\processor(_total)\% processor time'; CookedValue = 9 })) -and
-    (ConvertFrom-GpuEngineSamples -Samples @($looks[0]) -ExcludePid 4242) -eq 0
+Test-That 'a video decode engine and another adapter''s engines never count' {
+  (ConvertFrom-GpuEngineSamples -Samples @($looks[0], $looks[4], $looks[5]) -ExcludePid 4242) -eq 0
 }
-# Batch 75's figures: 4 to 5 % in the desktop's hands put the whole p99 allowance on the passes beside
-# it; batch 74's own gate flight, the desktop idle, showed no slow frame.
-$desktop = Get-GpuShareVerdict -Samples @(4.2, 4.8, 4.5, 5.0, 4.4)
-$idle = Get-GpuShareVerdict -Samples @(0.3, 0.5, 0.2, 0.4)
-Test-That 'the row''s 4 to 5 % is busy at the provisional threshold, and an idle desktop is not' {
-  $desktop.Busy -and -not $idle.Busy -and $desktop.Provisional -and $desktop.ThresholdPct -eq 2.0 -and $desktop.Count -eq 5
+Test-That 'no engine instance, or a flight with none yet (its adapter unknown), is no reading' {
+  $null -eq (ConvertFrom-GpuEngineSamples -Samples @([pscustomobject]@{ Path = 'processor(_total)'; CookedValue = 9 })) -and
+    $null -eq (ConvertFrom-GpuEngineSamples -Samples @($looks[1], $looks[2]) -ExcludePid 4242)
 }
-Test-That 'too few looks are never busy, whatever they read' { -not (Get-GpuShareVerdict -Samples @(9.0, 9.0)).Busy -and -not (Get-GpuShareVerdict).Busy }
-$overShare = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -totalP99 4.95) -GpuShare $desktop
-Test-That 'a flight over its p99 with a busy share through it is busy (exit 4, flown again), not over' {
-  $overShare.Verdict -eq 'busy' -and $overShare.MachineState -match 'GPU share through the flight 4\.6% mean' -and
-    (Get-FrameBudgetExitCode -Results @($overShare)) -eq 4
+# Batch 75's figures: 4 to 5 % in the desktop's hands while three p99 lines went over.
+$desktop = Get-GpuShareSummary -Samples @(4.2, 4.8, 4.5, 5.0, 4.4)
+Test-That 'the share is summarized against the provisional threshold and decides nothing' {
+  $desktop.PastThreshold -and $desktop.Provisional -and -not $desktop.Decides -and $desktop.Count -eq 5 -and $desktop.ThresholdPct -eq 2.0
 }
-$overIdle = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -totalP99 4.95) -GpuShare $idle
+$medianOver = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -total 2.26) -GpuShare $desktop
+$p99Over = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -totalP99 4.95) -GpuShare $desktop
+$cpuOver = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -cpu 0.8) -GpuShare $desktop
 $passShare = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary) -GpuShare $desktop
-Test-That 'over with an idle share is still over, and a pass with a busy share is still a pass' {
-  $overIdle.Verdict -eq 'over' -and $passShare.Verdict -eq 'pass'
+Test-That 'with a share past the threshold an over on a median, a p99 or cpu_ms stays over, and a pass stays a pass' {
+  $medianOver.Verdict -eq 'over' -and $p99Over.Verdict -eq 'over' -and $cpuOver.Verdict -eq 'over' -and $passShare.Verdict -eq 'pass' -and
+    (Get-FrameBudgetExitCode -Results @($p99Over)) -eq 1
 }
-Test-That 'the samples are in the flight''s record' {
-  $j = @($overShare) | ConvertTo-Json -Depth 8 | ConvertFrom-Json
-  @($j.GpuShare.Samples).Count -eq 5 -and $j.GpuShare.Busy
+Test-That 'the share is said beside the verdict and kept in the record' {
+  $j = @($p99Over) | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+  $p99Over.MachineState -match 'GPU share through the flight 4\.6% mean.*decides nothing' -and @($j.GpuShare.Samples).Count -eq 5
+}
+# The switch: off by default, and every look of the flight's loop is inside it.
+$ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'frame-budget.ps1'), [ref]$null, [ref]$null)
+$switch = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'GpuShare' }
+$reads = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Read-GpuOthersShare' }, $true))
+function Test-InsideSwitch($node) {
+  for ($p = $node.Parent; $p; $p = $p.Parent) {
+    if ($p -is [System.Management.Automation.Language.IfStatementAst] -and ($p.Clauses | Where-Object { $_.Item1.Extent.Text -eq '$GpuShare' })) { return $true }
+  }
+  return $false
+}
+Test-That 'the sampling is a switch, off by default, and with it off nothing is sampled' {
+  $switch -and $switch.StaticType -eq [switch] -and $null -eq $switch.DefaultValue -and $reads.Count -ge 1 -and
+    -not ($reads | Where-Object { -not (Test-InsideSwitch $_) })
 }
 $r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -total 3.0 -quiet $false)
 Test-That 'over on a busy machine is inconclusive, not a failure' { $r.Verdict -eq 'busy' }
