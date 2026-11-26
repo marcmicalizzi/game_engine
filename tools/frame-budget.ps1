@@ -164,10 +164,19 @@ foreach ($r in $runs) {
         $proc = Start-Process -FilePath $Exe -ArgumentList $quoted -PassThru -NoNewWindow -RedirectStandardOutput $so -RedirectStandardError $se
         $null = $proc.Handle  # kept, so the exit code is there after the exit
         $pin = Set-FrameThreadPin -Process $proc -Cpu $pinCpu
+        # Other programs' share of the GPU, a sample every look of the flight and not only at its two
+        # ends (T230), kept beside the summary as `<id>.gpu-share.json` for a re-reading.
+        $shareSamples = New-Object System.Collections.Generic.List[double]
         try {
-          while (-not $proc.WaitForExit(2000)) { Test-FrameThreadPin -Pin $pin -Process $proc }
+          while (-not $proc.WaitForExit(2000)) {
+            Test-FrameThreadPin -Pin $pin -Process $proc
+            $look = Read-GpuOthersShare -ExcludePid $proc.Id
+            if ($null -ne $look) { $shareSamples.Add([double]$look) }
+          }
           $proc.WaitForExit()
         } finally { Close-FrameThreadPin $pin }
+        @{ samples_pct = @($shareSamples); period_s = 2; excluded_pid = $proc.Id } | ConvertTo-Json -Depth 3 |
+          Set-Content -LiteralPath (Join-Path $Out "$($r.id).gpu-share.json")
         $code = $proc.ExitCode
         $output = @(@(Get-Content $so -ErrorAction SilentlyContinue) + @(Get-Content $se -ErrorAction SilentlyContinue) | ForEach-Object { "$_" })
         Remove-Item $so, $se -ErrorAction SilentlyContinue
@@ -203,11 +212,19 @@ foreach ($r in $runs) {
   # never judges (T221; tools/lib/FrameBudget.psm1, Get-CpuModes).
   $frames = Read-FrameCpu -Path $jsonl
   if ($FromSummaries) { $pin = $null }
-  $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary -Frames $frames -Pin $pin
+  # The share sampled through the flight, from the flight's own record (a re-reading reads the file
+  # the flight left); a flight with no record of it is judged as before (T230).
+  $share = $null
+  $shareFile = Join-Path $(if ($FromSummaries) { $FromSummaries } else { $Out }) "$($r.id).gpu-share.json"
+  if (Test-Path -LiteralPath $shareFile) {
+    $kept = Get-Content -LiteralPath $shareFile -Raw | ConvertFrom-Json
+    $share = Get-GpuShareVerdict -Samples @($kept.samples_pct | ForEach-Object { [double]$_ })
+  }
+  $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary -Frames $frames -Pin $pin -GpuShare $share
   if ($AnyDevice -and $result.Verdict -eq 'device') {
     $saved = $plan.machine.device
     $plan.machine.device = $result.Device
-    $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary -Frames $frames -Pin $pin
+    $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary -Frames $frames -Pin $pin -GpuShare $share
     $plan.machine.device = $saved
   }
   $results += $result

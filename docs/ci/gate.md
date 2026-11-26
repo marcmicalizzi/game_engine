@@ -259,7 +259,10 @@ and cannot fail it.
   medians on the baseline, and the same tail in the previous batch's binary flown back to back).
   Fail-safe (a false red). The step is still never flown again into a pass: a red budget is read
   against the previous gated binary flown beside the tip, both in the record, and a merge past it
-  is the owner's to take.
+  is the owner's to take. Since 2026-11-25 the share is also sampled through every pinned flight,
+  and an over with a mean share past a **provisional** 2 % is busy, flown again, instead of red
+  ([bench](../subsystems/bench.md#frame-budgets), "Other programs' share of the GPU through a
+  flight"); the threshold waits for the measurement the row names, so T230 stays open.
 
 **What the scripts deliberately do not do**: take or wait on the GPU lock (every test takes it,
 ADR-0049); stop a process, theirs included; reset, stack or cherry-pick the gate worktree (the

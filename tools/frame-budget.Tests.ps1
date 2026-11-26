@@ -108,6 +108,45 @@ $r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -cull 0.5)
 Test-That 'a pass other than the total goes over by itself' { $r.Verdict -eq 'over' -and (Row $r 'gpu_ms.cull' 'median').Over }
 $r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -cpu 0.8)
 Test-That 'the frame thread''s cpu_ms has its own tolerance' { $r.Verdict -eq 'over' -and (Row $r 'cpu_ms' 'median').Over }
+
+Write-Host "other programs' share of the GPU through a flight (T230)"
+# The counters' instances as Get-Counter names them: the flight's own process (4242) is left out,
+# the others are summed per engine, and the busiest engine is the share.
+$looks = @(
+  @{ Path = '\\h\gpu engine(pid_4242_luid_0x00000000_0x0000c3a1_phys_0_eng_0_engtype_3d)\utilization percentage'; CookedValue = 90.0 },
+  @{ Path = '\\h\gpu engine(pid_100_luid_0x00000000_0x0000c3a1_phys_0_eng_0_engtype_3d)\utilization percentage'; CookedValue = 3.0 },
+  @{ Path = '\\h\gpu engine(pid_200_luid_0x00000000_0x0000c3a1_phys_0_eng_0_engtype_3d)\utilization percentage'; CookedValue = 1.5 },
+  @{ Path = '\\h\gpu engine(pid_100_luid_0x00000000_0x0000c3a1_phys_0_eng_3_engtype_videodecode)\utilization percentage'; CookedValue = 2.0 }
+) | ForEach-Object { [pscustomobject]$_ }
+Test-That 'a look sums the other processes on each engine and takes the busiest, never the flight''s own' {
+  [math]::Abs((ConvertFrom-GpuEngineSamples -Samples $looks -ExcludePid 4242) - 4.5) -lt 1e-9
+}
+Test-That 'a look with no engine instance is no reading, and a look of the flight alone is zero' {
+  $null -eq (ConvertFrom-GpuEngineSamples -Samples @([pscustomobject]@{ Path = '\\h\processor(_total)\% processor time'; CookedValue = 9 })) -and
+    (ConvertFrom-GpuEngineSamples -Samples @($looks[0]) -ExcludePid 4242) -eq 0
+}
+# Batch 75's figures: 4 to 5 % in the desktop's hands put the whole p99 allowance on the passes beside
+# it; batch 74's own gate flight, the desktop idle, showed no slow frame.
+$desktop = Get-GpuShareVerdict -Samples @(4.2, 4.8, 4.5, 5.0, 4.4)
+$idle = Get-GpuShareVerdict -Samples @(0.3, 0.5, 0.2, 0.4)
+Test-That 'the row''s 4 to 5 % is busy at the provisional threshold, and an idle desktop is not' {
+  $desktop.Busy -and -not $idle.Busy -and $desktop.Provisional -and $desktop.ThresholdPct -eq 2.0 -and $desktop.Count -eq 5
+}
+Test-That 'too few looks are never busy, whatever they read' { -not (Get-GpuShareVerdict -Samples @(9.0, 9.0)).Busy -and -not (Get-GpuShareVerdict).Busy }
+$overShare = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -totalP99 4.95) -GpuShare $desktop
+Test-That 'a flight over its p99 with a busy share through it is busy (exit 4, flown again), not over' {
+  $overShare.Verdict -eq 'busy' -and $overShare.MachineState -match 'GPU share through the flight 4\.6% mean' -and
+    (Get-FrameBudgetExitCode -Results @($overShare)) -eq 4
+}
+$overIdle = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -totalP99 4.95) -GpuShare $idle
+$passShare = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary) -GpuShare $desktop
+Test-That 'over with an idle share is still over, and a pass with a busy share is still a pass' {
+  $overIdle.Verdict -eq 'over' -and $passShare.Verdict -eq 'pass'
+}
+Test-That 'the samples are in the flight''s record' {
+  $j = @($overShare) | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+  @($j.GpuShare.Samples).Count -eq 5 -and $j.GpuShare.Busy
+}
 $r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -total 3.0 -quiet $false)
 Test-That 'over on a busy machine is inconclusive, not a failure' { $r.Verdict -eq 'busy' }
 $r = Test-FrameBudgetRun -Budget $b -Run $run -Summary (New-Summary -quiet $false)
