@@ -31,13 +31,16 @@ ENGINE_EXPECT_SIZE(128, 64, Command);
 ENGINE_EXPECT_SIZE(128, 64, StreamRing);
 // A shaped-noise voice (noise_voice.h; S112): nine lanes' two delays, three coefficients, gain,
 // target and step (8 x 36 bytes), the generator and the ramp, and since S113 four struck
-// resonators' coefficients, delays and lives (80 bytes), aligned to a 32-byte vector: 384.
-// Walked every frame of every block while the voice sounds; 64 voices are 24 KB.
-ENGINE_EXPECT_SIZE(384, 32, NoiseState);
-// Its description, one command's payload: 52 bytes inside the Play's 88.
-ENGINE_EXPECT_SIZE(52, 4, NoiseParams);
-ENGINE_EXPECT_SIZE(52, 4, NoisePayload);
+// resonators' coefficients, delays and lives (80 bytes), and since S121 the low-pass after the
+// bands' three coefficients and two delays (20 bytes), aligned to a 32-byte vector: 416.
+// Walked every frame of every block while the voice sounds; 64 voices are 26 KB.
+ENGINE_EXPECT_SIZE(416, 32, NoiseState);
+// Its description, one command's payload: 64 bytes inside the Play's 88 (52 before S121's
+// low-pass).
+ENGINE_EXPECT_SIZE(64, 4, NoiseParams);
+ENGINE_EXPECT_SIZE(64, 4, NoisePayload);
 ENGINE_EXPECT_SIZE(12, 4, NoiseBand);
+ENGINE_EXPECT_SIZE(12, 4, NoiseLowpass);
 ENGINE_EXPECT_SIZE(8, 4, VoiceEvent);
 ENGINE_EXPECT_SIZE(8, 4, VoiceHandle);
 ENGINE_EXPECT_SIZE(4, 4, ClipHandle);

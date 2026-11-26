@@ -1540,6 +1540,10 @@ void run_scenes(Bridge& b, const JsonValue&, ToolOutcome& out) {
       } else {
         lines += "not drawn yet (host memory only)";
       }
+      // W186: where on the Earth a scene file says it is, by its systems' names (the JSON has all).
+      if (const JsonValue* geo = entry.find("georeference"); geo != nullptr && geo->is_object())
+        lines += "; on the map " + text_of(*geo, "horizontal_crs") + ", heights " +
+                 text_of(*geo, "vertical_crs");
     }
   }
   const JsonValue* list = r.find("scenes");

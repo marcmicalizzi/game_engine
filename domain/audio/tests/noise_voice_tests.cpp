@@ -12,6 +12,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <initializer_list>
+#include <ios>
 #include <vector>
 
 using namespace engine;
@@ -371,4 +374,141 @@ TEST_CASE(
   MESSAGE("noise strike session hash: " << hash);
   // Pinned on MSVC 2026-11-23 (S113); GCC and Clang must reproduce it.
   CHECK(hash == 0x0730cf117e1b9046ull);
+}
+
+namespace {
+
+// The power of `x` through four of the bank's own octave band-passes in a row, in double, after
+// `from`: one alone leaks a band five octaves away at only 30 dB down, which a low band 40 dB over
+// the top would fill; four in a row leak it 120 dB down.
+f64 band_power(const std::vector<f32>& x, u32 band, usize from) {
+  const NoiseBand& b = k_noise_band_table[band];
+  f64 s1[4] = {};
+  f64 s2[4] = {};
+  f64 sum = 0.0;
+  for (usize i = 0; i < x.size(); ++i) {
+    f64 y = static_cast<f64>(x[i]);
+    for (u32 k = 0; k < 4; ++k) {
+      const f64 cx = static_cast<f64>(b.c) * y;
+      y = cx + s1[k];
+      s1[k] = s2[k] - static_cast<f64>(b.a1) * y;
+      s2[k] = -cx - static_cast<f64>(b.a2) * y;
+    }
+    if (i >= from) sum += y * y;
+  }
+  return sum / static_cast<f64>(x.size() - from);
+}
+
+}  // namespace
+
+TEST_CASE("noise voice: the low-pass after the bands takes the skirts' top and leaves the bottom") {
+  // S121: the 125 Hz band alone, whose skirt reaches the top octaves at about 3 dB an octave of
+  // band power, with and without a low-pass at 300 Hz. The coefficients are the cookbook's
+  // Butterworth in double to an f32's precision.
+  const NoiseLowpass lp = noise_lowpass(300.0f);
+  const f64 w = 2.0 * 3.14159265358979323846 * 300.0 / 48000.0;
+  const f64 alpha = std::sin(w) / std::sqrt(2.0);
+  CHECK(static_cast<f64>(lp.b0) ==
+        doctest::Approx((1.0 - std::cos(w)) / 2.0 / (1.0 + alpha)).epsilon(1e-4));
+  CHECK(static_cast<f64>(lp.a1) ==
+        doctest::Approx(-2.0 * std::cos(w) / (1.0 + alpha)).epsilon(1e-5));
+  CHECK(static_cast<f64>(lp.a2) == doctest::Approx((1.0 - alpha) / (1.0 + alpha)).epsilon(1e-5));
+  CHECK(noise_lowpass(1.0f).b0 == noise_lowpass(k_noise_tone_min_hz).b0);  // held to its range
+
+  NoiseState plain = one_band(1, 0.25f, 11u);
+  NoiseState low = one_band(1, 0.25f, 11u);
+  low.lp_b0 = lp.b0;
+  low.lp_a1 = lp.a1;
+  low.lp_a2 = lp.a2;
+  std::vector<f32> a(96000);
+  std::vector<f32> b(96000);
+  render_noise(plain, a.data(), static_cast<u32>(a.size()));
+  render_noise(low, b.data(), static_cast<u32>(b.size()));
+  const f64 at_125_plain = band_power(a, 1, 4800);
+  const f64 at_125_low = band_power(b, 1, 4800);
+  const f64 at_4k_plain = band_power(a, 6, 4800);
+  const f64 at_4k_low = band_power(b, 6, 4800);
+  MESSAGE("125 Hz: " << 10.0 * std::log10(at_125_low / at_125_plain)
+                     << " dB; 4 kHz: " << 10.0 * std::log10(at_4k_low / at_4k_plain) << " dB");
+  // Its own octave within half a decibel; the skirt at 4 kHz, five octaves up, 40 dB and more
+  // further down (a second order at 300 Hz takes 2 x 6 dB an octave past its corner: 48 dB).
+  CHECK(std::fabs(10.0 * std::log10(at_125_low / at_125_plain)) < 0.5);
+  CHECK(10.0 * std::log10(at_4k_low / at_4k_plain) < -40.0);
+  // A voice with none is untouched: the same samples as one that never heard of the low-pass.
+  NoiseState again = one_band(1, 0.25f, 11u);
+  std::vector<f32> c(96000);
+  render_noise(again, c.data(), static_cast<u32>(c.size()));
+  CHECK(std::memcmp(a.data(), c.data(), a.size() * sizeof(f32)) == 0);
+}
+
+// S121: a voice with the low-pass on, pinned, so "the same commands are the same bytes on every
+// toolchain" is held for the filter too (the proof that voices without one are unchanged is the
+// session pins above, which did not move). The ears' own corner at 4.5 m/s, 500 Hz, on three
+// bands, rendered whole and in uneven calls.
+TEST_CASE("noise voice: a session with the low-pass on is the same bytes, pinned") {
+  const NoiseLowpass lp = noise_lowpass(500.0f);
+  auto render = [&](std::initializer_list<u32> calls) {
+    NoiseState n = one_band(1, 0.25f, 29u);
+    n.gain[2] = n.target[2] = 0.2f;
+    n.gain[4] = n.target[4] = 0.05f;
+    n.lp_b0 = lp.b0;
+    n.lp_a1 = lp.a1;
+    n.lp_a2 = lp.a2;
+    std::vector<f32> out(96000);
+    u32 done = 0;
+    while (done < out.size()) {
+      for (const u32 call : calls) {
+        const u32 left = static_cast<u32>(out.size()) - done;
+        const u32 k = call < left ? call : left;
+        render_noise(n, out.data() + done, k);
+        done += k;
+        if (done == out.size()) break;
+      }
+    }
+    return out;
+  };
+  const std::vector<f32> whole = render({4800});
+  const std::vector<f32> uneven = render({7, 473, 160, 1024});
+  CHECK(whole == uneven);
+  const u64 hash =
+      hash_mix(ChannelLayout::Stereo, std::span<const f32>(whole.data(), whole.size()));
+  MESSAGE("low-pass session hash: 0x" << std::hex << hash);
+  // Pinned on MSVC 2026-11-25; GCC and Clang reproduce it in the container.
+  CHECK(hash == 0x088e872f06e9163bull);
+}
+
+// S121, stable filters only: a low-pass or a movable band whose poles are not stable would grow
+// without bound on the audio thread; the mixer refuses it at the door, and takes every pair the two
+// makers give from the bottom of their range to the top.
+TEST_CASE("noise voice: coefficients with unstable poles are refused, the makers' never") {
+  ClipStore clips;
+  MixerConfig config;
+  config.voices = 16;
+  Mixer mixer(clips, config);
+  NoisePlayParams p;
+  p.noise.seed = 3;
+  p.noise.gain[0] = 0.1f;
+  p.source.flags = k_source_2d;
+  for (const f32 hz : {k_noise_tone_min_hz, 100.0f, 1000.0f, 10000.0f, k_noise_tone_max_hz}) {
+    p.noise.lowpass = noise_lowpass(hz);
+    p.noise.tone = noise_band(hz, 3.0f);
+    const VoiceHandle v = mixer.play_noise(p);
+    CHECK(!v.is_null());
+    CHECK(mixer.set_noise(v, p.noise));
+    (void)mixer.stop(v);
+  }
+  NoisePlayParams bad = p;
+  bad.noise.lowpass = noise_lowpass(1000.0f);
+  bad.noise.lowpass.a2 = 1.0f;  // a pole on the circle
+  CHECK(mixer.play_noise(bad).is_null());
+  bad.noise.lowpass = noise_lowpass(1000.0f);
+  bad.noise.lowpass.a1 = -2.5f;  // a real pole outside it
+  CHECK(mixer.play_noise(bad).is_null());
+  NoisePlayParams tone = p;
+  tone.noise.lowpass = NoiseLowpass{};
+  tone.noise.tone.a2 = -1.5f;
+  CHECK(mixer.play_noise(tone).is_null());
+  const VoiceHandle v = mixer.play_noise(p);
+  REQUIRE(!v.is_null());
+  CHECK_FALSE(mixer.set_noise(v, bad.noise));
 }

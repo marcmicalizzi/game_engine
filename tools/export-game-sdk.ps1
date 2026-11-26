@@ -17,8 +17,12 @@
                   build's exported command lists (core/*/include and foundation/hotload/include),
                   their contents merged, nothing from any src/
     schemas/      the schema root schemac resolves `.schema` imports against
-    bin/          schemac.exe (the host tool), engine-view.exe (the preset's; shaders embedded)
-                  and game/walk_poc.dll, the worked example a new author runs first
+    bin/          schemac.exe (the host tool), engine-view.exe (the preset's; shaders embedded),
+                  engine-content.exe (the content tool: a container built as a step of its own,
+                  `matgen`; roadmap T233) and game/walk_poc.dll, the worked example a new author
+                  runs first. Both hosts are static executables; outside a checkout neither finds
+                  a derived-data root or a material pack by itself, so both are named one
+                  (`--ddc`, `--materials`, matgen's `--out`; docs/game-authoring.md)
     cmake/        EngineGameModuleBuild.cmake and a relocatable build_config.cmake: every path
                   into the tree rewritten relative to the config's own directory, so the folder
                   can be moved or unzipped anywhere; the compiler and MSVC environment are the
@@ -35,7 +39,8 @@
     sdk.json      the engine commit and whether it was dirty, the preset, the CPU baseline, the
                   hotload ABI version, the export date, the scenes carried
     README.md     what the folder is, the three commands, where the contract is documented
-    LICENSE       the engine's Apache-2.0, which the headers and binaries here are under
+    LICENSE       the engine's Apache-2.0, which the headers and binaries here are under, with
+                  NOTICE and third_party/LICENSES.md, the components the binaries link
 
   It refuses an output inside the repository, and a build without
   build/<preset>/game_modules/build_config.cmake (one configured without the hotload capability,
@@ -95,6 +100,10 @@ if (-not (Test-Path -LiteralPath $config -PathType Leaf)) {
 }
 $engineView = Join-Path $Bin "engine-view$ExeSuffix"
 if (-not (Test-Path -LiteralPath $engineView)) { Refuse "no $engineView; build the preset first (tools/dev.ps1 build -Preset $Preset)" }
+# The content tool goes into the SDK (T233), so a game builds a container or runs matgen as a step
+# of its own; it is linked statically, like engine-view, and carries no library the viewer does not.
+$engineContent = Join-Path $Bin "engine-content$ExeSuffix"
+if (-not (Test-Path -LiteralPath $engineContent)) { Refuse "no $engineContent; build the preset first (tools/dev.ps1 build -Preset $Preset)" }
 $walkPoc = Join-Path $Bin "game/walk_poc.dll"
 if (-not $IsWin) { $walkPoc = Join-Path $Bin 'game/walk_poc.so' }
 if (-not (Test-Path -LiteralPath $walkPoc)) { Refuse "no $walkPoc; it is built with engine-view when the hotload capability is on" }
@@ -156,6 +165,7 @@ Get-ChildItem -LiteralPath $schemaRoot -Recurse -File | Where-Object { $_.Name -
 # bin/
 Copy-Item -LiteralPath $schemac -Destination (Join-Path $OutDir "bin/schemac$ExeSuffix") -Force
 Copy-Item -LiteralPath $engineView -Destination (Join-Path $OutDir "bin/engine-view$ExeSuffix") -Force
+Copy-Item -LiteralPath $engineContent -Destination (Join-Path $OutDir "bin/engine-content$ExeSuffix") -Force
 Copy-Item -LiteralPath $walkPoc -Destination (Join-Path $OutDir 'bin/game') -Force
 
 # cmake/: the command, and its configuration made relocatable. GM_INCLUDES becomes the one merged
@@ -191,7 +201,6 @@ Write-Utf8 (Join-Path $OutDir 'cmake/build_config.cmake') $relocatable
 # kit/ is generated, never committed) is generated into the SDK's copy by the build's own
 # engine-content, so the scene runs from the SDK as it does from a checkout.
 $ContentRoot = Join-Path $Root 'content'
-$engineContent = Join-Path $Bin "engine-content$ExeSuffix"
 $carried = @()
 foreach ($scene in $Scenes) {
   $scenePath = Full (Join-Path $Root $scene)
@@ -214,7 +223,6 @@ foreach ($scene in $Scenes) {
       if ($null -eq $entry.PSObject.Properties['kit'] -or -not $entry.kit) { continue }
       $kitIndex = Join-Path (Split-Path $copied -Parent) $entry.kit
       if (Test-Path -LiteralPath $kitIndex -PathType Leaf) { $kits += [string]$entry.kit; continue }
-      if (-not (Test-Path -LiteralPath $engineContent)) { Refuse "$scene names the kit $($entry.kit), which is not in the tree, and there is no $engineContent to generate it" }
       $kitDir = Split-Path $kitIndex -Parent
       New-Item -ItemType Directory -Force -Path $kitDir | Out-Null
       & $engineContent ruins-kit $kitDir | Out-Null
@@ -323,6 +331,7 @@ $sdkJson = [ordered]@{
   session = 'content/sessions/walk-synthetic.jsonl'
   action_map = 'content/input-map.json'
   example_module = "bin/game/walk_poc$($gm['GM_SUFFIX'])"
+  content_tool = "bin/engine-content$ExeSuffix"
   contract = 'docs/subsystems/apps.md#the-game-contract'
   authoring_guide = 'docs/game-authoring.md'
 }
@@ -332,14 +341,19 @@ Write-Utf8 (Join-Path $OutDir 'sdk.json') ($sdkJson | ConvertTo-Json -Depth 8)
 
 Copy-Item -LiteralPath (Join-Path $Root 'LICENSE') -Destination (Join-Path $OutDir 'LICENSE') -Force
 if (Test-Path -LiteralPath (Join-Path $Root 'NOTICE')) { Copy-Item -LiteralPath (Join-Path $Root 'NOTICE') -Destination (Join-Path $OutDir 'NOTICE') -Force }
+# NOTICE names third_party/LICENSES.md for the components the binaries link (ADR-0014), so the file
+# travels at that path with them; every one of them is permissive and asks for its notice beside a
+# binary, and engine-content (T233) links none that engine-view does not.
+New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'third_party') | Out-Null
+Copy-Item -LiteralPath (Join-Path $Root 'third_party/LICENSES.md') -Destination (Join-Path $OutDir 'third_party/LICENSES.md') -Force
 $commitShort = ([string]$stamp.commit).Substring(0, [Math]::Min(12, ([string]$stamp.commit).Length))
 $sceneList = ($carried | ForEach-Object { "- ``$($_.scene)``$(if ($_.world) { ' (streams a world)' })$(if ($_.kits_generated.Count) { ' - its ruins kit generated at export' })" }) -join "`n"
 $readme = @"
 # The engine's game SDK
 
 Everything a game module needs from the engine, in one folder: the headers a module compiles
-against, the schema compiler, the build command, engine-view to run it in, two scenes to start
-from, and the tool that packs a build for a tester. It was exported from engine commit
+against, the schema compiler, the build command, engine-view to run it in, engine-content to
+build its content with, two scenes to start from, and the tool that packs a build for a tester. It was exported from engine commit
 ``$commitShort``$(if ($stamp.dirty) { ' (with local changes)' }), preset ``$Preset``, CPU baseline ``$cpuBaseline``,
 hotload ABI $abi (``sdk.json`` has every field). A game repository pins this folder and that commit;
 ``tools/new-game-repo.ps1`` in the engine's tree makes one from it.
@@ -366,13 +380,28 @@ every time, so a module's state after it is a function of the module alone. ``pa
 makes the zip a tester double-clicks and sends ``report.json`` back from; a scene of the game's own
 is packaged with its directory's content, a scene from ``content/`` with the SDK's.
 
+## Building content
+
+``bin/engine-content`` is the engine's content tool, the build's own. Outside an engine checkout it
+finds no derived-data root and no material pack by itself, as ``engine-view`` does not, so every
+command names them inside the game's repository:
+
+`````powershell
+bin/engine-content build <mesh.gltf> --cache --ddc <repo>/ddc        # the container engine-view --ddc <repo>/ddc loads from then on
+bin/engine-content build <mesh.gltf> <out.clusters>                   # or a container at a path of the game's
+bin/engine-content matgen --out <repo>/content/materials/generated    # the engine's generated material sets, once
+bin/engine-content info <file.clusters>                               # what a container holds, as one JSON line
+`````
+
+A host reads the generated sets with ``--materials <repo>/content/materials``.
+
 ## What is here
 
 | Path | What |
 |---|---|
 | ``include/`` | the public headers of the engine's core modules and ``foundation/hotload`` (``module_abi.h``, ``module_state.h``): what a module may include; nothing from any ``src/`` |
 | ``schemas/`` | the schema root; a module's ``.schema`` may import from it |
-| ``bin/`` | ``schemac`` (the schema compiler), ``engine-view`` (the preset's build, shaders embedded), ``game/walk_poc.dll`` (the example) |
+| ``bin/`` | ``schemac`` (the schema compiler), ``engine-view`` (the preset's build, shaders embedded), ``engine-content`` (the content tool, above), ``game/walk_poc.dll`` (the example) |
 | ``cmake/`` | ``EngineGameModuleBuild.cmake`` and ``build_config.cmake``: the engine's exact compiler flags, with every path into this folder relative to the config, so the folder can be moved |
 | ``content/`` | the scenes:
 $sceneList
@@ -380,6 +409,7 @@ $sceneList
 | | ``input-map.json``: the action map the SDK's engine-view flies with and its ``hash``; pin it by this file (``tools/run-game.ps1`` passes it as ``--input-map``) |
 | ``tools/`` | the three commands and ``lib/GameContent.psm1`` |
 | ``sdk.json`` | the commit, preset, baseline, ABI, date and scenes |
+| ``LICENSE``, ``NOTICE``, ``third_party/LICENSES.md`` | the engine's licence and the components its binaries link |
 
 ## Requirements
 
@@ -394,7 +424,9 @@ which nothing writes yet.
 ## Licence
 
 The headers, binaries and content in this folder are the engine's, under the Apache License 2.0
-(``LICENSE``, ``NOTICE``): a game built against them owes attribution and nothing else. The game's
+(``LICENSE``, ``NOTICE``): a game built against them owes attribution and nothing else. The
+third-party components the binaries link are listed with their licences in
+``third_party/LICENSES.md``, every one permissive. The game's
 own code, assets and licence are the author's — the engine's own reference game chose GPL-3.0 code
 with non-commercial assets (its ADR-0047), and nothing here chooses for anyone else.
 "@

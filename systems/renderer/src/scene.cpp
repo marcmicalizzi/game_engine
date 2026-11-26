@@ -25,6 +25,7 @@
 #include <domain/materials/materials.h>
 #include <domain/scene_gen/derived_root.h>
 #include <domain/scene_gen/far_tile.h>
+#include <domain/scene_gen/georeference.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/scene_gen/sky.h>
 #include <domain/scene_gen/water_channel.h>
@@ -2739,6 +2740,25 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       error = path + ": " + why;
       return false;
     }
+    // A sky by place and civil time (W185) takes its hour from its own time of day; a terrain's
+    // `time` is the sky's epoch too (clocks.h), so beside one it would be an hour by hand.
+    if (file.sky->date.has_value() && file.terrain.has_value() && file.terrain->time != 0.0) {
+      error = path +
+              ": terrain.time is given beside a sky by place and civil time: the sky's date and "
+              "time_of_day_h say where its clock starts, so drop terrain.time (or the sky's civil "
+              "fields)";
+      return false;
+    }
+    // The same for a ground time asked of the reader (`--ground-time`, `render.load`'s
+    // `ground_time_s`), which replaces the terrain's and so becomes the sky's epoch.
+    if (file.sky->date.has_value() && options.ground_time_s.has_value() &&
+        *options.ground_time_s != 0.0) {
+      error = path +
+              ": a ground time (--ground-time, render.load's ground_time_s) is asked for beside a "
+              "sky by place and civil time: it would move the sky's clock off its date and "
+              "time_of_day_h, so drop the ground time (or the sky's civil fields)";
+      return false;
+    }
     out.sky = *file.sky;
     // The scene's wind (gfx.md, "The wind a scene names"; W136), checked here so a wind nobody can
     // draw refuses the file.
@@ -2757,6 +2777,16 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   if (!read_scene_fires(file, path, out, error)) return false;
   // The lamps (`engine.scene.Lamp`, R86): steady lights placed and lit as the fires' are.
   if (!read_scene_lamps(file, path, out, error)) return false;
+  // Where on the Earth it is (`engine.scene.Georeference`, W186): its form checked, carried for
+  // tools, and never read by anything that draws.
+  if (file.georeference.has_value()) {
+    std::string why;
+    if (!scene_gen::validate_georeference(*file.georeference, &why)) {
+      error = path + ": " + why;
+      return false;
+    }
+    out.georeference = file.georeference;
+  }
 
   // The overlay: a map from content hash to a local file, read before the meshes so that a mesh
   // it names is loaded from there and checked against the hash the scene gave for it.
@@ -3897,6 +3927,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.props = resolved.props;
   out.fires = resolved.fires;
   out.lamps = resolved.lamps;
+  out.georeference = resolved.georeference;
   // The drawn leaves, by the loaded instances: a leaf whose house or own instance the load did not
   // keep is left out (S91).
   out.leaves.clear();

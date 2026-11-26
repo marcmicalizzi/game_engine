@@ -31,7 +31,8 @@ struct GameTick @version(3) {
   /// --time-of-day offset plus the day's game seconds at the session's day length);
   /// `world_time_s` the world clock, real seconds scaled by the world rate — what a game animates
   /// by (until 2026-10-20 it was the sky's hour, which is `sky_time_s` now); and `day_fraction`
-  /// where in its day the **sky** is, 0 at midnight to 1.
+  /// where in its day the **sky** is, 0 at midnight to 1: the solar form's midnight, or under a sky by
+  /// place and civil time the scene clock's (W185), which `sky_time_s` does not start at.
   sun_time_s: f64 = 0
   world_time_s: f64 = 0
   day_fraction: f64 = 0

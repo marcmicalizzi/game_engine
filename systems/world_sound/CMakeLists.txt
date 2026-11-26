@@ -27,7 +27,8 @@ engine_module(NAME world_sound LAYER systems OPTIONAL
 # backend and judges by its samples (ADR-0079 decision 6).
 engine_module_tests(NAME world_sound NO_DEVICE
   SOURCES tests/world_sound_tests.cpp tests/world_field_tests.cpp tests/world_path_tests.cpp
-          tests/world_water_tests.cpp tests/world_refresh_tests.cpp tests/size_table.cpp
+          tests/world_water_tests.cpp tests/world_refresh_tests.cpp tests/world_ears_tests.cpp
+          tests/size_table.cpp
   DEPS memory jobs)
 
 # The stage's tick with N voices sounding under the null backend: the controlling thread's

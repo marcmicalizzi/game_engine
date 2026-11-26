@@ -7,7 +7,7 @@
 .DESCRIPTION
   tools/frame-budget.ps1 [-Preset msvc-release] [-Budget content/budgets/frame-budgets.json]
                          [-Run <id>,...] [-WaitQuiet 600] [-Out <dir>] [-Exe <engine-view>]
-                         [-FromSummaries <dir>] [-AnyDevice] [-FrameCpu auto|free|<n>]
+                         [-FromSummaries <dir>] [-AnyDevice] [-FrameCpu auto|free|<n>] [-GpuShare]
                          [-Rebaseline -Reason "<why>" [-By <who>] [-AllowBusy]]
 
   For every run of the budget file (or those -Run names) it takes the machine-wide GPU lock, runs
@@ -21,6 +21,9 @@
   numbers), read from the per-frame records; they decide nothing (bench.md, "The frame thread's
   two modes").
 
+  -GpuShare (off by default) samples other programs' share of the GPU at every look of a pinned
+  flight (T230; bench.md, "Other programs' share of the GPU through a flight") and prints it beside
+  the verdict; it decides nothing, and stays off until a paired flight measures its own cost.
   -FrameCpu auto|free|<n> (default auto): each flight's frame thread, engine-view's main thread, is
   pinned to one logical CPU from outside the process before its first frame and looked at every
   two seconds, so the frame thread's slow mode (bench.md, "The frame thread pinned") does not reach
@@ -75,6 +78,7 @@ param(
   [string]$Reason = '',
   [string]$By = '',
   [switch]$AllowBusy,
+  [switch]$GpuShare,
   [string]$FrameCpu = 'auto'
 )
 $ErrorActionPreference = 'Stop'
@@ -164,10 +168,25 @@ foreach ($r in $runs) {
         $proc = Start-Process -FilePath $Exe -ArgumentList $quoted -PassThru -NoNewWindow -RedirectStandardOutput $so -RedirectStandardError $se
         $null = $proc.Handle  # kept, so the exit code is there after the exit
         $pin = Set-FrameThreadPin -Process $proc -Cpu $pinCpu
+        # With -GpuShare, other programs' share of the GPU, a sample every look of the flight and not
+        # only at its two ends (T230), kept beside the summary as `<id>.gpu-share.json`; it decides nothing.
+        $shareSamples = New-Object System.Collections.Generic.List[double]
+        $shareAt = New-Object System.Collections.Generic.List[double]
+        $flightClock = [Diagnostics.Stopwatch]::StartNew()
         try {
-          while (-not $proc.WaitForExit(2000)) { Test-FrameThreadPin -Pin $pin -Process $proc }
+          while (-not $proc.WaitForExit(2000)) {
+            Test-FrameThreadPin -Pin $pin -Process $proc
+            if ($GpuShare) {
+              $look = Read-GpuOthersShare -ExcludePid $proc.Id
+              if ($null -ne $look) { $shareSamples.Add([double]$look); $shareAt.Add([math]::Round($flightClock.Elapsed.TotalSeconds, 2)) }
+            }
+          }
           $proc.WaitForExit()
         } finally { Close-FrameThreadPin $pin }
+        if ($GpuShare) {
+          @{ samples_pct = @($shareSamples); at_s = @($shareAt); excluded_pid = $proc.Id } | ConvertTo-Json -Depth 3 |
+            Set-Content -LiteralPath (Join-Path $Out "$($r.id).gpu-share.json")
+        }
         $code = $proc.ExitCode
         $output = @(@(Get-Content $so -ErrorAction SilentlyContinue) + @(Get-Content $se -ErrorAction SilentlyContinue) | ForEach-Object { "$_" })
         Remove-Item $so, $se -ErrorAction SilentlyContinue
@@ -203,11 +222,19 @@ foreach ($r in $runs) {
   # never judges (T221; tools/lib/FrameBudget.psm1, Get-CpuModes).
   $frames = Read-FrameCpu -Path $jsonl
   if ($FromSummaries) { $pin = $null }
-  $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary -Frames $frames -Pin $pin
+  # The share sampled through the flight, from the flight's own record (a re-reading reads the file
+  # the flight left); a flight with no record of it is judged as before (T230).
+  $share = $null
+  $shareFile = Join-Path $(if ($FromSummaries) { $FromSummaries } else { $Out }) "$($r.id).gpu-share.json"
+  if (Test-Path -LiteralPath $shareFile) {
+    $kept = Get-Content -LiteralPath $shareFile -Raw | ConvertFrom-Json
+    $share = Get-GpuShareSummary -Samples @($kept.samples_pct | ForEach-Object { [double]$_ })
+  }
+  $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary -Frames $frames -Pin $pin -GpuShare $share
   if ($AnyDevice -and $result.Verdict -eq 'device') {
     $saved = $plan.machine.device
     $plan.machine.device = $result.Device
-    $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary -Frames $frames -Pin $pin
+    $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary -Frames $frames -Pin $pin -GpuShare $share
     $plan.machine.device = $saved
   }
   $results += $result

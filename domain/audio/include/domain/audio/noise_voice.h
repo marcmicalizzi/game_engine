@@ -65,13 +65,33 @@ inline constexpr NoiseBand k_noise_band_table[k_noise_bands] = {
 // `sin_quarter`, so the controlling thread computes the same coefficients on every toolchain.
 NoiseBand noise_band(f32 centre_hz, f32 q) noexcept;
 
+// **The low-pass after the bands** (S121; docs/subsystems/audio.md, "The shaped-noise voice"): a
+// band-pass of the bank falls only 6 dB an octave outside its own octave, which over an octave
+// band's width is about 3 dB an octave of band power, so no choice of the eight gains makes a
+// spectrum fall faster than that: the low bands' skirts fill the top. A voice that must fall
+// faster (the wind at the ears: 11 dB an octave over its knee) is passed through one second-order
+// Butterworth low-pass after the lanes' sum and before the struck resonators, the cookbook's
+// b0 (1 + 2 z^-1 + z^-2) / (1 + a1 z^-1 + a2 z^-2), b0 = (1 - cos w) / 2 / (1 + alpha), alpha =
+// sin w / (2 Q), Q = 1 / sqrt 2. `b0` 0 is no low-pass, every voice's default: such a voice is
+// the same bytes as before S121.
+struct NoiseLowpass {
+  f32 b0 = 0.0f;
+  f32 a1 = 0.0f;
+  f32 a2 = 0.0f;
+};
+
+// The low-pass at `corner_hz` (held inside [k_noise_tone_min_hz, k_noise_tone_max_hz]), its sine
+// and cosine from `sin_quarter`, so the same corner is the same coefficients on every toolchain.
+NoiseLowpass noise_lowpass(f32 corner_hz) noexcept;
+
 // What a shaped-noise voice is told: the generator's seed (0 is taken as a fixed odd word), each
-// lane's gain (its RMS in full scale; lane 8 the movable band) and the movable band's
-// coefficients. 52 bytes: one command, as a `SetSource` is.
+// lane's gain (its RMS in full scale; lane 8 the movable band), the movable band's coefficients
+// and since S121 the low-pass after the bands. 64 bytes: one command, as a `SetSource` is.
 struct NoiseParams {
   u32 seed = 0;
   f32 gain[k_noise_lanes] = {};
   NoiseBand tone{};
+  NoiseLowpass lowpass{};
 };
 
 // **The struck resonators** (S113; docs/subsystems/audio.md, "The shaped-noise voice"): up to
@@ -122,6 +142,12 @@ struct alignas(32) NoiseState {
   f32 res_y1[k_noise_resonators] = {};
   f32 res_y2[k_noise_resonators] = {};
   u32 res_life[k_noise_resonators] = {};
+  // The low-pass after the bands (S121): its coefficients (b0 0: none) and its two delays.
+  f32 lp_b0 = 0.0f;
+  f32 lp_a1 = 0.0f;
+  f32 lp_a2 = 0.0f;
+  f32 lp_s1 = 0.0f;
+  f32 lp_s2 = 0.0f;
 };
 
 // A strike applied to a voice's state (the mixer's audio thread; public for the cases).

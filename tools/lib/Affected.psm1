@@ -749,11 +749,15 @@ function Get-AffectedTargets {
     -Apps (Get-AffectedTests' Apps) adds each named app's binary, engine_<app>, and not its tests:
     the tools' tests start the apps but run none of their tests. An app's own add_dependencies
     bring what it starts (engine-view its game modules, engine-mcp engine-host).
+
+    -Helpers (Get-TestHelperTargets) adds the executables a selected test's command runs that no
+    module target brings (T225: `platform.error_mode`'s probe), each that the tree has.
   #>
   param(
     [AllowEmptyCollection()] [string[]]$Modules = @(),
     [AllowEmptyCollection()] [string[]]$Available = @(),
-    [AllowEmptyCollection()] [string[]]$Apps = @()
+    [AllowEmptyCollection()] [string[]]$Apps = @(),
+    [AllowEmptyCollection()] [string[]]$Helpers = @()
   )
   $have = New-Object System.Collections.Generic.HashSet[string]
   foreach ($t in $Available) { if ($t) { [void]$have.Add($t) } }
@@ -764,6 +768,54 @@ function Get-AffectedTargets {
     }
   }
   foreach ($a in $Apps) { if ($have.Contains("engine_$a")) { [void]$out.Add("engine_$a") } }
+  foreach ($h in $Helpers) { if ($h -and $have.Contains($h)) { [void]$out.Add($h) } }
+  return @($out)
+}
+
+function Get-TestHelperTargets {
+  <#
+  .SYNOPSIS
+    The build targets a selected test's command runs that are not a module's: every argument of
+    the command, in `ctest --show-only=json-v1`'s text, whose file name (without `.exe`) is a target
+    of the tree, for each test whose name the affected set's filter matches (roadmap T225).
+  .DESCRIPTION
+    `platform.error_mode` is `add_test(NAME platform.error_mode COMMAND
+    engine_platform_error_mode_probe)`: its command is an executable of its own that no module's
+    library, test executable or bench links or depends on, so the module's targets did not build it
+    and CTest reported the selected test Not Run. CTest writes a target's file into the command
+    whether or not it is built, so the command names such a helper: the command itself, or a
+    `$<TARGET_FILE:...>` argument to a script. An argument is matched by its file name, so the rule
+    finds a target whose file is named after the target; an app's file is its OUTPUT name
+    (`engine-host.exe` names no target), and an app's own targets (-Apps, add_dependencies) cover
+    those today. -BuildDir keeps only arguments that are absolute paths under the build directory,
+    and CMake's own phony targets (`all`, `test`, `install`, ...) are never helpers. -Filter $null
+    (everything selected) takes every test's.
+  #>
+  param(
+    [Parameter(Mandatory)] [AllowEmptyString()] [string]$Json,
+    [AllowNull()] [AllowEmptyString()] [string]$Filter,
+    [AllowEmptyCollection()] [string[]]$Available = @(),
+    [string]$BuildDir = ''
+  )
+  $cmakeOwn = @('all', 'test', 'install', 'install/local', 'install/strip', 'edit_cache', 'rebuild_cache',
+                'list_install_components', 'clean', 'help')
+  $have = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($t in $Available) { if ($t -and $t -notin $cmakeOwn) { [void]$have.Add($t) } }
+  $under = if ($BuildDir) { (($BuildDir -replace '\\', '/').TrimEnd('/')) + '/' } else { '' }
+  $out = New-Object System.Collections.Generic.SortedSet[string] ([StringComparer]::Ordinal)
+  if (-not $Json.Trim()) { return @($out) }
+  $doc = $Json | ConvertFrom-Json
+  foreach ($t in @($doc.tests)) {
+    if (-not $t -or -not ($t.PSObject.Properties.Name -contains 'command')) { continue }
+    if ($Filter -and -not ([string]$t.name -match $Filter)) { continue }
+    foreach ($arg in @($t.command)) {
+      $leaf = ("$arg" -replace '\\', '/').TrimEnd('/')
+      if ($under -and -not $leaf.StartsWith($under, [StringComparison]::OrdinalIgnoreCase)) { continue }
+      $leaf = $leaf.Substring($leaf.LastIndexOf('/') + 1)
+      if ($leaf -match '(?i)^(.+)\.exe$') { $leaf = $Matches[1] }
+      if ($leaf -and $have.Contains($leaf)) { [void]$out.Add($leaf) }
+    }
+  }
   return @($out)
 }
 
@@ -775,4 +827,4 @@ function ConvertFrom-NinjaTargets {
   return @($names)
 }
 
-Export-ModuleMember -Function Get-AffectedTests, Get-ToolTests, Get-AffectedMentions,Get-CMakeDefinitions, Get-ChangedPaths, Get-AffectedTargets, ConvertFrom-NinjaTargets
+Export-ModuleMember -Function Get-AffectedTests, Get-ToolTests, Get-AffectedMentions,Get-CMakeDefinitions, Get-ChangedPaths, Get-AffectedTargets, Get-TestHelperTargets, ConvertFrom-NinjaTargets

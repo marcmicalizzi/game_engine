@@ -401,6 +401,40 @@ TEST_CASE("request: the wire's refusals") {
   CHECK(!rates_refused(0.0, 0.125));
 }
 
+TEST_CASE("request: --time-of-day over a sky by place and civil time is its clock's hour") {
+  // W185 (sky.md, "The sky by place and civil time"): the sky's clock starts at the scene's own
+  // time of day, so 18:00 asked over a 15:00 scene is three hours on, and 09:00 six hours back.
+  renderer::SceneData scene;
+  scene.sky.emplace();
+  scene.sky->longitude_deg = -79.38;
+  scene.sky->date = scene::SkyDate{};
+  scene.sky->time_of_day_h = 15.0;
+  scene.sky->utc_offset_h = -4.0;
+  renderer::ClockRequest clock;
+  clock.time_of_day_h = 18.0;
+  CHECK(renderer::frame_clock(clock, scene).sky_start_s == 3.0 * 3600.0);
+  clock.time_of_day_h = 9.0;
+  CHECK(renderer::frame_clock(clock, scene).sky_start_s == -6.0 * 3600.0);
+  // No hour asked: the scene's own moment.
+  CHECK(renderer::frame_clock(renderer::ClockRequest{}, scene).sky_start_s == 0.0);
+  // A game's day (`GameTick::day_fraction`) is that clock's: 0.625 at game time 0 of a 15:00
+  // scene, 0 again at its midnight nine hours on, 0.125 three hours past it.
+  const f64 start = renderer::scene_clock_start_s(scene);
+  CHECK(start == 15.0 * 3600.0);
+  CHECK(renderer::day_fraction_of(0.0, start) == 0.625);
+  CHECK(renderer::day_fraction_of(9.0 * 3600.0, start) == 0.0);
+  CHECK(renderer::day_fraction_of(12.0 * 3600.0, start) == 0.125);
+  // The solar form is untouched: the hour from its midnight, and its day from its game time 0, the
+  // bits `sky_time_s / 86400`'s fraction gave.
+  scene.sky.emplace();
+  CHECK(renderer::frame_clock(clock, scene).sky_start_s == 9.0 * 3600.0);
+  CHECK(renderer::scene_clock_start_s(scene) == 0.0);
+  for (const f64 t : {0.0, 1234.5678, 94'608'000.0 + 5.0 * 3600.0, 3.3e9}) {
+    const f64 days = t / 86'400.0;
+    CHECK(renderer::day_fraction_of(t, 0.0) == days - std::floor(days));
+  }
+}
+
 TEST_CASE("request: the frame's clock is the one engine-view's --time-of-day and --sun-rate set") {
   renderer::SceneData scene;
   renderer::ClockRequest clock;

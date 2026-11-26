@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T225",
+  "reason": "T225: what-to-run.md says the affected build takes every target a selected test's command runs whose file is named after it, and why platform.error_mode's probe was selected and not built",
+  "date": "2026-11-25",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/ci/what-to-run.md": 915
+  }
+}

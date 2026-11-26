@@ -351,6 +351,78 @@ function Format-CpuModes($Modes) {
 }
 
 <#
+  **Other programs' share of the GPU through a flight** (T230; bench.md, "Frame budgets"). The
+  summary's `machine_state` is two looks, one at each end of the flight, and batch 75's follow-up
+  gate flew `endless-surround3-rt` over three p99 lines on a machine those looks called quiet while
+  4 to 5 % of the GPU was in the desktop's other programs' hands. With `frame-budget.ps1 -GpuShare`
+  the share is sampled at every look of the pinned flight's loop: the 3D, compute and copy engines
+  of the adapter the flight's own process uses, every other process summed per engine, the busiest
+  engine taken. **It decides nothing**: it is printed beside the verdict against a provisional
+  threshold and kept in the flight's file and report.json, and no verdict changes by it.
+#>
+$script:GpuShareThresholdPct = 2.0
+
+# One look's share from the counter samples (Path, CookedValue). An instance is
+# `pid_<n>_luid_<a>_<b>_phys_<p>_eng_<e>_engtype_<type>`; only the 3D, compute and copy engines
+# count (a browser's video decode does not), and only those of the adapters on which -ExcludePid
+# (the flight) has an instance. $null when no sample names such an engine, or when the flight has
+# none yet (its device is not open, so its adapter cannot be told).
+function ConvertFrom-GpuEngineSamples {
+  param([AllowEmptyCollection()] [object[]]$Samples = @(), [int]$ExcludePid = -1)
+  $rows = foreach ($s in $Samples) {
+    if ($null -eq $s) { continue }
+    if ("$($s.Path)" -notmatch '(?i)pid_(\d+)_luid_(\w+?)_(\w+?)_phys_(\d+)_eng_(\d+)_engtype_(3d|compute|copy)') { continue }
+    [pscustomobject]@{ Pid = [int]$Matches[1]; Adapter = "$($Matches[2])_$($Matches[3])_$($Matches[4])".ToLowerInvariant()
+                       Engine = "$($Matches[2])_$($Matches[3])_$($Matches[4])_$($Matches[5])".ToLowerInvariant(); Value = [double]$s.CookedValue }
+  }
+  $rows = @($rows)
+  if ($rows.Count -eq 0) { return $null }
+  $adapters = @($rows | Where-Object { $_.Pid -eq $ExcludePid } | ForEach-Object { $_.Adapter } | Sort-Object -Unique)
+  if ($adapters.Count -eq 0) { return $null }
+  $engines = @{}
+  foreach ($r in $rows) {
+    if ($r.Adapter -notin $adapters) { continue }
+    if (-not $engines.ContainsKey($r.Engine)) { $engines[$r.Engine] = 0.0 }
+    if ($r.Pid -ne $ExcludePid) { $engines[$r.Engine] += $r.Value }
+  }
+  $max = 0.0
+  foreach ($v in $engines.Values) { if ($v -gt $max) { $max = $v } }
+  return [math]::Min(100.0, $max)
+}
+
+# One look at other programs' share of the GPU, in percent, or $null where the counters cannot be
+# read. Through the counters' WMI class rather than Get-Counter: on the gate's machine, with about
+# 1,150 engine instances, a Get-Counter look took 7 to 8 s, the class's 0.5 s once warm (4.3 s the
+# first). A query is given 5 s: a wedged one must not hang a flight that holds the GPU lock.
+function Read-GpuOthersShare([int]$ExcludePid) {
+  try {
+    $rows = @(Get-CimInstance -ClassName Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -Property Name, UtilizationPercentage -OperationTimeoutSec 5 -ErrorAction Stop)
+    $samples = @($rows | ForEach-Object { [pscustomobject]@{ Path = "$($_.Name)"; CookedValue = [double]$_.UtilizationPercentage } })
+    return ConvertFrom-GpuEngineSamples -Samples $samples -ExcludePid $ExcludePid
+  } catch { return $null }
+}
+
+# The flight's samples summarized for the report: their count, mean and most, beside the
+# provisional threshold. A summary and nothing more: no verdict reads it.
+function Get-GpuShareSummary {
+  param([AllowEmptyCollection()] [double[]]$Samples = @(), [double]$ThresholdPct = $script:GpuShareThresholdPct)
+  $n = @($Samples).Count
+  $mean = if ($n) { ($Samples | Measure-Object -Average).Average } else { $null }
+  $max = if ($n) { ($Samples | Measure-Object -Maximum).Maximum } else { $null }
+  [pscustomobject]@{
+    Samples = @($Samples); Count = $n; MeanPct = $mean; MaxPct = $max; ThresholdPct = $ThresholdPct
+    Provisional = $true; PastThreshold = ($n -gt 0 -and $mean -gt $ThresholdPct); Decides = $false
+  }
+}
+
+function Format-GpuShare($Share) {
+  if ($null -eq $Share -or $Share.Count -eq 0) { return "other programs' GPU share not sampled through the flight" }
+  $past = if ($Share.PastThreshold) { 'past' } else { 'under' }
+  "other programs' GPU share through the flight {0:N1}% mean, {1:N1}% at most, {2} looks, {3} the provisional {4:N1}% (decides nothing)" -f `
+    $Share.MeanPct, $Share.MaxPct, $Share.Count, $past, $Share.ThresholdPct
+}
+
+<#
   One run's summary against its budget. Returns the run's verdict and a row per budgeted number:
     Verdict  'pass'       every number within its limit
              'over'       a number over its limit on a quiet machine: the gate fails
@@ -369,11 +441,13 @@ function Format-CpuModes($Modes) {
   `-Pin` (Set-FrameThreadPin) is the flight's frame thread's pin: one that was asked for and could
   not be applied, or did not hold, makes the flight inconclusive ('busy', fly it again) unless it is
   already over on a quiet machine, which a free flight is too; it never flies free silently.
+  `-GpuShare` (Get-GpuShareSummary) is other programs' share sampled through the flight (T230):
+  said in the machine state and kept in the result, and it changes no verdict and no row.
 #>
 function Test-FrameBudgetRun {
   [CmdletBinding()]
   param([Parameter(Mandatory)] $Budget, [Parameter(Mandatory)] $Run, [Parameter(Mandatory)] $Summary,
-        [AllowEmptyCollection()] [double[]]$Frames = @(), $Pin = $null)
+        [AllowEmptyCollection()] [double[]]$Frames = @(), $Pin = $null, $GpuShare = $null)
   $device = if ($Summary.PSObject.Properties['device']) { "$($Summary.device)" } else { '' }
   $session = Get-SessionState -Summary $Summary
   $refusal = Get-ReconstructionRefusal -Summary $Summary
@@ -428,10 +502,12 @@ function Test-FrameBudgetRun {
     $state = "$state; $(Format-FramePin $Pin)"
     if (-not ($Pin.Applied -and $Pin.Held) -and $verdict -in @('pass', 'busy')) { $verdict = 'busy'; $state += ': inconclusive, fly it again' }
   }
+  # Said beside the verdict and deciding nothing (T230): no verdict changes by the share.
+  if ($null -ne $GpuShare) { $state = "$state; $(Format-GpuShare $GpuShare)" }
   return [pscustomobject]@{
     Id = $Run.id; Verdict = $verdict; Device = $device; Session = $session
     Compared = "the $session baseline of $($set.baseline.date)"; Quiet = $quiet; Rows = $rows; Missing = $missing
-    MachineState = $state; Modes = (Get-CpuModes -Frames $Frames)
+    MachineState = $state; Modes = (Get-CpuModes -Frames $Frames); GpuShare = $GpuShare
     Pin = $(if ($null -ne $Pin -and $Pin.Asked) { [pscustomobject]@{ Cpu = $Pin.Cpu; Thread = $Pin.Thread; Applied = $Pin.Applied; Held = $Pin.Held; Looks = $Pin.Looks; Why = $Pin.Why } } else { $null })
   }
 }
@@ -576,4 +652,5 @@ Export-ModuleMember -Function Read-FrameBudget, Assert-FrameBudget, Get-FrameBud
   Test-FrameBudgetRun, Get-FrameBudgetExitCode, Format-FrameBudgetReport, Set-FrameBudgetBaseline, Format-MachineState,
   Get-ReconstructionRefusal, Get-SessionState, Get-SessionBudget, Format-RunSessions,
   Read-FrameCpu, Get-CpuModes, Format-CpuModes, Get-FrameCpuChoice, Resolve-FrameCpu, Get-CpuCounts,
-  Set-FrameThreadPin, Test-FrameThreadPin, Close-FrameThreadPin, Format-FramePin
+  Set-FrameThreadPin, Test-FrameThreadPin, Close-FrameThreadPin, Format-FramePin,
+  ConvertFrom-GpuEngineSamples, Read-GpuOthersShare, Get-GpuShareSummary, Format-GpuShare

@@ -58,6 +58,6 @@ The engine side of that repository is a folder, not a checkout (roadmap P42;
 [game-authoring](../docs/game-authoring.md), the author's guide):
 
 ```powershell
-tools/export-game-sdk.ps1 -Preset msvc-release -Out D:\games\engine-sdk [-Zip D:\games\engine-sdk.zip]   # headers, schemac, the relocatable build command, engine-view, the scenes, the package tool
+tools/export-game-sdk.ps1 -Preset msvc-release -Out D:\games\engine-sdk [-Zip D:\games\engine-sdk.zip]   # headers, schemac, the relocatable build command, engine-view, engine-content, the scenes, the package tool
 tools/new-game-repo.ps1   -Name dunes -Out D:\games\dunes -Sdk D:\games\engine-sdk -RelativeSdk        # a repository from templates/game-repo/ that builds, runs and packages against it
 ```

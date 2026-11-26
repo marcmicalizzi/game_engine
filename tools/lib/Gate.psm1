@@ -406,7 +406,9 @@ function Start-GateProcess {
     is read from what it wrote, never from a redirect in this process that caught one line (b71's
     weaker-card leg: dev.ps1 sends CTest's lines to the host, so `*>` here kept dev.ps1's one line).
     -NoWait returns the process at once (the suites of a wave, the Linux leg); -Detached does too,
-    and the process does not share this one's console, so it outlives it (the server leg).
+    and the process shares neither this one's console nor any handle of it, so it outlives it and
+    holds nothing a reader of this process's output waits on (the server leg; T231). On Linux a
+    detached leg is started as -NoWait is.
     Otherwise this waits and returns the exit code. Every path it is given is absolute: nothing a
     gate starts writes where its working directory happens to be.
   #>
@@ -419,8 +421,28 @@ function Start-GateProcess {
   $line = ConvertTo-CommandLine (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Script) + $Arguments)
   $sp = @{ FilePath = $pwsh; ArgumentList = $line; WorkingDirectory = $WorkingDirectory; PassThru = $true
            RedirectStandardOutput = $Log; RedirectStandardError = "$Log.err" }
-  # A detached leg outlives this process, so it does not share its console; a hidden one is no window.
-  if ($Detached -and $IsWindows) { $sp.WindowStyle = 'Hidden' } else { $sp.NoNewWindow = $true }
+  if ($Detached -and $IsWindows) {
+    # **A detached leg inherits no handle of this process** (T231). A redirect makes Start-Process
+    # create the child with handle inheritance on (CreateProcess's bInheritHandles, which .NET sets
+    # whenever a stream is redirected), so the leg and everything it starts held every inheritable
+    # handle this process had, the launching shell's redirected stdout among them, and a shell
+    # reading that redirection waited three hours past a verdict already written (batch 75). A
+    # hidden window does not change it, and neither does -NoNewWindow. Start-Process with no
+    # redirect and no -NoNewWindow goes through ShellExecuteEx, which creates the process with
+    # inheritance off; that process, a pwsh of its own with a hidden console, then starts the leg
+    # with the two log files and waits for it, so the leg inherits only its handles, and the id
+    # returned is alive exactly as long as the leg, whose exit code it exits with.
+    $q = { param($v) "'" + ("$v" -replace "'", "''") + "'" }
+    # A start that fails in the wrapper would die in its hidden console with no leg and no verdict,
+    # so its error goes to "$Log.err" and the wrapper exits 1 (T231's mend).
+    $inner = "try { `$p = Start-Process -FilePath $(& $q $pwsh) -ArgumentList $(& $q $line) -WorkingDirectory $(& $q $WorkingDirectory) " +
+             "-RedirectStandardOutput $(& $q $Log) -RedirectStandardError $(& $q "$Log.err") -NoNewWindow -PassThru -ErrorAction Stop } " +
+             "catch { try { Set-Content -LiteralPath $(& $q "$Log.err") -Value ('the leg did not start: ' + `$_.Exception.Message) } catch { }; exit 1 }; " +
+             "`$null = `$p.Handle; `$p.WaitForExit(); exit `$p.ExitCode"
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($inner))
+    $sp = @{ FilePath = $pwsh; ArgumentList = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
+             WorkingDirectory = $WorkingDirectory; PassThru = $true; WindowStyle = 'Hidden' }
+  } else { $sp.NoNewWindow = $true }
   $proc = Start-Process @sp
   $null = $proc.Handle   # without the handle taken now, ExitCode reads empty once the process is gone
   if ($Detached -or $NoWait) { return $proc }

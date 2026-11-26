@@ -1384,13 +1384,32 @@ enum SkyExposure : u8 {
   Adapted = 2
 }
 
+/// A day of the Gregorian calendar (`Sky.date`; W185, docs/subsystems/sky.md, "The sky by place
+/// and civil time").
+struct SkyDate @version(1) {
+  /// The year, [1900, 2100]: where the ephemeris's low-precision formulae hold.
+  year: i32 = 2000
+  /// The month, [1, 12].
+  month: u32 = 1
+  /// The day of the month, [1, its last].
+  day: u32 = 1
+}
+
 /// A scene's sky (docs/subsystems/sky.md, ADR-0048): a physical atmosphere lit by a sun and a moon
 /// that a sky provider places on the world's calendar at the scene's latitude, from the one clock the
 /// ground's wind reads (game time since the world's epoch, which is midnight), with stars over it.
 /// **Absent, the scene draws exactly what it drew before**: the renderer's stand-in, a flat sky colour
 /// and a sun that is a direction. Append-only: a field added later has a default that draws what the
 /// block drew before it.
-struct Sky @version(3) {
+///
+/// **Two forms** (version 4, W185): the solar form gives `day_of_year` and `moon_age_days` by hand and
+/// its hour is local solar time; the **civil form** gives `longitude_deg`, `date`, `time_of_day_h`
+/// and `utc_offset_h`, all four, and the provider's ephemeris finds the sun's and the moon's places
+/// and the moon's age from them. `latitude_deg` is both forms'. A sky that gives the civil form and
+/// also a `day_of_year` or a `moon_age_days` other than its default is refused with a sentence
+/// naming the field to drop, as is a scene whose terrain gives a `time` (its hour by hand) beside a
+/// civil sky. With none of the four, the sky draws exactly what it drew.
+struct Sky @version(4) @additive(4) {
   /// The sky provider that draws it, by the name it registered under (docs/subsystems/scene_gen.md):
   /// "earth", the sky capability's. Empty: "earth". A name the executable does not carry is refused
   /// with a sentence naming it.
@@ -1438,6 +1457,18 @@ struct Sky @version(3) {
   /// (`wind_follow`) and names no swell of its own draws it in its table and brings it ashore as its
   /// train. Null, the default: no swell, and every reader draws what it drew.
   swell: Swell? @since(3)
+  /// The civil form (W185): degrees east of Greenwich (negative west), [-180, 180]. Toronto is
+  /// -79.38. With the other three, the sky's local sidereal time is Greenwich's plus it.
+  longitude_deg: f64? = null @since(4) @unit(deg)
+  /// The civil form: the date on the scene's clock where the sky's clock starts (game time 0 is
+  /// `time_of_day_h` on it). The date advances as the hour passes midnight.
+  date: SkyDate? @since(4)
+  /// The civil form: the clock's time of day at game time 0, hours in [0, 24) (15.5 is 15:30), on
+  /// the clock `utc_offset_h` names, daylight saving included when the clock keeps it.
+  time_of_day_h: f64? = null @since(4)
+  /// The civil form: the clock's offset from UTC, hours in [-14, 14], east positive: -4 is Toronto
+  /// in summer (EDT), -5 in winter (EST), 0 UTC, 11 Sydney in summer (AEDT).
+  utc_offset_h: f64? = null @since(4)
 }
 
 /// A fire's smoke (docs/subsystems/volumetrics.md, "Fire"): a plume leaving the flame's top, rising
@@ -1989,11 +2020,51 @@ struct Sound @version(1) {
   clips: SoundClip[]
 }
 
+/// Which engine axis a map axis lies along (`Georeference`, W186). The engine's up is +y, and its
+/// two horizontal axes are x and z.
+enum EngineAxis : u8 {
+  /// Not stated: refused, so that no reader guesses.
+  Unset = 0
+  PlusX = 1
+  MinusX = 2
+  PlusZ = 3
+  MinusZ = 4
+}
+
+/// **Where on the Earth a scene is** (W186; docs/subsystems/scene_gen.md, "Where on the Earth a
+/// scene is"): the systems its world coordinates are measured in, named as ISO 19111 names them,
+/// and where its world origin stands in them. **Carried, never interpreted**: the engine does no
+/// projection, no datum shift and no lookup of a name; `scene_gen::map_from_world` and
+/// `world_from_map` are an origin, two signed axes and a unit, nothing more.
+struct Georeference @version(1) {
+  /// The horizontal (projected) coordinate reference system: an authority and its code,
+  /// "EPSG:2952", or the system's well-known text (ISO 19162) when it has no code.
+  horizontal_crs: string
+  /// The vertical coordinate reference system the engine's up measures heights in, named the same
+  /// way: "EPSG:6647" (CGVD2013(CGG2013) height).
+  vertical_crs: string
+  /// The world origin's map coordinates, in the horizontal system's unit. Named by what they mean,
+  /// never by their place in the system's own axis order, which is northing first in some
+  /// (EPSG:31467) and easting first in others (EPSG:2952).
+  origin_easting: f64 = 0
+  origin_northing: f64 = 0
+  /// The world origin's height in the vertical system, metres.
+  origin_height: f64 = 0 @unit(m)
+  /// The engine axes east and north lie along: two different axes, both stated. +x east and -z
+  /// north is a rotation of the map (the engine is right-handed, y up); +x east and +z north is its
+  /// mirror image, which a tool writing (easting, height, northing) into (x, y, z) makes.
+  east: EngineAxis = Unset
+  north: EngineAxis = Unset
+  /// The length of the horizontal system's unit in metres: 1 for a metre grid, 0.3048006096012192
+  /// for the US survey foot.
+  unit_m: f64 = 1
+}
+
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,
 /// version 6 `sky`, version 7 `props`, version 8 `water` and `medium`, version 9 `fires`, version 10
 /// `formation`, version 11 `water_channels`, version 12 `sound`, version 13 `lamps` (R86)
-/// and a mesh's `sound` (S112, `Mesh` version 3).
-struct Scene @version(13) {
+/// and a mesh's `sound` (S112, `Mesh` version 3), version 14 `georeference` (W186).
+struct Scene @version(14) @additive(14) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
   name: string
@@ -2055,6 +2126,9 @@ struct Scene @version(13) {
   /// lights, at most 64 with the placed props' (a file naming more is refused with the count).
   /// Empty: none, and the scene reads and draws exactly as it did.
   lamps: Lamp[] @since(13)
+  /// Where on the Earth the scene is (`Georeference`, W186): carried for tools and never read by
+  /// the picture. Null: the scene says nothing of it, and reads and draws exactly as it did.
+  georeference: Georeference? @since(14)
 }
 
 /// Where the owner's replacements for a scene's placeholders are: a local file, never committed.

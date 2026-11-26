@@ -152,6 +152,42 @@ Test-That 'a tools/-only change names every app of the graph, because the tools 
 Test-That 'and builds their binaries, not their tests (tools.game_sdk runs engine-view)' {
   ($t -join ',') -eq 'engine_engine_cli,engine_engine_view'
 }
+# T225: platform.error_mode is `add_test(NAME platform.error_mode COMMAND
+# engine_platform_error_mode_probe)`, an executable no module target builds, so the affected build
+# left it out and CTest reported the selected test Not Run. CTest's listing names the target's file
+# whether it is built or not; a script's test names one through `$<TARGET_FILE:...>`.
+$listing = @{ kind = 'ctestInfo'; tests = @(
+    @{ name = 'physics'; command = @('C:/b/domain/physics/engine_physics_tests.exe') },
+    @{ name = 'physics.error_mode'; command = @('C:/b/domain/physics/engine_physics_error_mode_probe.exe') },
+    @{ name = 'physics.script'; command = @('C:/pwsh.exe', '-File', 'C:/src/tools/x.ps1', '-Exe', 'C:/b/bin/engine_physics_probe2') },
+    @{ name = 'gfx.helper'; command = @('C:\b\domain\gfx\engine_gfx_helper.exe') },
+    @{ name = 'disabled.one' }) } | ConvertTo-Json -Depth 5
+$ninjaHelpers = $ninja + @('engine_physics_error_mode_probe', 'engine_physics_probe2', 'engine_gfx_helper')
+$r = Affected @('domain/physics/src/solver.cpp')
+$h = Get-TestHelperTargets -Json $listing -Filter $r.Filter -Available $ninjaHelpers
+Test-That 'a selected test whose command is an executable of its own brings that executable' {
+  ($h -contains 'engine_physics_error_mode_probe') -and ($h -contains 'engine_physics_probe2')
+}
+Test-That 'and a test the set does not select brings nothing, nor does a command that names no target' {
+  -not ($h -contains 'engine_gfx_helper') -and -not ($h -contains 'pwsh') -and $h.Count -eq 3
+}
+$t = Get-AffectedTargets -Modules $r.Modules -Helpers $h -Available $ninjaHelpers
+Test-That 'the build list carries the helpers beside the module targets' {
+  ($t -contains 'engine_physics_error_mode_probe') -and ($t -contains 'engine_physics_tests') -and -not ($t -contains 'engine_gfx_helper')
+}
+$phony = @{ kind = 'ctestInfo'; tests = @(
+    @{ name = 'physics.words'; command = @('C:/pwsh.exe', '-File', 'C:/src/tools/y.ps1', '-Mode', 'all', 'C:/src/test', 'C:/b/install') },
+    @{ name = 'physics.outside'; command = @('C:/elsewhere/engine_physics_probe2.exe') }) } | ConvertTo-Json -Depth 5
+$ninjaCmake = $ninjaHelpers + @('test', 'install', 'edit_cache')
+Test-That 'CMake''s own phony targets are never helpers, and under -BuildDir only paths under the build directory count' {
+  @(Get-TestHelperTargets -Json $phony -Filter $r.Filter -Available $ninjaCmake).Count -eq 1 -and
+    @(Get-TestHelperTargets -Json $phony -Filter $r.Filter -Available $ninjaCmake -BuildDir 'C:\b').Count -eq 0 -and
+    ((Get-TestHelperTargets -Json $listing -Filter $r.Filter -Available $ninjaHelpers -BuildDir 'C:\b') -join ',') -eq ($h -join ',')
+}
+Test-That 'everything selected takes every test''s helper, and an empty listing none' {
+  ((Get-TestHelperTargets -Json $listing -Filter $null -Available $ninjaHelpers) -contains 'engine_gfx_helper') -and
+  (@(Get-TestHelperTargets -Json '' -Filter $r.Filter -Available $ninjaHelpers).Count -eq 0)
+}
 $r = Affected @('domain/physics/src/solver.cpp', 'docs/adr/README.md')
 Test-That 'a change that does not reach the tools tests names no app' { $r.Apps.Count -eq 0 -and -not $r.Tools }
 $r = Affected @('domain/physics/src/solver.cpp', 'tools/lint.ps1')

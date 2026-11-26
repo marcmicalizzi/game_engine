@@ -103,11 +103,13 @@ struct BusPayload {
   f32 gain;
 };
 
-// `NoiseParams`, flattened (52 bytes): the seed, nine gains, the movable band's coefficients.
+// `NoiseParams`, flattened (64 bytes): the seed, nine gains, the movable band's coefficients and
+// (S121) the low-pass's.
 struct NoisePayload {
   u32 seed;
   f32 gain[9];
-  f32 tone[3];  // c, a1, a2
+  f32 tone[3];     // c, a1, a2
+  f32 lowpass[3];  // b0, a1, a2 (b0 0: none)
 };
 
 // `NoiseStrike`, flattened (20 bytes): which resonator, its two coefficients, its kick and its

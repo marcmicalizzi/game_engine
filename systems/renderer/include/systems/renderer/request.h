@@ -119,6 +119,10 @@ struct FrameClock : WorldClocks {
 FrameClock frame_clock(const ClockRequest& clock, const SceneData& scene);
 // The scene's epoch: its terrain's `time`, 0 without a terrain (clocks.h).
 f64 scene_epoch_s(const SceneData& scene) noexcept;
+// Where the sky's clock stands in its own day at game time 0, seconds past that clock's midnight:
+// a sky by place and civil time starts at its `time_of_day_h` (W185, sky.md, "The sky by place and
+// civil time"); the solar form and a scene with no sky start at midnight, 0.
+f64 scene_clock_start_s(const SceneData& scene) noexcept;
 // One frame of a run: its camera, its number and its place on the clocks.
 FrameDesc frame_at(const FrameClock& clock, const Camera& camera, u64 frame_index);
 // A flight's clock: path frame f at `clock.at(f)`.

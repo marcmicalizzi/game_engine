@@ -114,6 +114,22 @@ NoiseBand noise_band(f32 centre_hz, f32 q) noexcept {
   return out;
 }
 
+NoiseLowpass noise_lowpass(f32 corner_hz) noexcept {
+  f32 f = std::isfinite(corner_hz) ? corner_hz : k_noise_tone_max_hz;
+  f = f < k_noise_tone_min_hz ? k_noise_tone_min_hz
+                              : (f > k_noise_tone_max_hz ? k_noise_tone_max_hz : f);
+  const f32 t = 4.0f * f / static_cast<f32>(k_sample_rate);
+  const f32 sin_w = sin_quarter(t);
+  const f32 cos_w = sin_quarter(1.0f - t);
+  const f32 alpha = sin_w * 0.707106781f;  // sin w / (2 Q), Q = 1 / sqrt 2
+  const f32 a0 = 1.0f + alpha;
+  NoiseLowpass out;
+  out.b0 = 0.5f * (1.0f - cos_w) / a0;
+  out.a1 = -2.0f * cos_w / a0;
+  out.a2 = (1.0f - alpha) / a0;
+  return out;
+}
+
 NoiseStrike noise_strike(u32 resonator, f32 frequency_hz, f32 damping, f32 amplitude) noexcept {
   NoiseStrike s;
   s.resonator = resonator < k_noise_resonators ? resonator : k_noise_resonators - 1u;
@@ -163,6 +179,26 @@ void render_noise(NoiseState& n, f32* out, u32 frames) noexcept {
     }
   }
   if (done < frames) noise_run<false>(n, out + done, frames - done);
+  // The low-pass after the bands (S121), only on a voice that asks for one: transposed direct
+  // form II, a multiply and an add or a subtract at a time in f32 (no fused multiply-add,
+  // ADR-0035), so the same commands are the same bytes on every toolchain.
+  if (n.lp_b0 != 0.0f) {
+    const f32 b0 = n.lp_b0;
+    const f32 b1 = 2.0f * b0;
+    const f32 a1 = n.lp_a1;
+    const f32 a2 = n.lp_a2;
+    f32 s1 = n.lp_s1;
+    f32 s2 = n.lp_s2;
+    for (u32 i = 0; i < frames; ++i) {
+      const f32 x = out[i];
+      const f32 y = b0 * x + s1;
+      s1 = (b1 * x - a1 * y) + s2;
+      s2 = b0 * x - a2 * y;
+      out[i] = y;
+    }
+    n.lp_s1 = s1;
+    n.lp_s2 = s2;
+  }
   // The struck resonators (S113), each only while it rings: a voice never struck pays a test of
   // four words a block. A multiply, a multiply and a subtract, then an add, in f32 (no fused
   // multiply-add, ADR-0035), so the same strikes are the same bytes on every toolchain.
