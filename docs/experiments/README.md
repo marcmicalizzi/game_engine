@@ -239,6 +239,7 @@ Tree expansion: [species profiles](tree-species-expansion.md) and [season design
 
 [T130: the static-asset world](static-asset-world.md): a world of imported glTF and hand placement flown at every gate, and the audit of what such a world gets from each feature built for generated ones, what that costs it, and what would make it work.
 [R164: foliage, lit from both sides](foliage-two-sided-light.md) grounds the renderer's foliage optics (a leaf's transmission, a needle card's sphere of normals by the Lambert sphere's law) in the leaf-optics literature and measures what they do to the engine's conifers and broadleaves.
+[R233 and W177: a leaf's two faces, and a blade in the wind](leaf-faces-and-reconfiguration-grounding.md) grounds a broadleaf's lower face against its upper (the direction by band, why, which species are two-coloured, the leaf libraries that hold both faces) and a blade's reconfiguration in the wind (Vogel's shapes by leaf form, the leaf's drag exponent, where reconfiguration starts), with a reading for each row kept apart.
 
 [G203: conifer crown coverage](conifer-crown-coverage.md) measures what the forest's pine and spruces cover of their own outline at 10, 30, 100 and 300 m against what foresters rate a healthy crown at, separates the geometry (not the fault), the needle image (most of it), the texture chain and the rasterizers' mask tap (the hardware rasterizer's thinner crowns, with their cause), and says what a needle image should be.
 
