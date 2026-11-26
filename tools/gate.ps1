@@ -535,8 +535,12 @@ $result.ended = (Get-Date).ToString('s')
 foreach ($s in $result.sources.Values) { foreach ($e in $s) { if ($e.verdict -eq $verdictPath) { $e.ended = $result.ended } } }
 if ($fold) { "folded with ${completesPath}: $(@($st.Keys | ForEach-Object { "$_ $($st[$_]) ($(@($result.sources[$_] | ForEach-Object { $_.batch }) -join '+'))" }) -join ', ')" }
 Write-Json $verdictPath $result
-if ($result.green) { "GATE $Batch exit 0 $(Stamp): green at $tip"; exit 0 }
-if ($result.red.Count) { "GATE $Batch exit 1 $(Stamp): $($result.red -join '; ')"; exit 1 }
+# The last line says the verdict is written, and whether the server leg trails it (T231): a reader of
+# this output knows the gate is done even while the leg runs on, which holds no handle of this one.
+$after = " | verdict written: $verdictPath"
+if ($Server -and $sp -and -not $sp.HasExited) { $after += " | the server leg trails ($($sp.Id)), its verdict will be $serverVerdict" }
+if ($result.green) { "GATE $Batch exit 0 $(Stamp): green at $tip$after"; exit 0 }
+if ($result.red.Count) { "GATE $Batch exit 1 $(Stamp): $($result.red -join '; ')$after"; exit 1 }
 # Exit 4 is reached only with a state that is neither green nor skipped, so the list is never empty.
-"GATE $Batch exit 4 $(Stamp): nothing red, and not green: $(Get-OpenStepsText $st)"
+"GATE $Batch exit 4 $(Stamp): nothing red, and not green: $(Get-OpenStepsText $st)$after"
 exit 4
