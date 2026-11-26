@@ -75,12 +75,12 @@ describes it; in short:
 |---|---|
 | `include/` | the public headers a module compiles against — exactly the directories the engine's exported build command lists (`core/*/include`, `foundation/hotload/include`), merged; nothing from any `src/` |
 | `schemas/` | the schema root a module's `.schema` may import from |
-| `bin/` | `schemac` (the schema compiler), `engine-view` (the preset's, shaders embedded), `game/walk_poc.dll` (the worked example: run it before writing a line) |
+| `bin/` | `schemac` (the schema compiler), `engine-view` (the preset's, shaders embedded), `engine-content` (the content tool, [below](#building-content-from-the-sdk)), `game/walk_poc.dll` (the worked example: run it before writing a line) |
 | `cmake/` | `EngineGameModuleBuild.cmake`, the engine's build command, and a **relocatable** `build_config.cmake`: every path into the SDK is relative to the config itself, so the folder can be moved or unzipped anywhere ([hotload.md, "Building a module"](subsystems/hotload.md#building-a-module)) |
 | `content/` | `test-scenes/desert-endless/` and `ruins-walk/` (with its ruins kit generated at export, since the tree never commits it), with every file each names, `sessions/walk-synthetic.jsonl` (recorded against the map below), `input-map.json`, the action map the SDK's engine-view flies with and its hash (`--dump-action-map`), and `materials/`, the material pack, when the exporting checkout had one ([below](#packaging-and-reading-what-comes-back)) |
 | `tools/` | the three commands below, and `lib/GameContent.psm1` |
 | `sdk.json` | the engine commit, whether it was dirty, the preset, the CPU baseline, the hotload ABI version, the export date, the scenes carried |
-| `LICENSE`, `NOTICE` | the engine's Apache-2.0, which everything in the folder is under |
+| `LICENSE`, `NOTICE`, `third_party/LICENSES.md` | the engine's Apache-2.0, which everything in the folder is under, and the permissive third-party components its binaries link, at the path `NOTICE` names |
 
 ```powershell
 tools/build-module.ps1 -Source <dir> -Out <file.dll>                      # the engine's compiler, flags and schemac
@@ -134,6 +134,48 @@ a `ddc/` of its own. The template names one in every launch: `run.ps1` hands the
 `--ddc` inside the package's folder. A host started by hand (engine-view, engine-host, engine-editor)
 is given `--ddc <repo>/ddc` the same way. `tools.game_sdk` (`tools/export-game-sdk.Tests.ps1`) reads
 the template and fails when one of its launches, or a host command line in its README, names none.
+
+### Building content from the SDK
+
+**The SDK carries the content tool**, `bin/engine-content` (roadmap T233; the commands are
+[apps.md, "engine-content"](subsystems/apps.md)), so a game builds a mesh into a container as a step
+of its own, with its own numbers, rather than leaving it to the viewer's load on a cache miss, and
+runs `matgen` for the engine's generated material sets ([matgen](subsystems/matgen.md)). It is a
+static executable like `engine-view`, linking no third-party library the viewer does not.
+
+**Outside a checkout, every root is named, for the content tool as for the viewer.** In the
+engine's tree both find the derived-data root and the material pack by walking up from the
+executable to the directory holding `AGENTS.md` (`geometry::find_ddc_root`,
+`materials::default_pack_dir`); in an SDK there is usually none above them, so neither finds a root
+by itself. They differ in what they do then: `engine-view` given no `--ddc` falls back to a `ddc/`
+beside each scene ([above](#where-a-games-derived-data-goes)), while `engine-content` refuses —
+`build --cache` with no `--ddc` and `matgen` with no `--out` each exit naming the flag — so the
+content tool never writes beside the SDK. A command that would use the cache is given
+`--ddc <repo>/ddc`, `matgen` is given `--out`, and a host reads the sets with `--materials`. **An SDK
+unpacked anywhere under a folder that holds an `AGENTS.md`** (a workspace kept for agents, say) is
+not outside a checkout to either tool: both would take that folder's `ddc/` and
+`content/materials` by themselves, so keep an SDK out of such a tree or name every root anyway.
+From a game repository, with the SDK at `$sdk`:
+
+```powershell
+& "$sdk/bin/engine-content.exe" build meshes/crate.gltf --cache --ddc ./ddc           # the entry engine-view --ddc ./ddc then loads without building
+& "$sdk/bin/engine-content.exe" build meshes/crate.gltf build/crate.clusters           # or a container at a path of the game's
+& "$sdk/bin/engine-content.exe" info build/crate.clusters                              # what it holds, one JSON line
+& "$sdk/bin/engine-content.exe" matgen --out ./content/materials/generated            # the generated sets, once (minutes at the default size)
+./run.ps1 -EngineArgs "--materials content/materials"                                  # a session that draws with them
+```
+
+**The viewer's load takes what the tool built** (checked 2026-11-25 from an SDK outside any
+checkout): after `build meshes/ramp.gltf --cache --ddc ./ddc`, the SDK's `engine-view --offscreen
+--mesh meshes/ramp.gltf --ddc ./ddc` reported that entry, `ddc/clusters/c047377eda7ff3af.clusters`,
+as its summary's `load.meshes[0].path`, and the file was not rewritten; the only thing the run added
+under `ddc/` was its pipeline cache. The load's own `cache` field (`hit`, `miss` or `file`) is in the
+renderer's "mesh loaded" log line, which the default log level does not print.
+
+The template has no content step of its own (no `content.ps1`): a game's meshes are the author's,
+so these lines are where to start one. `--materials` names one directory, read as its own
+`pack.json` with `generated/` behind it; a game that wants the SDK's fetched pack as well copies it
+into `content/materials/` beside the generated sets.
 
 ## Rules that keep a run replayable
 
@@ -382,9 +424,9 @@ Plainly: **nothing, to build, run and package a module against a given engine bu
 the template are enough, on a Windows machine with Visual Studio. The checkout is needed to **make**
 an SDK (`tools/export-game-sdk.ps1` runs from a built preset), to move a game to a newer engine
 (export again), to read the documentation the SDK's `README.md` and `sdk.json` point at (the
-contract, this page, the hotload page; the SDK carries the headers, not the docs), to make a scene
-with content the tree generates (`engine-content ruins-kit`, the content build: the SDK ships
-`engine-view`, `schemac` and the scenes, not `engine-content`), and for anything on Linux.
+contract, this page, the hotload page; the SDK carries the headers, not the docs), and for anything
+on Linux. The content build is not among them since T233: the SDK carries `engine-content`
+([above](#building-content-from-the-sdk)).
 
 ## Not there yet
 
@@ -394,8 +436,6 @@ and ["The HUD, provisional"](subsystems/apps.md#the-hud-provisional)); of the ki
 - **No Linux SDK.** The export is one preset's, and every preset built here is Windows; a Linux
   preset's export is the same script with `.so` and the Linux flags, not written, and `tools.game_sdk`
   skips off Windows.
-- **No `engine-content` in the SDK**, so a scene that needs generated content (a ruins kit) is made
-  from a checkout; the exporter generates the kits of the scenes it carries.
 - **The offscreen walk is synthetic**: its header is the committed fly session's camera with the
   exported map's hash and the walker's default numbers written by the exporter; when `walk.h`'s
   version moves, engine-view refuses the recording naming both versions, and the exporter has to
@@ -419,7 +459,13 @@ plus the refusals. 61 checks, 127 s in `msvc-debug` on 2026-10-18 (the module's 
 run 77 s, the package 5 s; 56 checks and 74 s before, on a quieter machine) on the RTX 5090
 beside five other agents' builds; it skips with a sentence where the build
 has no hotload capability. The SDK it exports from `msvc-debug` is 33 MB (a 32 MB Debug `engine-view`),
-87 files.
+87 files. T233 (2026-11-25) added seven checks, which run before the module is built because they
+open no device: `bin/engine-content.exe`, `NOTICE` and `third_party/LICENSES.md` are there, and from
+the repository the SDK's tool builds a committed mesh (`content/test-scenes/tree-bases/ramp.gltf`)
+into its `ddc/`, `info` reads it back, `matgen` writes one set at 64 texels into its
+`content/materials/generated`, and `matgen` with no `--out` refuses. Exported from `msvc-release` the
+SDK is 99.5 MB in 102 files and its zip 32.4 MB, of which `engine-content` is 25.4 MiB and 9.5 MiB
+compressed.
 
 The window host also exposes `GameTick.render_frame_ms`, `render_frame_serial` and
 `render_elapsed_s` (tick schema v3). These are observation only: the last wall-clock

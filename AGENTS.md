@@ -35,7 +35,7 @@ tools/disk-writes.ps1    [-Seconds 600] [-Out <file.json>]   # read-only: bytes 
 tools/miscompile-scan.ps1 [-Level Ob1,Ob2] [-Filter <regex>] [-Jobs 8] [-Keep]   # searches the compiler's listings for the MSVC by-value temporary miscompile; weekly, and round a change of compiler or release flags (docs/ci/what-to-run.md, "The miscompile scan")
 tools/package-tests.ps1  -Preset msvc-release [-Out <zip>] [-WithSamples] [-WithSymbols]
 tools/package-game.ps1   -Preset msvc-release -Module <name> -Scene <scene.json> [-Out <zip>] [-Width <w>] [-Height <h>] [-TimeRate <r>] [-SunRate <r>] [-DayLength <s>]   # engine-view + a game module + a scene, a zip a tester double-clicks and sends report.json back from (docs/subsystems/apps.md)
-tools/export-game-sdk.ps1 -Preset msvc-release -Out <dir> [-Zip <file>] [-Scenes <paths...>]   # the game author's SDK: headers, schemac, the relocatable build command, engine-view, the scenes, the package tool (docs/game-authoring.md)
+tools/export-game-sdk.ps1 -Preset msvc-release -Out <dir> [-Zip <file>] [-Scenes <paths...>]   # the game author's SDK: headers, schemac, the build command, engine-view, engine-content, scenes, the package tool (docs/game-authoring.md)
 tools/new-game-repo.ps1  -Name <name> -Out <dir> -Sdk <sdk dir>                                 # a game repository from templates/game-repo/, pinning that SDK (docs/game-authoring.md)
 tools/gpu-lock.ps1       run -Purpose "<what>" -Exec "<command line>"   # the machine-wide GPU lock, for heavy GPU work that is not a test run (docs/subsystems/bench.md); tests take it themselves
 tools/generate.ps1       image|3d|pipeline|manifest|ingest|balance ...  # generated images and meshes with provenance sidecars, outside the repo (docs/content-generation.md)
