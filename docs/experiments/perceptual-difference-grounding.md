@@ -172,20 +172,23 @@ dependency.
   dimensions plus colour direction and the background's chromaticity; one parameter set fits 18
   studies' data with an error of 3.59 dB (project page, read). The article itself refused the
   fetch (PubMed Central and the journal), so its text's licence and its equations are **not read**.
-  Code and the consolidated data on GitHub, marked **MIT** in the repository's sidebar (the LICENSE
-  file's text not read).
+  Code (a MATLAB class) and the consolidated data on GitHub under the **MIT** licence, Graphics and
+  Displays group, University of Cambridge, 2023 (the LICENSE file, read).
 - **elaTCSF** (Cai, Bozorgian, Ashraf, Wanat, Mantiuk, SIGGRAPH Asia 2024, DOI 10.1145/3680528.3687586;
   arXiv 2503.16759, **CC BY 4.0**, read). A temporal CSF for **flicker detection** at low spatial
   frequency over temporal frequency, luminance, eccentricity and area. Eccentricity scales
   sensitivity by **S_ecc(e) = 10^(−k₁ e), k₁ = 0.0330933 per degree (Eq. 4, Table 2)** and
-  flattens the temporal slope by **k₂ = 0.0341811 per degree (Eq. 5)**, so the loss is smaller at
-  high temporal frequency, which is why critical flicker frequency (CFF) can peak off the fovea; area
-  enters by probability summation (Eqs. 7–9, β = 3.80022). Against eight datasets (Table 1) its error
+  stretches the temporal-frequency axis with it: **Eq. 5 divides (ω − ω_p) by (1 + k₂ e), k₂ =
+  0.0341811 per degree, ω_p = −2 Hz, and adds ω_p back**, so at a given temporal frequency the
+  periphery is read further down the curve, its high-frequency sensitivity falls less than its
+  low-frequency one, which is how critical flicker frequency (CFF) can peak off the fovea; area enters
+  by probability summation (Eqs. 7 to 10, β = 3.80022). Against eight datasets (Table 1) its error
   is 3.50 dB in sensitivity and 8.95 Hz in CFF, against stelaCSF's 6.13 dB / 11.47 Hz, castleCSF's
-  5.45 / 13.07 and Barten's 4.58 / 9.06 (Table 3); the authors call the eccentricity of the CFF's
+  5.45 / 13.07, Barten's CSF's 5.79 / 15.36 and the paper's Barten's CSF (HTF) row's 4.58 / 9.06
+  (Table 3); the authors call the eccentricity of the CFF's
   peak a debate they contribute to rather than settle. Code licence not stated.
-- **Krajancich, Kellnhofer, Wetzstein (2021)**, *ACM TOG*, arXiv 2104.13514 (read through ar5iv;
-  arXiv's licence not read): CFF measured on a high-speed display at 380 cd/m² (and 23.9 and 3.0
+- **Krajancich, Kellnhofer, Wetzstein (2021)**, *ACM TOG* 40(4) 47, arXiv 2104.13514 (read through
+  ar5iv; the text under arXiv's non-exclusive distribution licence 1.0, read on its abstract page): CFF measured on a high-speed display at 380 cd/m² (and 23.9 and 3.0
   for the luminance extension) from 0 to 56.8° of eccentricity at 0 to 2 cycles a degree, fitted as
   Eq. 2 with Table 3's constants (R² 0.889 to 0.938) and extended by luminance (Eqs. 5–6). **Temporal
   sensitivity is anti-foveated**: at the higher spatial frequencies the CFF rises from the fovea to a
@@ -207,7 +210,10 @@ pass did not read.
 ### ColorVideoVDP
 
 Mantiuk, Hanji, Ashraf, Asano, Chapiro, SIGGRAPH 2024 (*ACM TOG*, article 129, DOI 10.1145/3658144;
-arXiv 2401.11485, **CC BY 4.0**, read through ar5iv to its first 100,000 characters).
+arXiv 2401.11485, **CC BY 4.0**, read through ar5iv: its first 100,000 characters, which in that
+rendering run from the abstract to the start of Sec. 6.2 and so hold Secs. 3.11 and 5.1, and the rest
+read separately for Secs. 6.2 to 7; section numbers below are ar5iv's, which arXiv's own HTML may
+number otherwise).
 
 - **Claims** the visibility of distortions between a test and a reference video or image: one
   quality in JOD (Eq. 16, 10 for identical), a per-pixel distortion map as a video (Sec. 3.10,
@@ -224,13 +230,15 @@ arXiv 2401.11485, **CC BY 4.0**, read through ar5iv to its first 100,000 charact
   streaming distortions) and UPIQ; tested on their held-out parts and LIVE HDR, LIVE VQA and
   KADID-10k; better than the second best, VMAF (Sec. 5.1); the correlations themselves are in a
   figure and a report not read.
-- **Cost**: "comparable" to other metrics on a GPU (Sec. 3.11); no time read.
+- **Cost**: PyTorch on the GPU, as many frames in memory as fit, castleCSF precomputed as tables;
+  processing times "comparable" to other metrics, with the timings in the supplementary document
+  (Sec. 3.11, "Implementation details"); **the supplementary was not read**, so no time is taken.
 - **Licences**: the text CC BY 4.0; **the code MIT** (Graphics and Displays group, 2024; the LICENSE
   file, read), PyTorch. Its display models (`display_models.json`, read): **`standard_4k` a 30-inch
   3840 × 2160 at 0.7472 m, 200 cd/m², contrast 1000, 250 lux**, which is **75.4 pixels a degree at
   the screen's centre** (*derived*: a 0.664 m width over 3,840 pixels against 13.04 mm for a degree
-  at 0.7472 m; the README's sample output prints 75.4); `standard_hdr_pq` the same screen at
-  1,500 cd/m². Machine-learned variants (`cvvdp-ml-saliency`, `cvvdp-ml-transformer`) were added in
+  at 0.7472 m; the README's sample output prints 75.4); `standard_hdr_pq` the same 30-inch
+  3840 × 2160 at 0.7472 m, but BT.2020 with the PQ EOTF, 1,500 cd/m², contrast 1,000,000 and 10 lux. Machine-learned variants (`cvvdp-ml-saliency`, `cvvdp-ml-transformer`) were added in
   v0.5.0; their weights' terms were not read.
 
 ### The flicker and temporal-artefact measures graphics has published
@@ -317,7 +325,7 @@ centre, the side screens' centres are 50° out and their outer edges 75° (*deri
 plan 01's figure). Over that range spatial sensitivity falls steeply (the reason FovVideoVDP exists),
 while temporal sensitivity does not fall with it: elaTCSF's factor alone would be 10^(−0.0331 · 25)
 = 0.15 at 25° and 0.022 at 50° at low temporal frequency (*derived* from Eq. 4), but its Eq. 5
-flattens the temporal slope with eccentricity, and Krajancich et al. measured the CFF of the higher
+stretches the temporal-frequency axis with eccentricity, so high temporal frequencies lose less, and Krajancich et al. measured the CFF of the higher
 spatial frequencies peaking between 10° and 30°. So a weighting that turns the periphery down —
 `render.compare`'s centre weight, which [plan 04 §4.6](../plan/04-renderer.md#46-extreme-displays)
 asked for — turns down the side screens' **flicker and pops** with their blur, which by these two
@@ -369,8 +377,9 @@ luminance (HDR-VDP-3, ColorVideoVDP, FovVideoVDP) can weigh**.
 
 - **FLIP**: its colour difference is in a lightness-like space relative to white, so the one or two
   code differences over a third of the frame read about as the engine's own test of a one-level flat
-  change does, **about 0.03** a pixel (the image page's pinned 0.0299, mid grey; the step is the same
-  in L* at code 20), under the 0.1 the image page names; the pooled mean, mostly zeros and 0.03s, of
+  change does, **about 0.03** a pixel (the image page's pinned 0.0299, two mid greys 0.394 of L* apart;
+  a step from code 20 to 21 is about 0.38 in L*, *derived* under the 2.2 power: about the same, not
+  the same), under the 0.1 the image page names; the pooled mean, mostly zeros and 0.03s, of
   the order of 0.01. The worst pixels, 12 codes or about 4.7 in L*, would score of the order of
   0.15 if the exponent of 0.7 were all that acted (12^0.7 ≈ 5.7 times the one-code value; the
   redistribution and the CSF filter of a small blob lower it): **at or above the 0.1 line, as
@@ -413,7 +422,8 @@ nothing.
 ### Which to build first, and from what
 
 1. **ColorVideoVDP**, from its paper (arXiv, CC BY 4.0) with **its MIT code as the check of every
-   constant** (and castleCSF, MIT, beneath it): the one published predictor that models time,
+   constant** (and castleCSF beneath it, whose MIT LICENSE was read; its article was not reached, so
+   its constants would come from that code until the article is read): the one published predictor that models time,
    colour, absolute luminance and the display's geometry, validated against VMAF and the image
    measures, with a permissive licence on text and code alike, so a constant may be taken from either
    and checked against both. Built from the paper as FLIP was, no Python; its still-image form
@@ -470,7 +480,7 @@ FLIP alone at today's 3.1 s a 4K pair would take about 12.5 minutes for 241 fram
   (§3). Reporting both brackets it.
 - **The display's luminance.** Night scenes are where a shortcut like R213's shows, and where the
   sensitivity a model assumes depends most on the peak luminance the owner's display really has,
-  which nobody has measured; ColorVideoVDP's 200 cd/m² default is a convention, not his screen.
+  which nobody has measured; ColorVideoVDP's 200 cd/m² default is a convention, not the owner's display.
 - **Pooling.** ColorVideoVDP's frame exponent of 2 dilutes one bad frame over a clip; tool (2) asks
   for the worst stretch, which the per-frame map gives and the JOD does not.
 - **Where it runs.** FLIP is 3 s a 4K pair on one CPU thread today; a video predictor's pyramids
@@ -499,11 +509,11 @@ implementation's; a dash where there is none.
 | DISTS, PieAPP | named | not read | — | — | — |
 | Kelly (1979); Watson, Ahumada (2016), pyramid of visibility | the pyramid's form in words | not read; search summary only | — | — | — |
 | Mantiuk, Ashraf, Chapiro (2022), stelaCSF, ACM TOG 41(4) | its dimensions; 11 papers | search summary of the project page; PDF unreadable | not read | MATLAB; not read | none |
-| Ashraf, Mantiuk, Chapiro, Wuerger (2024), castleCSF, J. Vision 24(4):5 | dimensions; 18 studies, 3.59 dB | project page | not reached | MIT (repository sidebar; LICENSE text not read) | none |
+| Ashraf, Mantiuk, Chapiro, Wuerger (2024), castleCSF, J. Vision 24(4):5 | dimensions; 18 studies, 3.59 dB | project page | not reached | MIT, Graphics and Displays group, University of Cambridge, 2023 (LICENSE, read) | none |
 | Cai, Bozorgian, Ashraf, Wanat, Mantiuk (2024), elaTCSF, arXiv 2503.16759 | Eqs. 4–5, k₁ 0.0330933, k₂ 0.0341811, β 3.80022; Table 3's errors; the CFF debate | read (arXiv HTML) | CC BY 4.0 | not stated | none |
-| Krajancich, Kellnhofer, Wetzstein (2021), arXiv 2104.13514 | 0–56.8°, 0–2 cpd, 380 cd/m²; Eq. 2, Table 3; CFF peak 10–30° | read (ar5iv) | not read | not stated | none |
+| Krajancich, Kellnhofer, Wetzstein (2021), arXiv 2104.13514 | 0–56.8°, 0–2 cpd, 380 cd/m²; Eq. 2, Table 3; CFF peak 10–30° | read (ar5iv) | arXiv non-exclusive distribution licence 1.0 (abstract page, read) | not stated | none |
 | Mantiuk et al. (2021), FovVideoVDP, ACM TOG 40(4) 49 | what it models and needs; its validation in outline | project page; repository README | not read (ACM) | **CC BY-NC 4.0** (LICENSE, read): excluded | none |
-| Mantiuk, Hanji, Ashraf, Asano, Chapiro (2024), ColorVideoVDP, arXiv 2401.11485 | Sec. 3.1–3.11, Eqs. 1–3, 14, 16–18; e = 0; training and tests | read (ar5iv, first 100,000 characters) | CC BY 4.0 | MIT (LICENSE, read); `display_models.json` read | ML variants' terms not read |
+| Mantiuk, Hanji, Ashraf, Asano, Chapiro (2024), ColorVideoVDP, arXiv 2401.11485 | Sec. 3.1–3.11, Eqs. 1–3, 14, 16–18; e = 0; training and tests (Sec. 5.1); the supplementary's timings not read | read (ar5iv, whole; section numbers as ar5iv prints them) | CC BY 4.0 | MIT (LICENSE, read); `display_models.json` read | ML variants' terms not read |
 | Chu et al. (2020), TecoGAN, arXiv 1811.09393 | tOF and tLP, Eq. 2 | read (ar5iv) | not read | not read | LPIPS's |
 | Denes, Jindal, Mikhailiuk, Mantiuk (2020); Jindal et al. (2021) | judder and blur against refresh rate and resolution | search summaries only | — | — | — |
 | Jindal, Sadaka, Thomas, Sochenov, Kaplanyan (2025), CGVQM, arXiv 2506.11546 | architecture, CG-VQD, Table 1, viewing not controlled | read (arXiv HTML, first 100,000 characters) | CC BY 4.0 | Apache-2.0 (read) | a `weights` folder, terms not read; Kinetics-400 pretraining, terms not read |
