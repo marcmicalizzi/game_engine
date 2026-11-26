@@ -701,7 +701,7 @@ bool stable_poles(f32 a1, f32 a2) noexcept {
   return finite(a1) && finite(a2) && a2 < 1.0f && a2 > -1.0f && a1 < 1.0f + a2 && -a1 < 1.0f + a2;
 }
 
-// The movable band's and the low-pass's (L8 of S121's review) coefficients are refused when
+// The movable band's and the low-pass's (S121) coefficients are refused when
 // their poles are not stable; everything `noise_band` and `noise_lowpass` make is.
 bool valid_noise(const NoiseParams& p) noexcept {
   for (const f32 g : p.gain) {

@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <initializer_list>
+#include <ios>
 #include <vector>
 
 using namespace engine;
@@ -439,9 +441,45 @@ TEST_CASE("noise voice: the low-pass after the bands takes the skirts' top and l
   CHECK(std::memcmp(a.data(), c.data(), a.size() * sizeof(f32)) == 0);
 }
 
-// L8 of S121's review: a low-pass or a movable band whose poles are not stable would grow without
-// bound on the audio thread; the mixer refuses it at the door, and takes every pair the two makers
-// give from the bottom of their range to the top.
+// S121: a voice with the low-pass on, pinned, so "the same commands are the same bytes on every
+// toolchain" is held for the filter too (the proof that voices without one are unchanged is the
+// session pins above, which did not move). The ears' own corner at 4.5 m/s, 500 Hz, on three
+// bands, rendered whole and in uneven calls.
+TEST_CASE("noise voice: a session with the low-pass on is the same bytes, pinned") {
+  const NoiseLowpass lp = noise_lowpass(500.0f);
+  auto render = [&](std::initializer_list<u32> calls) {
+    NoiseState n = one_band(1, 0.25f, 29u);
+    n.gain[2] = n.target[2] = 0.2f;
+    n.gain[4] = n.target[4] = 0.05f;
+    n.lp_b0 = lp.b0;
+    n.lp_a1 = lp.a1;
+    n.lp_a2 = lp.a2;
+    std::vector<f32> out(96000);
+    u32 done = 0;
+    while (done < out.size()) {
+      for (const u32 call : calls) {
+        const u32 left = static_cast<u32>(out.size()) - done;
+        const u32 k = call < left ? call : left;
+        render_noise(n, out.data() + done, k);
+        done += k;
+        if (done == out.size()) break;
+      }
+    }
+    return out;
+  };
+  const std::vector<f32> whole = render({4800});
+  const std::vector<f32> uneven = render({7, 473, 160, 1024});
+  CHECK(whole == uneven);
+  const u64 hash =
+      hash_mix(ChannelLayout::Stereo, std::span<const f32>(whole.data(), whole.size()));
+  MESSAGE("low-pass session hash: 0x" << std::hex << hash);
+  // Pinned on MSVC 2026-11-25; GCC and Clang reproduce it in the container.
+  CHECK(hash == 0x088e872f06e9163bull);
+}
+
+// S121, stable filters only: a low-pass or a movable band whose poles are not stable would grow
+// without bound on the audio thread; the mixer refuses it at the door, and takes every pair the two
+// makers give from the bottom of their range to the top.
 TEST_CASE("noise voice: coefficients with unstable poles are refused, the makers' never") {
   ClipStore clips;
   MixerConfig config;

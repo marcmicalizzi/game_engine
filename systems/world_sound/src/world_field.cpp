@@ -5,6 +5,7 @@
 #include "world_field.h"
 
 #include <core/hash/hash.h>
+#include <core/math/deterministic.h>
 #include <core/time/time.h>
 #include <domain/audio/audio.h>
 #include <domain/audio/format.h>
@@ -37,9 +38,9 @@ tunables::Int world_refresh_hz{"audio.world.refresh_hz", 8, 1, 240,
 // (SMPTE RP 200, the forest's bird calls' scale), so an RMS of 1.0 in the mix is 105 dB SPL.
 tunables::Float world_reference_db{"audio.world.reference_db", 105.0, 60.0, 140.0,
                                    "dB SPL at the listener that a world band's RMS of 1.0 means"};
-tunables::Float world_ears_db{"audio.world.ears_db", -16.5, -80.0, 0.0,
-                              "The ears' own wind against a microphone's at the ear: the canal's "
-                              "shelter (S121)"};
+tunables::Float world_ears_db{"audio.world.ears_db", -26.0, -80.0, 0.0,
+                              "The ears' own wind under a microphone's at the ear: a run's "
+                              "A-weighted level kept at S112's (S121), the owner's to set (S130)"};
 tunables::Float world_ears_side_db{"audio.world.ears_side_db", 4.0, 0.0, 20.0,
                                    "dB the downwind ear is over the mean, side-on to the wind"};
 tunables::Float world_calm_m_s{"audio.world.calm_m_s", 0.5, 0.0, 10.0,
@@ -115,7 +116,7 @@ constexpr f64 k_ears_height_m = 1.7;
 // wind noise (IWAENC 2014) as the fifth-order all-pole filter of their synthesis holds it, with the
 // fixed coefficients Nelke's 2016 dissertation prints at 16 kHz (Table 3.3 [F]), its power spectrum
 // integrated by octave here (docs/experiments/world-sound.md, "Read again by S121", where the
-// arithmetic is); the most at 125 to 250 Hz, then falling about 8 dB an octave of band power. Their
+// arithmetic is); the most at 125 to 500 Hz, then falling about 8 dB an octave of band power. Their
 // recordings' speed is not tied to the spectrum; the shape is taken at the anchor's 4.5 m/s (a
 // choice) and moved an octave up a doubling of the speed (the corner goes as the speed, Strasberg's
 // scaling through a Brigham Young abstract [S]). The 8 and 16 kHz points carry the 2 to 4 kHz
@@ -135,21 +136,22 @@ constexpr f64 k_ears_lowpass_least_hz = 200.0;
 // **How it comes and goes.** The incoming turbulence is shared by the two ears: the gust at the
 // head, and above the gust's top (`gfx::k_wind_gust_f_high`) Kaimal's spectrum carried on to 8 Hz
 // at the head's length scale (IEC 61400-1's 8.1 x 0.7 z, z 1.7 m), the engine's intensity, frozen
-// into the flow. The turbulence the head makes is each ear's own (Nelke's short-term gain, one
-// value a 20 ms frame, Eq. 3.54 of the 2016 dissertation [F]): a hashed Gaussian a frame of the
-// world's clock, so a held clock holds it, crossfaded by a Hann window two frames wide (a choice).
+// into the flow; the 8 Hz top and the six sines are choices. The turbulence the head makes is each
+// ear's own: Nelke's short-term gain (Eq. 3.54 of the 2016 dissertation [F]), one value a 20 ms
+// frame of the world's clock, so a held clock holds it, Weibull-distributed with κ 2.71 (Fig. 3.22
+// [F]; its λ, 1.53, cancels in the power's factor). Γ(1 + 2 / κ) is computed here (Lanczos).
 constexpr f64 k_head_kaimal_length_m = 8.1 * 0.7 * 1.7;
 constexpr f64 k_head_turbulence_f_high = 8.0;
 constexpr u32 k_head_turbulence_sines = 6;
-constexpr f64 k_ears_buffet_window_s = 0.04;
-constexpr f64 k_ears_buffet_knot_s = 0.02;
+constexpr f64 k_ears_buffet_frame_s = 0.02;
+constexpr f64 k_ears_weibull_kappa = 2.71;
+constexpr f64 k_ears_weibull_m2 = 0.91638943782740;  // Γ(1 + 2 / 2.71)
 // The buffeting's power factor is held no lower than this (−30 dB), so an ear's gain never reaches
-// exactly nothing; what it adds to the mean is under 10^-5 (a chi-square of one degree under 10^-3
-// is that rare and that small).
+// exactly nothing; a Weibull of shape 2.71 falls under it with a probability of about 10^-4.
 constexpr f64 k_ears_buffet_least = 1.0e-3;
 // The mixer's field ramp (`audio.field_ramp_ms`) smooths a gain described every tick, and a gain
-// that moves as fast as the buffeting loses power to it (about 1.4 to 1.5 dB at the default 50 ms
-// and 60 to 240 ticks a second, by a seeded simulation of `ears_ramp_gain`). The loss is derived
+// that moves as fast as the buffeting loses power to it (about 0.5 dB at the default 50 ms and 60
+// to 240 ticks a second, by a seeded simulation of `ears_ramp_gain`). The loss is derived
 // when the field opens, from the mixer's own ramp and the field's tick rate (`ears_ramp_gain`),
 // over this much of the process, and the buffeting's power is raised by it, so the voice's mean is
 // the law's whatever the ramp is set to.
@@ -221,40 +223,36 @@ f64 loglaw(f64 h, f64 z0) noexcept {
   return std::log(hh / z) / std::log(gfx::k_wind_height_m / z);
 }
 
-// A hashed standard normal for knot `knot` of stream `seed` (Box-Muller over two hashed uniforms).
-f64 hashed_normal(u32 seed, i64 knot) noexcept {
-  const u64 k = static_cast<u64>(knot);
+// A hashed uniform in [0, 1) for frame `frame` of stream `seed`.
+f64 hashed_uniform(u32 seed, i64 frame) noexcept {
+  const u64 k = static_cast<u64>(frame);
   const u32 lo = static_cast<u32>(k);
   const u32 hi = static_cast<u32>(k >> 32);
-  const f64 u1 = gfx::water_wave_uniform(seed ^ (hi * 0x9E3779B9u), lo, 11u);
-  const f64 u2 = gfx::water_wave_uniform(seed ^ (hi * 0x9E3779B9u), lo, 12u);
-  return std::sqrt(-2.0 * std::log(u1 > 1e-12 ? u1 : 1e-12)) * std::cos(2.0 * k_pi * u2);
+  return gfx::water_wave_uniform(seed ^ (hi * 0x9E3779B9u), lo, 11u);
 }
 
-// **An ear's own buffeting** at world time `t` (S121; Nelke's short-term gain): a hashed
-// Gaussian at knots every `k_ears_buffet_knot_s`, weighted by a Hann window two knots wide about t,
-// its square over its expectation (the window's weights squared) the power's factor: one on
-// average, so the mean level stays the law's.
+// **An ear's own buffeting** at world time `t` (S121; Nelke's short-term gain, Eq. 3.54 of the
+// 2016 dissertation): one draw a 20 ms frame of the world's clock, held through the frame, the
+// gain Weibull-distributed with Fig. 3.22's shape (its scale cancels), drawn by the inverse
+// transform Eq. 3.55 names: g = λ (−ln(1 − u))^(1/κ). Its square over its expectation, λ² Γ(1 + 2
+// / κ), is the power's factor, one on average, so the mean level stays the law's. The logarithm
+// and the power are `det::log1p`, `det::log` and `det::exp` (core/math/deterministic.h), so the
+// draw is the same bits on every toolchain.
 f64 ear_buffet(u32 seed, f64 t) noexcept {
-  const f64 half = 0.5 * k_ears_buffet_window_s;
-  const i64 first = static_cast<i64>(std::ceil((t - half) / k_ears_buffet_knot_s));
-  f64 sum = 0.0;
-  f64 norm = 0.0;
-  for (i64 k = first; static_cast<f64>(k) * k_ears_buffet_knot_s < t + half; ++k) {
-    const f64 tau = static_cast<f64>(k) * k_ears_buffet_knot_s - t;
-    const f64 w = 0.5 * (1.0 + std::cos(2.0 * k_pi * tau / k_ears_buffet_window_s));
-    sum += w * hashed_normal(seed, k);
-    norm += w * w;
-  }
-  const f64 factor = norm > 0.0 ? sum * sum / norm : 1.0;
+  const i64 frame = static_cast<i64>(std::floor(t / k_ears_buffet_frame_s));
+  const f64 u = hashed_uniform(seed, frame);
+  const f64 e = -det::log1p(-u);  // a unit exponential: (g / λ)^κ
+  if (!(e > 1e-300)) return k_ears_buffet_least;
+  const f64 factor = det::exp(det::log(e) * (2.0 / k_ears_weibull_kappa)) / k_ears_weibull_m2;
   return factor > k_ears_buffet_least ? factor : k_ears_buffet_least;
 }
 
-// **What the mixer's ramp leaves of the buffeting** (S121's review, M2): the buffeting's gain
-// (the square root of `ear_buffet`) described once a tick of `tick_hz` and ramped by the mixer over
-// `ramp_frames` from wherever it stands (`Mixer::apply`'s SetNoise: a straight line to the target,
-// then flat), its power summed in closed form over each tick's frames, against the power described.
-// The answer is the factor that raises the described power so the heard mean is the law's.
+// **What the mixer's ramp leaves of the buffeting** (S121: the heard mean kept at the law's): the
+// buffeting's gain (the square root of `ear_buffet`) described once a tick of `tick_hz` and ramped
+// by the mixer over `ramp_frames` from wherever it stands (`Mixer::apply`'s SetNoise: a straight
+// line to the target, then flat), its power summed in closed form over each tick's frames, against
+// the power described. The answer is the factor that raises the described power so the heard mean
+// is the law's.
 f64 ears_ramp_gain(u32 ramp_frames, u32 tick_hz) noexcept {
   if (tick_hz == 0) return 1.0;
   const f64 per = static_cast<f64>(audio::k_sample_rate) / static_cast<f64>(tick_hz);
@@ -384,8 +382,8 @@ void WorldField::open(audio::Mixer* mixer, u32 tick_hz, const FieldConfig& confi
                                                             : WorldVoiceKind::Surf;
     voices_[i].info.kind = voices_[i].kind;
   }
-  // The ears' buffeting against the mixer's own ramp at this tick rate (S121's review, M2), and
-  // the head's turbulence's clock started afresh (H2).
+  // The ears' buffeting against the mixer's own ramp at this tick rate (S121), and
+  // the head's turbulence's clock started afresh.
   ears_ramp_gain_ = ears_ramp_gain(
       mixer_ != nullptr ? mixer_->field_ramp_frames() : audio::tunable_field_ramp_frames(),
       tick_hz_);
@@ -1289,11 +1287,12 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
     f64 z0 = 0.03;
     const f64 u10 = wind10_at(listener.x, listener.z, to, z0);
     f64 u = u10 * loglaw(k_ears_height_m, z0) * shelter_share_;
-    // The frozen flow's clock at the head (S121's review, H2): it runs with the world's clock less
-    // the listener's own travel down the wind over the head's **mean** speed (no gust, no shelter),
-    // summed tick by tick from the listener's last place, so it holds the distance travelled
-    // through the air and no world coordinate: the same wherever the world's origin is, and smooth
-    // however the gust moves. It starts at the world's clock on the field's first tick.
+    // The frozen flow's clock at the head (S121, so the same anywhere in the world): it runs with
+    // the world's clock less the listener's own travel down the wind over the head's **mean** speed
+    // (no gust, no shelter), summed tick by tick from the listener's last place, so it holds the
+    // distance travelled through the air and no world coordinate: the same wherever the world's
+    // origin is, and smooth however the gust moves. It starts at the world's clock on the field's
+    // first tick.
     const f64 carry_raw = wind10_mean() * loglaw(k_ears_height_m, z0);
     const f64 carry = carry_raw > 1.0 ? carry_raw : 1.0;
     if (!ears_clock_) {
@@ -1363,8 +1362,9 @@ void WorldField::tick(const WorldPos& listener, const Vec3& forward, const World
         const f64 outward = e == 0 ? -side : side;
         const f64 level = k_ears_db + 40.0 * std::log10(rel / k_ears_wind_m_s) + config_.ears_db +
                           config_.ears_side_db * outward;
-        // The bands carry the mean the law gives: the world's ceiling holds on it (S121's review,
-        // M1: the ears' buffeting never pushes the world down) and the floor decides on it (H1).
+        // The bands carry the mean the law gives: the world's ceiling holds on it (S121: the ears'
+        // buffeting never pushes the world down) and the floor decides on it (no ear stopped on a
+        // dip).
         const f64 power = pow10(level);
         for (u32 b = 0; b < 8; ++b)
           bands[b] = power * shape[b] / sum;

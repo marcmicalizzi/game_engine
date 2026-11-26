@@ -23,7 +23,7 @@ struct FieldConfig {
   f64 reach_m = 2000.0;
   u32 refresh_hz = 8;
   f64 reference_db = 105.0;
-  f64 ears_db = -16.5;
+  f64 ears_db = -26.0;
   f64 ears_side_db = 4.0;
   f64 calm_m_s = 0.5;
   f64 floor_db = 10.0;
@@ -265,8 +265,8 @@ class WorldField {
   ShelterSource shelter_{};
   f64 shelter_share_ = 1.0;    // the ears' share of the open wind, from the last refresh
   f64 ears_lowpass_hz_ = 0.0;  // the ears' low-pass corner this tick (S121)
-  f64 ears_ramp_gain_ = 1.0;   // what the mixer's ramp takes of the buffeting, given back (M2)
-  // The head's turbulence's clock (H2): the world's less the travel down the wind over the head's
+  f64 ears_ramp_gain_ = 1.0;   // what the mixer's ramp takes of the buffeting, given back
+  // The head's turbulence's clock (S121): the world's less the travel down the wind over the head's
   // mean speed, summed from the listener's last place and time.
   f64 ears_tau_s_ = 0.0;
   f64 ears_time_s_ = 0.0;

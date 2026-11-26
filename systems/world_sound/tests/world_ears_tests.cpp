@@ -70,6 +70,7 @@ struct Run {
   WorldPos start{k_far, 1.7, k_far};
   f64 world_time_s = 1000.0;
   bool turbulence = true;
+  u32 tick_hz = k_tick_hz;
   Avenue* trees = nullptr;
   WorldStats* stats = nullptr;       // the world's counts at the end
   std::vector<f64>* held = nullptr;  // the world's hold each tick, dB
@@ -81,7 +82,7 @@ u64 listen(const Run& r, const std::string& wav) {
   config.mode = AudioMode::Null;
   config.world = true;
   config.turbulence = r.turbulence;
-  config.tick_hz = k_tick_hz;
+  config.tick_hz = r.tick_hz;
   config.wav_out = wav;
   REQUIRE(stage.open(config, nullptr, nullptr));
   gfx::WindDesc wind;
@@ -95,16 +96,16 @@ u64 listen(const Run& r, const std::string& wav) {
   frame.world_time_s = r.world_time_s;
   if (r.trees != nullptr) stage.set_canopy(CanopySource{r.trees, &Avenue::visit});
   WorldPos at = r.start;
-  const u32 ticks = static_cast<u32>(r.seconds * k_tick_hz);
+  const u32 ticks = static_cast<u32>(r.seconds * r.tick_hz);
   for (u32 i = 0; i < ticks; ++i) {
-    at.x += static_cast<f64>(r.heading.x) * r.pace_m_s / k_tick_hz;
-    at.z += static_cast<f64>(r.heading.z) * r.pace_m_s / k_tick_hz;
+    at.x += static_cast<f64>(r.heading.x) * r.pace_m_s / r.tick_hz;
+    at.z += static_cast<f64>(r.heading.z) * r.pace_m_s / r.tick_hz;
     stage.set_listener(at, r.heading, Vec3{0.0f, 1.0f, 0.0f});
     stage.set_wind(frame);
     stage.tick();
     if (r.held != nullptr) r.held->push_back(static_cast<f64>(stage.world_stats().held_db));
-    frame.sky_time_s += 1.0 / k_tick_hz;
-    frame.world_time_s += 1.0 / k_tick_hz;
+    frame.sky_time_s += 1.0 / r.tick_hz;
+    frame.world_time_s += 1.0 / r.tick_hz;
   }
   if (r.stats != nullptr) *r.stats = stage.world_stats();
   std::string error;
@@ -307,27 +308,41 @@ TEST_CASE("world ears: in still air a stander hears nothing, a walker and a runn
   const Heard run = hear(read_wav(tmp.file("run.wav")));
   print("walking 1.5 m/s, still air", walk);
   print("running 5 m/s, still air", run);
-  // The law at the pace within a decibel (1.5 before M2 of S121's review): the buffeting's power is
-  // one on average (its mean over these 11.5 s varies by a few tenths of a decibel, from its 40 ms
-  // correlation), and the voice is its described power within 0.75 dB (the low-pass's account,
-  // computed on the grounding page). Read since S121's refit: 48.8 and 70.6 against 49.3 and 70.2.
+  // The law at the pace within a decibel: the buffeting's power is one on average (its mean over
+  // these 11.5 s varies by a few tenths of a decibel, a Weibull draw a 20 ms frame), and the voice
+  // is its described power within 0.75 dB (the low-pass's account, computed on the grounding page).
   CHECK(std::fabs(walk.level_db - law_db(1.5)) < 1.0);
   CHECK(std::fabs(run.level_db - law_db(5.0)) < 1.0);
   // A sprint stands 40 log (5 / 1.5) = 20.9 dB over a walk.
   CHECK(std::fabs((run.level_db - walk.level_db) - 40.0 * std::log10(5.0 / 1.5)) < 1.0);
   // A rumble: most of a runner's own wind under 300 Hz, and nothing of a waterfall's top. S121's
   // refit to Nelke's published coefficients (Table 3.3) moved both pins: that spectrum is brighter
-  // than the one first read (the most at 250 Hz, 8 dB an octave above, 0.77 of its power under
-  // 300 Hz at 4.5 m/s), so the run reads 0.66 under 300 Hz where it read 0.87, and its 4 kHz
-  // octave 38 dB under the loudest where it read over 40 (S112's waterfall: 11 dB).
+  // than the one first read (the most at 125 to 500 Hz, 8 dB an octave above, 0.77 of its power
+  // under 300 Hz at 4.5 m/s), so the run reads 0.66 under 300 Hz where it read 0.87, and its 4 kHz
+  // octave 38 dB under the loudest where it read over 40. The share under 300 Hz no longer tells
+  // this voice from S112's roar (0.57): the 4 kHz pin does (S112's roar was 11 dB down). That pin
+  // holds the low-pass's overshoot as well as the shape: the shape itself is about 27 dB down at
+  // 4 kHz at 5 m/s, and the corner was fitted from 62.5 Hz to 1 kHz only, which leaves the voice 5
+  // to 26 dB under the shape from 2 to 8 kHz; a voice exactly on Table 3.3 would read about 27.
   CHECK(run.under_300 > 0.6);
   CHECK(walk.under_300 > 0.9);
   const f64 loudest = *std::max_element(run.octave_db, run.octave_db + 8);
   CHECK(loudest - run.octave_db[6] > 30.0);
   // It comes and goes with the head's own turbulence (each ear's own: Nelke's short-term gain, a
-  // value a 20 ms frame), and the two ears share neither their samples nor their buffeting: two
-  // washes, one at each ear.
-  CHECK(run.spread_db > 2.0);
+  // Weibull draw a 20 ms frame), and the two ears share neither their samples nor their buffeting:
+  // two washes, one at each ear. The spread is held against the same run with the buffeting off
+  // (still air, so nothing else moves): what the buffeting adds, not a figure that sits on an edge.
+  Run steady;
+  steady.pace_m_s = 5.0;
+  steady.seconds = 12.0;
+  steady.turbulence = false;
+  listen(steady, tmp.file("steady.wav"));
+  const Heard calm = hear(read_wav(tmp.file("steady.wav")));
+  MESSAGE("half-second spread with the buffeting " << run.spread_db << " dB, without "
+                                                   << calm.spread_db << " dB");
+  // Read: 1.16 against 0.48 dB (a Weibull of shape 2.71 moves a gain less than the Gaussian's
+  // square did).
+  CHECK(run.spread_db > calm.spread_db + 0.3);
   CHECK(run.spread_db < 8.0);
   CHECK(std::fabs(run.correlation) < 0.05);
   CHECK(std::fabs(run.envelope_corr) < 0.5);
@@ -347,9 +362,10 @@ TEST_CASE("world ears: in a 3 m/s wind the stander hears the gust come and go in
   print("running 5 m/s into 3 m/s", run);
   const f64 u = head_wind(3.0);
   // The law at the mean wind past the head, give or take the turbulence: the mean of the fourth
-  // power of a turbulent speed stands over the fourth power of its mean.
+  // power of a turbulent speed stands over the fourth power of its mean. Since S121's Weibull
+  // buffeting the walker reads 2.01 dB over the law (the Gaussian's read 1.9), so its bound is 2.5.
   CHECK(std::fabs(stand.level_db - law_db(u)) < 2.0);
-  CHECK(std::fabs(walk.level_db - law_db(u + 1.5)) < 2.0);
+  CHECK(std::fabs(walk.level_db - law_db(u + 1.5)) < 2.5);
   CHECK(std::fabs(run.level_db - law_db(u + 5.0)) < 2.0);
   CHECK(run.level_db > walk.level_db);
   CHECK(walk.level_db > stand.level_db);
@@ -389,17 +405,17 @@ TEST_CASE(
   CHECK(ears.octave_db[1] > crowns.octave_db[1] + 10.0);
   // ... while the leaves are heard over them in the top octaves, where a waterfall's hiss would
   // have buried them. S121's refit spectrum (8 dB an octave above 500 Hz where the first read 11)
-  // raised the ears' 4 kHz octave by about 9 dB, from 34 to 43 dB against the crowns' 47, so the
-  // leaves lead there by 3 dB and no longer by 10; at 8 kHz they still lead by 18.
-  CHECK(crowns.octave_db[6] > ears.octave_db[6] + 2.0);
+  // raised the ears' 4 kHz octave by about 9 dB, and the default gain that keeps a run's A-weighted
+  // level at S112's (-26 dB) took 9.5 back: the crowns lead by 12.8 dB at 4 kHz and 27 at 8.
+  CHECK(crowns.octave_db[6] > ears.octave_db[6] + 10.0);
   CHECK(crowns.octave_db[7] > ears.octave_db[7] + 10.0);
   CHECK(all.level_db > ears.level_db);
 }
 
-// H1 of S121's review: the floor is decided on an ear's mean, not on its buffeting, so an ear that
-// is heard stays heard through its dips: each ear started once and never stopped, for the whole
-// walk and the whole run (before the mend a walker's ear was stopped and replayed from its seed
-// about twice a second).
+// The floor on the mean (S121): the floor is decided on an ear's mean, not on its buffeting, so an
+// ear that is heard stays heard through its dips: each ear started once and never stopped, for the
+// whole walk and the whole run (before the mend a walker's ear was stopped and replayed from its
+// seed about twice a second).
 TEST_CASE("world ears: a heard ear stays heard through its buffeting: two plays and no stop") {
   const Tunable solo("audio.world.solo", "3");
   const test::TempDir tmp("world_ears_floor");
@@ -417,10 +433,10 @@ TEST_CASE("world ears: a heard ear stays heard through its buffeting: two plays 
   }
 }
 
-// H2 of S121's review: the head's turbulence is carried past the listener by the head's mean speed
-// and its clock holds the distance travelled through the air, never a world coordinate. The same
-// minute's stander at the world's origin and 5 km down the wind (the gust's own clock moved by the
-// gust's travel time, 5,000 / 3 s, so the two stand in the same gust): the same spread of the
+// The same anywhere (S121): the head's turbulence is carried past the listener by the head's mean
+// speed and its clock holds the distance travelled through the air, never a world coordinate. The
+// same minute's stander at the world's origin and 5 km down the wind (the gust's own clock moved by
+// the gust's travel time, 5,000 / 3 s, so the two stand in the same gust): the same spread of the
 // half-second levels and the same share between the ears, within what the two runs' own buffeting
 // and turbulence, which run on the world's clock and so differ, leave.
 TEST_CASE("world ears: the head's turbulence is the same wherever in the world the head is") {
@@ -446,12 +462,15 @@ TEST_CASE("world ears: the head's turbulence is the same wherever in the world t
   CHECK(b.envelope_corr > 0.2);
 }
 
-// M1 of S121's review: the world's ceiling holds on the ears' mean, so in a gale the hold follows
-// the wind and never an ear's 40 ms buffeting: tick to tick it moves as the gust and the head's
-// turbulence do (a quarter of a decibel a tick at most, 0.23 at the 95th percentile when this was
-// written), not as the buffeting's factor
-// (several decibels between its knots). The refreshes, 8 a second, step the crowns.
+// The hold on the mean (S121): the world's ceiling holds on the ears' mean, so in a gale the hold
+// follows the wind and never an ear's 40 ms buffeting: tick to tick it moves as the gust and the
+// head's turbulence do (a quarter of a decibel a tick at most, 0.23 at the 95th percentile when
+// this was written), not as the buffeting's factor (several decibels between its frames). The
+// refreshes, 8 a second, step the crowns. The ears are set 9.5 dB over the default (-16.5, batch
+// 75's), so that a 25 m/s gale takes them to the world's ceiling: at the default since S121's refit
+// (-26) they stay under it and the hold never acts, which would leave the case nothing to hold.
 TEST_CASE("world ears: in a gale the ears' buffeting never moves the world's hold") {
+  const Tunable loud("audio.world.ears_db", "-16.5");
   const test::TempDir tmp("world_ears_gale");
   Avenue trees;
   Run r;
@@ -474,10 +493,10 @@ TEST_CASE("world ears: in a gale the ears' buffeting never moves the world's hol
   CHECK(p95 < 0.3);
 }
 
-// M2 of S121's review: the buffeting's mean is one on the ears' gains as heard, the mixer's ramp's
-// loss given back by a factor derived from the ramp and the tick rate: a minute's runner in still
-// air with the buffeting against without it (`config.turbulence`: no wind, so no gust and no
-// head turbulence either way).
+// The ramp's loss given back (S121): the buffeting's mean is one on the ears' gains as heard, the
+// mixer's ramp's loss given back by a factor derived from the ramp and the tick rate: a minute's
+// runner in still air with the buffeting against without it (`config.turbulence`: no wind, so no
+// gust and no head turbulence either way).
 TEST_CASE("world ears: the buffeting leaves the heard mean where the law puts it") {
   const Tunable solo("audio.world.solo", "3");
   const test::TempDir tmp("world_ears_ramp");
@@ -494,10 +513,10 @@ TEST_CASE("world ears: the buffeting leaves the heard mean where the law puts it
   CHECK(std::fabs(on.level_db - off.level_db) < 0.3);
 }
 
-// L5 of S121's review: the speed past the head is the vector difference of the wind and the head's
-// velocity. A runner going down the wind at its speed at the head hears no wind of their own; a
-// runner across it hears the two speeds' hypotenuse, the downwind ear the louder by the side-on
-// share of `audio.world.ears_side_db` either way. No turbulence, so the law is met exactly.
+// The vector difference (S121): the speed past the head is the vector difference of the wind and
+// the head's velocity. A runner going down the wind at its speed at the head hears no wind of their
+// own; a runner across it hears the two speeds' hypotenuse, the downwind ear the louder by the
+// side-on share of `audio.world.ears_side_db` either way. No turbulence, so the law is met exactly.
 TEST_CASE("world ears: down the wind at its speed nothing, across it the vector difference") {
   const Tunable solo("audio.world.solo", "3");
   const test::TempDir tmp("world_ears_vector");
@@ -528,4 +547,21 @@ TEST_CASE("world ears: down the wind at its speed nothing, across it the vector 
   CHECK(std::fabs(c.level_db - (law_db(rel) + both)) < 1.0);
   CHECK(std::fabs((c.right_db - c.left_db) - 8.0 * side) < 0.5);
   CHECK(c.level_db < law_db(5.0 + u) - 3.0);  // not the sum of the two speeds
+}
+
+// The law at engine-view's own rate (S121): the cases above run at 240 ticks a second; at 60 the
+// buffeting's frames are a tick and a bit and the mixer's ramp spans three ticks, and the ramp's
+// loss the field derives for that rate gives the mean back as it does at 240.
+TEST_CASE("world ears: at 60 ticks a second a runner still hears the law") {
+  const Tunable solo("audio.world.solo", "3");
+  const test::TempDir tmp("world_ears_60");
+  Run r;
+  r.pace_m_s = 5.0;
+  r.seconds = 12.0;
+  r.tick_hz = 60;
+  listen(r, tmp.file("run60.wav"));
+  const Heard run = hear(read_wav(tmp.file("run60.wav")));
+  print("running 5 m/s, still air, 60 ticks a second", run);
+  CHECK(std::fabs(run.level_db - law_db(5.0)) < 1.0);
+  CHECK(run.under_300 > 0.6);
 }
