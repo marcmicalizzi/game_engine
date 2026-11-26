@@ -66,6 +66,22 @@ through `cmd` or a Unix shell. In order:
    everything below, and is waited for at the end. The server leg (`-Server`, `remote-build.ps1
    -Test`) starts detached, writes `<batch>-server.verdict.json` itself when it ends, and never holds
    the gate's verdict: the summary prints its result if it has one, and where to read it if not.
+   **It inherits no handle of the gate** (T231). Until 2026-11-25 it was started with its log
+   redirected, and a redirect makes Start-Process create the child with handle inheritance on, so
+   the leg and the ssh it runs held the launching shell's redirected output, and a shell waiting on
+   that redirection waited three hours past a verdict already written (batch 75). A hidden window
+   or `-NoNewWindow` changes nothing; on Windows, `Start-GateProcess -Detached` starts a pwsh of its
+   own through `Start-Process` with no redirect and no `-NoNewWindow`, which is ShellExecuteEx and
+   creates it with inheritance off, and that pwsh starts the leg with the two log files and waits
+   for it, so the id the gate prints lives as long as the leg. `tools.gate` holds it: a stub leg
+   that sleeps 20 s, started by a launcher whose output is a pipe, and the pipe ends while the stub
+   still runs (measured with a 12 s stub: the pipe ended at 3.6 s detached, and at 18.7 s, with the
+   stub, started the inheriting `-NoWait` way). The gate's
+   last line ends `| verdict written: <file>` and, while the leg runs on, `| the server leg trails
+   (<id>), its verdict will be <file>`, so a reader of the output knows the gate is done. WMI's
+   `Win32_Process.Create` would detach as well, but its process takes the user's default
+   environment rather than the gate's, and a `cmd /c` with redirection would have to quote every
+   argument for cmd's metacharacters. On Linux the leg is started as `-NoWait` is.
 2. **The documentation check and the lint**, then **the four Windows builds** (configured when a
    preset has no build tree; three attempts each, each after the short wait for memory described in
    [how long things take](what-to-run.md#how-long-things-take)). A failed check or build runs no suite.
@@ -244,11 +260,6 @@ and cannot fail it.
   Fail-safe (a false red). The step is still never flown again into a pass: a red budget is read
   against the previous gated binary flown beside the tip, both in the record, and a merge past it
   is the owner's to take.
-- **A console the launching shell redirects stays open until the server leg ends** (T231): the leg
-  `-Server` starts keeps that handle, so a shell waiting on the redirection waits for the server
-  and not for the verdict (three hours, batch 75). Start the gate as a process of its own with its
-  output redirected by the start (`Start-Process ... -RedirectStandardOutput`) and wait on that
-  process, or read the verdict file.
 
 **What the scripts deliberately do not do**: take or wait on the GPU lock (every test takes it,
 ADR-0049); stop a process, theirs included; reset, stack or cherry-pick the gate worktree (the

@@ -369,6 +369,35 @@ try {
     try { [void](Start-GateProcess -Script 'echo.ps1' -Log (Join-Path $fx 'x.log') -WorkingDirectory $fx) } catch { $threw = $true }
     $threw
   }
+  # T231: a detached leg inherits no handle of the process that starts it. The launching shell's
+  # output is a pipe here (what a harness or a `> file` wait reads to its end); the stub leg sleeps
+  # past the launch, and the pipe must reach its end when the launcher exits, not when the leg does.
+  if ($IsWindows) {
+    $stub = Join-Path $fx 'sleeper.ps1'
+    $mark = Join-Path $fx 'sleeper.done'
+    Write-Text $stub "'stub leg started'`nStart-Sleep -Seconds 20`nSet-Content -LiteralPath '$mark' -Value done`n"
+    $launch = Join-Path $fx 'launch.ps1'
+    Write-Text $launch ("Import-Module '$(Join-Path $PSScriptRoot 'lib/Gate.psm1')' -Force`n" +
+      "`$p = Start-GateProcess -Script '$stub' -Log '$(Join-Path $fx 'sleeper.log')' -WorkingDirectory '$fx' -Detached`n" +
+      "`"leg `$(`$p.Id)`"`n")
+    $psi = [Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path, "-NoProfile -File `"$launch`"")
+    $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; $psi.UseShellExecute = $false
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $launcher = [Diagnostics.Process]::Start($psi)
+    $errTask = $launcher.StandardError.ReadToEndAsync()
+    $launchOut = $launcher.StandardOutput.ReadToEnd()   # returns only once no process holds the pipe
+    $launcher.WaitForExit(); [void]$errTask.Wait(5000)
+    $readSeconds = $watch.Elapsed.TotalSeconds
+    $legPid = if ($launchOut -match 'leg (\d+)') { [int]$Matches[1] } else { 0 }
+    $legRunning = $legPid -gt 0 -and $null -ne (Get-Process -Id $legPid -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $mark)
+    Test-That 'a detached leg holds no handle of its launcher: the launcher''s redirected output ends while the leg still runs' {
+      $legPid -gt 0 -and $readSeconds -lt 15 -and $legRunning
+    }
+    if ($legPid) { Wait-Process -Id $legPid -Timeout 60 -ErrorAction SilentlyContinue }
+    Test-That 'and the leg runs to its end, its output in its own log and its id alive as long as it is' {
+      (Test-Path -LiteralPath $mark) -and ((Get-Content -LiteralPath (Join-Path $fx 'sleeper.log') -Raw) -match 'stub leg started')
+    }
+  }
   Test-That 'an unknown -Skip name is refused with exit 2' {
     $o = (& pwsh -NoProfile -File $gateScript -Root $fx -Batch x -Logs (Join-Path $base 'skip-logs') -Skip 'linux,budget' *>&1 | Out-String)
     $LASTEXITCODE -eq 2 -and $o -match 'not budget' -and -not (Test-Path -LiteralPath (Join-Path $base 'skip-logs'))
@@ -447,7 +476,7 @@ try {
   }
   $g = Invoke-Gate 'batchA' $green @('-Server', 'stand-in-host')
   Test-That 'a green batch exits 0 and its verdict file says green at the tip' {
-    $g.Code -eq 0 -and $g.Verdict.green -and $g.Verdict.tip -eq (Invoke-TGit $repo @('rev-parse', 'HEAD')) -and $g.Out -match 'GATE batchA exit 0'
+    $g.Code -eq 0 -and $g.Verdict.green -and $g.Verdict.tip -eq (Invoke-TGit $repo @('rev-parse', 'HEAD')) -and $g.Out -match 'GATE batchA exit 0 .* \| verdict written: '
   }
   Test-That 'each build is in the verdict with its one attempt and its log' {
     $b = $g.Verdict.steps.builds.'msvc-debug'
