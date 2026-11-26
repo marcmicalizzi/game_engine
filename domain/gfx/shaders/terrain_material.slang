@@ -21,7 +21,8 @@ static const uint k_terrain_masked = 1u;
 static const uint k_terrain_no_mask_tile = 0xFFFFFFFFu;
 
 // gfx::TerrainRecord (visibility_resolve.h), one 128-byte table entry the root names by
-// `uv_offset.z`. Scalars only, so its layout is the C++ one word for word.
+// `uv_offset.z`. Scalars only but the last row of padding (a `uint4`, at 112, 16-aligned), so its
+// layout is the C++ one word for word.
 struct TerrainRecord {
   uint first_layer;
   uint layer_count;

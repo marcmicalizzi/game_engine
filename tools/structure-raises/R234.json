@@ -1,12 +1,12 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R234",
-  "reason": "R234: KHR_materials_ior and KHR_materials_specular drawn; gfx.md states the two specifications' formulas, the 128-byte material entry, why the stand-in keeps its bytes and how far shader and reference agree; geometry.md section 55; renderer.md the entry's new field",
-  "date": "2026-11-25",
+  "reason": "R234: KHR_materials_ior and KHR_materials_specular drawn; gfx.md states the two specifications' formulas, the 128-byte material entry, why the stand-in keeps its bytes, how far shader and reference agree, where it departs for partial metals and what is checked by reading only; geometry.md section 55; renderer.md the entry's new field",
+  "date": "2026-11-26",
   "by": "Marc Micalizzi",
   "deltas": {
     "page:docs/subsystems/renderer.md": 358,
-    "page:docs/subsystems/gfx.md": 5816,
+    "page:docs/subsystems/gfx.md": 7075,
     "page:docs/subsystems/geometry.md": 1367
   }
 }

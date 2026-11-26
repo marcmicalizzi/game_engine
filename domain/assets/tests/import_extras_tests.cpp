@@ -316,7 +316,8 @@ TEST_CASE("gltf G2: lights and cameras at their nodes, and the material extensio
   CHECK(m.emissive_strength == 4.0f);
   // The rest are read, recorded and not drawn.
   CHECK((m.extensions & k_ext_emissive_strength) != 0);
-  CHECK((m.extensions & k_ext_not_drawn) == k_ext_not_drawn);
+  // (Every one but the specular textures, which this file does not name: R234.)
+  CHECK((m.extensions & k_ext_not_drawn) == (k_ext_not_drawn & ~k_ext_specular_textures));
   CHECK(m.ior == 1.4f);
   CHECK(m.clearcoat == 0.5f);
   CHECK(m.clearcoat_roughness == 0.1f);
@@ -697,8 +698,11 @@ TEST_CASE("gltf R234: KHR_materials_ior and _specular round-trip through the con
   CHECK(clamped.specular_color == Vec3(0.0f, 0.5f, 0.25f));
   const Material& none = mesh.materials[3];
   CHECK((none.extensions & (k_ext_ior | k_ext_specular)) == 0u);
-  // Both are drawn now: neither is among the extensions read and not drawn.
+  // Both are drawn now: neither is among the extensions read and not drawn, and no material here
+  // names a specular texture, the part that is not.
   CHECK((k_ext_not_drawn & (k_ext_ior | k_ext_specular)) == 0u);
+  for (const Material& m : mesh.materials)
+    CHECK((m.extensions & k_ext_specular_textures) == 0u);
 
   // Section 55: one record per material, written because some material stated one.
   geometry::ClusterFileData data;

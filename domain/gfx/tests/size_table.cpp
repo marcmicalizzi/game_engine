@@ -396,7 +396,8 @@ ENGINE_EXPECT_SIZE(368, 8, gfx::PathTraceParams);
 // KHR_materials_ior and _specular), for which no word of the 112 was free on every material.
 ENGINE_EXPECT_SIZE(128, 4, gfx::ResolveMaterial);
 // An open sea's wave (water_spectrum.h; S93), GPU-mirrored by water.slang's `WaterWave`: sixteen of
-// them fill five material entries after a water material's next one.
+// them take five material entries after a water material's next one (they filled five of 112
+// bytes; at 128 since R234 the table keeps five, water_spectrum.h says why).
 ENGINE_EXPECT_SIZE(32, 4, gfx::WaterWave);
 // A fall's foot in a body (visibility_resolve.h; S98, water.md "The plunge"), GPU-mirrored by
 // water.slang's `WaterPlunge`: seven of them filled one 112-byte material entry, and still do

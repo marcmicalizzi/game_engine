@@ -27,7 +27,9 @@
 namespace engine::gfx {
 
 // The waves an open sea sums, and the material entries their table takes (32 bytes a wave, 112 an
-// entry): 16 waves are 512 bytes, five entries.
+// entry until R234 and 128 since): 16 waves are 512 bytes, five entries of 112. Four of 128 would
+// hold them; the table keeps five so the water's layout, and its readers' entry counts, stay as
+// they were (the fifth entry's tail is the material default and nothing reads it).
 inline constexpr u32 k_water_waves = 16;
 inline constexpr u32 k_water_wave_entries = 5;
 

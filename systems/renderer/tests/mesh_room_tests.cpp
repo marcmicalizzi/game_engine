@@ -444,7 +444,7 @@ TEST_CASE("mesh room: the room's refusal names its bound and changes nothing") {
     Rig rig;
     REQUIRE_MESSAGE(rig.build(gpu.device, describe(tmp, false), plain(), true), rig.error);
     const GpuScene::MeshRoom room = rig.scene.mesh_room();
-    CHECK(room.bytes <= (u64{1} << 20) + u64{room.slots} * 64 + u64{room.materials} * 112);
+    CHECK(room.bytes <= (u64{1} << 20) + u64{room.slots} * 64 + u64{room.materials} * sizeof(gfx::ResolveMaterial));
     PlacementMeshData built;
     REQUIRE_MESSAGE(load_placement_mesh(rock(0), rig.data.mesh_options, built, rig.error),
                     rig.error);

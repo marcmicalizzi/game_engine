@@ -1102,6 +1102,9 @@ void read_material_extensions(const cgltf_data& data, const cgltf_material& sour
       return v >= 0.0f ? (v < 3.4e38f ? v : 1.0f) : (v < 0.0f ? 0.0f : 1.0f);
     };
     entry.specular_color = Vec3{channel(colour[0]), channel(colour[1]), channel(colour[2])};
+    if (source.specular.specular_texture.texture != nullptr ||
+        source.specular.specular_color_texture.texture != nullptr)
+      entry.extensions |= k_ext_specular_textures;
   }
   if (source.has_clearcoat != 0) {
     entry.extensions |= k_ext_clearcoat;
@@ -1580,7 +1583,8 @@ void log_g2_import(const MeshData& mesh, std::string_view name) {
                     log::field("clearcoat", (kinds & k_ext_clearcoat) != 0),
                     log::field("transmission", (kinds & k_ext_transmission) != 0),
                     log::field("volume", (kinds & k_ext_volume) != 0),
-                    log::field("sheen", (kinds & k_ext_sheen) != 0));
+                    log::field("sheen", (kinds & k_ext_sheen) != 0),
+                    log::field("specular_textures", (kinds & k_ext_specular_textures) != 0));
   }
   if (mesh.influences_over_four != 0) {
     ENGINE_LOG_INFO(log_assets, "glTF influences past four dropped, the heaviest four kept",

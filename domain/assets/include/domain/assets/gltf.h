@@ -95,9 +95,12 @@ inline constexpr u32 k_ext_transmission = 1u << 4;
 inline constexpr u32 k_ext_volume = 1u << 5;
 inline constexpr u32 k_ext_sheen = 1u << 6;
 inline constexpr u32 k_ext_diffuse_transmission = 1u << 7;
+// KHR_materials_specular's `specularTexture` or `specularColorTexture` (R234): the factors are
+// drawn, these two are not read, and the import says so.
+inline constexpr u32 k_ext_specular_textures = 1u << 8;
 // The extensions above the engine reads into a record but does not draw.
 inline constexpr u32 k_ext_not_drawn =
-    k_ext_clearcoat | k_ext_transmission | k_ext_volume | k_ext_sheen;
+    k_ext_clearcoat | k_ext_transmission | k_ext_volume | k_ext_sheen | k_ext_specular_textures;
 
 // Metallic-roughness material parameters. Texture slots are indices into MeshData::images, or
 // -1 when the material has no such texture. A slot's texture reads TEXCOORD_0 there; one that
