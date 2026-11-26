@@ -177,7 +177,93 @@ Read on 2026-11-25 through the fetch tool, as HTML renderings; equations only we
 
 ## The design: a state in a world
 
-(Roadmap W173. The design of the state in a running world is written in its own change.)
+(2026-11-25, roadmap W173; the decision is [ADR-0080](../adr/0080-water-carries-a-state.md), proposed; the sources are [water-state-grounding](../experiments/water-state-grounding.md). This section is the shape the stages build towards. What this module holds today is the reference alone, described above; nothing below is built until its stage's row says so, and a figure marked *derived* is this page's arithmetic from read numbers, to be replaced by a measurement.)
+
+### What a cell holds
+
+| quantity | unit | changes | in the reference | on the card, the first form |
+|---|---|---|---|---|
+| depth h | m | every step | double | 32-bit float |
+| momentum hu, hv | m²/s | every step | double | two 32-bit floats |
+| the ground's store | m of water held | on the store's clock | double | 32-bit float |
+| carried scalars (the foam first; suspended sediment next) | amount per area, as the reference carries them | every step | double each | 32-bit float each, one to start |
+| the bed's mobile layer, a working copy | m over the built ground | on the bed's clock | double | 32-bit float |
+| the built ground's height | m from the domain's datum | only by an edit of the ground (W183) | double | 32-bit float |
+| the bed's roughness | s m^(−1/3) | when the bed's form does | double | 32-bit float |
+| the soil's class | an index | never | per cell | 8 bits |
+
+**Single precision throughout in the first form** (ADR-0080, decision 3): 24 bytes a cell that change (with one carried scalar) and about 12 that do not, and a step that reads one copy of the changing state and writes another holds two, so **about 60 bytes a cell on the card** (*derived*). Smaller number types are a shortcut, and two of them are known not to work as they stand: a loam's take in one sixtieth of a second is 6 × 10⁻⁸ m ([grounding §3](../experiments/water-state-grounding.md#3-the-ground-takes-water-until-it-is-saturated), 13.2 mm/h), under the last bit of a 16-bit field over any useful range and under the last bit of a single-precision depth of one metre (1.2 × 10⁻⁷ m), so a naive step would add to the store what it never took from the water. The ground's take and the bed's change are therefore applied on a coarser clock of their own, each application far above the field's resolution, or through a compensated sum; W175 holds "a pond over loam loses what the store gains" and "a bed that moves slowly moves" as cases before anything leans on either.
+
+The surface a cell draws and balances is its depth plus its bed, and **the bed is a height from one datum for the whole domain**, so that a lake at rest stays at rest in single precision wherever in the world the domain stands and across every seam inside it; whether it does is the first thing W175 measures.
+
+### Domains and tiles
+
+**A domain is where a scene says water may have a state**: a pond's hollow, a reach of a stream with its banks, a beach's surf zone out to where the water is shallow against the wavelength, a place an author expects a dam. It is the scene's data. It names its cell size, one of four classes a factor of two apart (**0.25 m** for a stream's reach, **0.5 m** for a pool and a surf zone, **1 m and 2 m** for open water), and whether it is persistent.
+
+**A tile is 64 cells a side** (16 m, 32 m, 64 m or 128 m by class), aligned to the world's 64 m cell grid, with positions local to the domain (ADR-0053). It is the unit that is allocated, wakes, sleeps and is counted, and a domain allocates only the tiles its footprint touches, so a narrow corridor does not pay for the square round it. At 60 bytes a cell a tile is 0.25 MB (*derived*). For scale, counted in tiles (*derived*):
+
+| domain | class | tiles | cells | memory |
+|---|---|---|---|---|
+| a pond 100 m across | 0.5 m | 16 to 25 | 66,000 to 102,000 | 4 to 6 MB |
+| a stream's corridor 10 m wide, 1 km long | 0.25 m | 63 along an axis to about 140 on a diagonal | 258,000 to 573,000 | 15 to 34 MB |
+| a lake 500 m square | 1 m | 64 to 81 | 262,000 to 332,000 | 16 to 20 MB |
+| a kilometre of beach, a 200 m surf zone | 0.5 m | 224 to 264 | 918,000 to 1,081,000 | 55 to 65 MB |
+
+Memory is not what limits a domain on any card the engine runs on; the step's time and the moving surface's are.
+
+**The edge of a domain is a seam with the far field, and water is counted across it.** Where a stream enters, the baked discharge is the inflow; where it leaves, what crosses is what the far field continues with; along a dry edge nothing crosses, and water that reaches a dry edge is reported, not lost. The difference between what a domain passed on and what the baked answer assumed is kept in a **ledger for that link**. The baked far field is steady and cannot take a transient, so the ledger's balance is spent in one place only: as a correction to the inflow of the next tile that wakes downstream on the same link, released over a stated time. Until then it is a count that says how much the picture and the books differ, and it is reported; it is never silently dropped. The bed has the same seam (W178's grounding): a baked river's bed is in transport equilibrium, not at rest, so a domain whose bed may move is fed the baked transport at its inlet and hands the excess back at its outlet, or it scours from its own edge.
+
+### Level of detail
+
+In the order the stages build it: **one domain, tiled from the start, at one cell size**; then **whole tiles asleep or awake** by need and by the observers' distance ([ADR-0010](../adr/0010-deterministic-sim-and-lod-contract.md)), a sleeping tile drawing its baked answer; then **nested tiles two to one**, a far tile at twice the cell, the coarse face receiving exactly the sum of what its fine faces sent over all of the fine side's sub-steps; and beyond every tile the baked far field. A tile retires when its state has settled to the baked answer within the bound W176's check states; an unsettled tile retires only where no observer can see it, its difference going to the ledger. Stepping far tiles less often and the cheaper waves where they are provably enough ([grounding §1](../experiments/water-state-grounding.md#what-hydrology-uses-instead-three-cheaper-waves)) are shortcuts and come after, each with its switch.
+
+**Steep ground stays baked.** What was read: a uniform flow on Manning friction breaks into roll waves past a Froude number of 1.5, which is physics a solver should show and cannot hold still; the wet and dry schemes read were tested on gentle slopes only (about 0.05); and a decimetre grid resolves neither a step's jet nor its clasts. What was not read: the slope at which the hydrostatic assumption itself fails (two sources reached only as search summaries, so no number is used here). So the rule is by the steady solve's own classing of reaches: a step-pool or cascade reach keeps its reach-averaged answer, and its steps enter a live pool below them as sources of momentum, air and foam. The pools, the confluences, the water behind a dam and the shore are where the state runs.
+
+### Tiers
+
+| tier | what runs | what it costs a scene with no tile awake |
+|---|---|---|
+| baked | the steady solve and the closed forms, as today | nothing: no pass, no pool, no branch |
+| mixed | baked everywhere; the state in tiles something woke (an event, a changed source, an observer near a marked domain), started from the baked answer and retired to it | nothing until a tile wakes |
+| live | the state in every declared domain within the observers' range | the awake tiles' step and surface |
+
+The tier is the game's setting; the cell classes, the range in tiles and the count of carried scalars scale it to a card. No part of the design assumes ray tracing or mesh shaders, and a host with no device runs baked.
+
+### The clocks, and what a tick costs
+
+The state advances with the simulation's ticks on **the world clock** (ADR-0056, ADR-0010). A tick is cut into the sub-steps the reference's own rule asks, Δt ≤ 0.45 Δx / (max(|u| + c) + max(|v| + c)), so the two can be compared step for step. By that rule (*derived*; c = √(g h)): a stream 5 cm deep at 1 m/s on 0.25 m cells may step 47 ms, a still pool a metre deep on 0.5 m cells 36 ms, a surf zone 3 m deep at 2 m/s on 0.5 m cells 17.5 ms, the same zone out to 10 m of water 11 ms, and a 2 m fall's foot on 0.25 m cells 14.6 ms. So **a stream and a pool take one sub-step a 60 Hz tick, a surf zone one or two, and deep or fast water more**. The count is taken from the tile's own fastest speed by a reduction in a fixed order, and it is reported; a tick's cost is cells × sub-steps × the world's rate and **follows the water**, which is the truth of an explicit step. A ceiling on the count is a shortcut, not part of the first form. Whether the count may be taken from the tick before (a read-back is a tick late) is W191's to show against the reference.
+
+The tide at a surf zone's seaward edge is a level by the sky's hour and the date. What is slow (a seasonal inflow, the water table and the store's deep drying, a shore's section) is **given at a calendar date** and never integrated through a gap (W187); a calendar jump restarts every awake tile from the steady answer for the new date.
+
+### What drawing reads
+
+Inside an awake tile the surface is no longer a mesh built at load. Three things change, in the stages' order. **The surface's heights**: a regular grid over the tile whose vertices take the state's level each tick in the deformed-vertex pool, drawn with bounds taken from the tile's own range of levels (a rest pose's cluster bounds and errors would be wrong for a surface that heaves) and with a level of detail that is the grid's own, by the tile's distance; the traced structures are built from the same positions, as every deforming mesh's are. **The shore** stays where it is drawn today, per pixel, where the level meets the bed: the resolve reads the tile's bed and level in place of the load-time depth map, so the waterline is not the grid's sawtooth. **The foam** is the carried scalar in place of the closed forms, under the same lace. Which of today's closed forms each stage switches off inside a tile is [the grounding page's table](../experiments/water-state-grounding.md#which-of-todays-closed-forms-become-consequences-and-which-stay); outside a tile every one of them stands.
+
+The game's question about the water at a point keeps its guarantee (the same bits on every toolchain): it answers from the baked answer, and from a state only where that state is `hashed` (ADR-0080, decision 11 and the owner's decision 1).
+
+### The budget
+
+**Not yet measured**, and set from the measurement, not before it. The target is the frame the engine is judged on: 3840 × 2160 with traced visibility and shadows. Four lines are the state's: **the step** (cells × sub-steps × rate); **the surface** (the pool's stage over the awake tiles' vertices); **the traced structures** (an awake tile's surface is rebuilt or refitted every tick); **the resolve's reads** (the tile's bed, level and foam in place of the depth map). For the step alone, the published 530 million cells a second in single precision on a 2010 card, scaled by memory bandwidth, suggests about 0.2 ms a sub-step for a million cells on the fastest card the engine is measured on and three to five times that on the oldest (*derived, an estimate to be replaced*); W175 measures it at three grids on both.
+
+**By card** (proposed, to be fixed from W175's numbers): the fastest class runs up to two million live cells (about 120 MB); the middle class half a million; the oldest cards the engine is tested on run baked, with up to a hundred thousand live cells where a scene asks. Each is a ceiling the load checks against the scene's declared tiles.
+
+### The stages
+
+| row | stage | needs |
+|---|---|---|
+| W184 | the full equations on the CPU, the reference | — |
+| W175 | the step on the card, held to the reference and measured | W184 |
+| W176 | the check that a settled state stands where the steady solve says | W184 |
+| W191 | the state in a running scene: one domain, tiled from the start, one cell size; sources and events on the world clock; advanced by ticks; pools on first use; absent free | W184, W175 |
+| W192 | drawing reads the state: the surface, the shore per pixel, the traced structures; a pond that fills and a dam that spills, judged standing alone | W191 |
+| W193 | the foam as a consequence: fed by the energy lost at a bore or a jump, carried, fading; a stream's white and a wave's the same | W192 |
+| W194 | the tiers: baked, live and mixed as the game's setting; waking by observers and retiring; the ledger at the seam; what a save carries | W192, W176 |
+| W195 | tiles by distance and nested two to one, the range and the memory by card, the state's lines in the frame budgets | W194 |
+| W196 | the surf: a corridor driven at an edge that generates the train and lets the reflected one leave (an edge the reference gains first), breaking as bores, the swash as a front | W193, W195 |
+| W197 | the ground's store drawn: wet ground as a consequence, a losing reach | W192 |
+| W198 | the first shortcuts, one switch each, each judged by the owner's eye | W195, T232 |
+
+The bed (W178 to W180) attaches at W191 through the bed as an input, the stress and the wave's measure as outputs and a carried scalar with its exchange; bodies (W181) and plants (W182) at W192; the layered ground (W183) owns the mobile layer; the calendar (W187) is read from W194 on.
 
 ## Capability contract (ADR-0027)
 
