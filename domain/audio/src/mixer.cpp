@@ -695,11 +695,20 @@ VoiceHandle Mixer::play(const PlayParams& params) noexcept {
 
 namespace {
 
+// A second-order section's denominator 1 + a1 z^-1 + a2 z^-2 has its poles inside the unit circle
+// (the stability triangle): a pair outside it would grow without bound on the audio thread.
+bool stable_poles(f32 a1, f32 a2) noexcept {
+  return finite(a1) && finite(a2) && a2 < 1.0f && a2 > -1.0f && a1 < 1.0f + a2 && -a1 < 1.0f + a2;
+}
+
+// The movable band's and the low-pass's (L8 of S121's review) coefficients are refused when
+// their poles are not stable; everything `noise_band` and `noise_lowpass` make is.
 bool valid_noise(const NoiseParams& p) noexcept {
   for (const f32 g : p.gain) {
     if (!finite(g) || g < 0.0f) return false;
   }
-  return finite(p.tone.c) && finite(p.tone.a1) && finite(p.tone.a2);
+  return finite(p.tone.c) && stable_poles(p.tone.a1, p.tone.a2) && finite(p.lowpass.b0) &&
+         stable_poles(p.lowpass.a1, p.lowpass.a2);
 }
 
 NoisePayload pack_noise(const NoiseParams& p) noexcept {
@@ -710,6 +719,9 @@ NoisePayload pack_noise(const NoiseParams& p) noexcept {
   out.tone[0] = p.tone.c;
   out.tone[1] = p.tone.a1;
   out.tone[2] = p.tone.a2;
+  out.lowpass[0] = p.lowpass.b0;
+  out.lowpass[1] = p.lowpass.a1;
+  out.lowpass[2] = p.lowpass.a2;
   return out;
 }
 
@@ -1090,6 +1102,15 @@ void Mixer::apply(const Command& c) noexcept {
       n.c[k_noise_tone] = p.tone[0];
       n.a1[k_noise_tone] = p.tone[1];
       n.a2[k_noise_tone] = p.tone[2];
+      // The low-pass after the bands (S121) moves at once, as the movable band does; switched on
+      // or off, its delays start from rest.
+      if ((n.lp_b0 != 0.0f) != (p.lowpass[0] != 0.0f)) {
+        n.lp_s1 = 0.0f;
+        n.lp_s2 = 0.0f;
+      }
+      n.lp_b0 = p.lowpass[0];
+      n.lp_a1 = p.lowpass[1];
+      n.lp_a2 = p.lowpass[2];
       // Every description ramps to its gains over the field's ramp from wherever they stand, and
       // a voice that has not sounded stands at nothing (S112-2): noise has no authored attack to
       // keep, as a clip's has, and a step from silence to broadband noise is a click.
