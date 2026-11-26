@@ -1,7 +1,7 @@
 # ADR-0080: Water carries a state, and the full equations are what every form of it is held to
 
-- **Status:** Proposed
-- **Date:** 2026-11-25
+- **Status:** Accepted
+- **Date:** 2026-11-25 (accepted by the owner 2026-11-26, the nine decisions that were theirs each as recommended)
 - **Plan references:** docs/plan/05-simulation.md §5.15 (the capability inventory's "Fluids and water surfaces"), docs/plan/11-performance-principles.md §11.10 (absent capabilities are free)
 - **Docs touched:** `docs/subsystems/water_state.md` ("The design: a state in a world"), `docs/roadmap.md` (W173 and its stages W191 to W198)
 
@@ -57,6 +57,8 @@ What was on the table, from the grounding page's reading of the published models
 - Forbidden from here on: a solver constant that stands for the bed; a foam that is not fed by the state inside an awake tile; a shortcut with no switch or with no stated error against the reference; a tier that costs anything when a scene does not use it; anything `hashed` reading a `derived` state.
 
 ## Decisions that are the owner's, each with a recommendation
+
+**Decided 2026-11-26: the owner took all nine as recommended**, so each item's *Recommended* text is the decision. The first is therefore the baked answer for gameplay, with a coarse state stepped inside the tick by the reference's arithmetic where a game asks for live water it can feel; W194 may start, and what that form costs is still to be designed and measured, as the item says. The items are left as they were put, so the alternatives not taken stay on the record.
 
 1. **What gameplay's water is.** The engine's rule is that nothing the simulation hashes may read a per-device result. So either gameplay reads the baked answer and, where a game asks for live water it can feel, a coarse state stepped inside the tick by the reference's arithmetic (the same on every machine), with the card's finer state as the picture and held to the coarse one; or gameplay reads the card's state and such a game gives up machine-independent replays. *Recommended*: the first, until a second device shows whether the card's step can be the same bytes everywhere; if it can, one state serves both and the question disappears. What the first form costs is not yet designed and is part of this decision: the reference runs at 6 to 8 million cells a second on one thread (measured on a busy machine), so a state inside the tick affords metre-scale cells over a pond, not the card's decimetres; bodies would read that coarse state and be drawn with a presentation-only offset onto the card's surface; "held to" would mean a stated bound on the cell-averaged level, checked and never nudged, since a nudge is a term the equations do not have; and the world's fastest rate (the seventh of these decisions) would rest on this state, not on the card's step. None of that is built or measured, and W194 does not start before the owner has chosen.
 2. **How long filling takes.** At the world's own rate a pond behind a dam fills over hours ([grounding §2](../experiments/water-state-grounding.md#2-a-source-that-fills-downhill-a-dam-that-fills-and-overflows)). *Recommended*: the physics runs at the world clock's rate; a game that wants a pond full sooner gives its source more water, which is the game's world to author, and the engine offers no hidden multiplier on a domain's clock.

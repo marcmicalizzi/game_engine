@@ -344,7 +344,7 @@ Read on 2026-11-25 through the fetch tool, as HTML renderings; equations only we
 
 ## The design: a state in a world
 
-(2026-11-25, roadmap W173; the decision is [ADR-0080](../adr/0080-water-carries-a-state.md), proposed; the sources are [water-state-grounding](../experiments/water-state-grounding.md). This section is the shape the stages build towards. What this module holds today is the reference alone, described above; nothing below is built until its stage's row says so, and a figure marked *derived* is this page's arithmetic from read numbers, to be replaced by a measurement.)
+(2026-11-25, roadmap W173; the decision is [ADR-0080](../adr/0080-water-carries-a-state.md), accepted 2026-11-26 with the owner's nine decisions each as recommended; the sources are [water-state-grounding](../experiments/water-state-grounding.md). This section is the shape the stages build towards. What this module holds today is the reference alone, described above; nothing below is built until its stage's row says so, and a figure marked *derived* is this page's arithmetic from read numbers, to be replaced by a measurement.)
 
 ### What a cell holds
 
