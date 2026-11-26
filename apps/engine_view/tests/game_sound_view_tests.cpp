@@ -196,9 +196,14 @@ TEST_CASE(
   const std::string session = walk_session(tmp, scene);
   const std::string module = fixture(tmp, WALK_POC_PATH);
   const std::string wav = tmp.file("heard.wav");
+  // S121: in still air a walker hears the air they move through at the two ears. That is the
+  // world's sound and the grove case's below; this case is the game's own path, so the world's
+  // calm threshold is raised over the walk's speed (`audio.world.calm_m_s`) in all three runs and
+  // the render holds the two chirps and nothing else, to the sample.
   const std::vector<std::string> common = {
-      "--replay-input", session, "--scene", scene,  "--offscreen", "--width",      "320",
-      "--height",       "180",   "--game",  module, "--ddc",       tmp.file("ddc")};
+      "--replay-input", session, "--scene",       scene,       "--offscreen",
+      "--width",        "320",   "--height",      "180",       "--game",
+      module,           "--ddc", tmp.file("ddc"), "--tunable", "audio.world.calm_m_s=10"};
   std::vector<std::string> args = common;
   args.insert(args.end(), {"--audio", "null", "--audio-out", wav});
   const Run heard = run_view(args);
@@ -316,7 +321,9 @@ f64 wav_power(const std::string& path) {
 
 }  // namespace
 
-TEST_CASE("engine-view: the wind in a grove is heard in the null render, and calm is silent") {
+TEST_CASE(
+    "engine-view: the wind in a grove is heard in the null render, and in calm only the "
+    "walker's own at the ears") {
   const test::TempDir tmp("engine_view_grove_sound");
   const std::string module = fixture(tmp, WALK_POC_PATH);
   struct Leg {
@@ -347,9 +354,17 @@ TEST_CASE("engine-view: the wind in a grove is heard in the null render, and cal
   // The scene's two oaks are the canopy table's crowns in every leg.
   for (const Leg& leg : legs)
     CHECK(number_at(leg.summary, {"interactive", "game", "sound", "world", "crowns_seen"}) == 2.0);
-  // Calm: no world voice was ever started, and the render is silent.
-  CHECK(number_at(legs[0].summary, {"interactive", "game", "sound", "world", "plays"}) == 0.0);
-  CHECK(wav_power(legs[0].wav) == 0.0);
+  // Calm (S121): no crown and no bed was ever started, and the only world voices are the two
+  // ears', which hear the air the walker moves through. S112's ears needed a wind, and until S121
+  // this leg was silent to the sample; that a stander in still air hears nothing is world_sound's
+  // own case ("in still air a stander hears nothing, a walker and a runner their own").
+  CHECK(number_at(legs[0].summary, {"interactive", "game", "sound", "world", "crown_voices"}) ==
+        0.0);
+  CHECK(number_at(legs[0].summary, {"interactive", "game", "sound", "world", "bed_voices"}) == 0.0);
+  CHECK(number_at(legs[0].summary, {"interactive", "game", "sound", "world", "ear_voices"}) == 2.0);
+  CHECK(number_at(legs[0].summary, {"interactive", "game", "sound", "world", "plays"}) == 2.0);
+  const f64 calm = wav_power(legs[0].wav);
+  CHECK(calm > 0.0);
   // In a wind: both crowns and the two ears sound, and the strong wind is the louder.
   for (u32 i = 1; i < 3; ++i) {
     CHECK(number_at(legs[i].summary, {"interactive", "game", "sound", "world", "crown_voices"}) ==
@@ -359,9 +374,9 @@ TEST_CASE("engine-view: the wind in a grove is heard in the null render, and cal
   }
   const f64 light = wav_power(legs[1].wav);
   const f64 strong = wav_power(legs[2].wav);
-  MESSAGE("light " << 10.0 * std::log10(light) << " dBFS, strong " << 10.0 * std::log10(strong)
-                   << " dBFS");
-  CHECK(light > 0.0);
+  MESSAGE("calm " << 10.0 * std::log10(calm) << " dBFS, light " << 10.0 * std::log10(light)
+                  << " dBFS, strong " << 10.0 * std::log10(strong) << " dBFS");
+  CHECK(light > calm);  // a wind adds the crowns, and more air past the ears than the walk's own
   CHECK(10.0 * std::log10(strong / light) > 12.0);  // 30 log 3 for the trees, 40 log 3 the ears
 }
 
