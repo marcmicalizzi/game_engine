@@ -93,6 +93,8 @@ ENGINE_EXPECT_SIZE(48, 4, geometry::ClusterFileDoor);
 // vertices; a material's five second-UV slots and a flags word; a punctual light; a camera.
 ENGINE_EXPECT_SIZE(12, 4, geometry::VertexExtra);
 ENGINE_EXPECT_SIZE(24, 4, geometry::ClusterFileUv1Slots);
+// R234: section 55, a material's stated IOR, specular factor and colour, and which it stated.
+ENGINE_EXPECT_SIZE(24, 4, geometry::ClusterFileMaterialSpecular);
 ENGINE_EXPECT_SIZE(80, 4, geometry::ClusterFileLight);
 ENGINE_EXPECT_SIZE(80, 4, geometry::ClusterFileCamera);
 

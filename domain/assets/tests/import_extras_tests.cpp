@@ -645,3 +645,96 @@ TEST_CASE("gltf T150: a material's extras.sampling asks for stochastic sampling"
   }
   log::remove_sink(&lines);
 }
+
+// R234 (assets.md, "Material extensions"; geometry.md, "A material's own reflectance"): four
+// materials on four triangles — an IOR alone, a specular factor and colour alone, both out of the
+// extensions' ranges, and neither — read, validated, and carried through section 55 of a container
+// back onto a material, which is what the renderer makes the material's table entry from.
+TEST_CASE("gltf R234: KHR_materials_ior and _specular round-trip through the container") {
+  const f32 positions[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+  std::vector<u8> buffer;
+  append(buffer, positions, 9);
+  std::string json =
+      "{\"asset\":{\"version\":\"2.0\"},\"extensionsUsed\":[\"KHR_materials_ior\","
+      "\"KHR_materials_specular\"],\"scene\":0,\"scenes\":[{\"nodes\":[0,1,2,3]}],"
+      "\"nodes\":[{\"mesh\":0},{\"mesh\":1},{\"mesh\":2},{\"mesh\":3}],\"meshes\":[";
+  for (u32 m = 0; m < 4; ++m) {
+    json += std::string(m == 0 ? "" : ",") + "{\"primitives\":[{\"attributes\":{\"POSITION\":0}," +
+            "\"material\":" + std::to_string(m) + "}]}";
+  }
+  json +=
+      "],\"materials\":["
+      "{\"extensions\":{\"KHR_materials_ior\":{\"ior\":1.33}}},"
+      "{\"extensions\":{\"KHR_materials_specular\":{\"specularFactor\":0.5,"
+      "\"specularColorFactor\":[1,0.8,2.5]}}},"
+      "{\"extensions\":{\"KHR_materials_ior\":{\"ior\":0.5},\"KHR_materials_specular\":{"
+      "\"specularFactor\":3,\"specularColorFactor\":[-1,0.5,0.25]}}},"
+      "{}],"
+      "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\","
+      "\"min\":[0,0,0],\"max\":[1,1,0]}],"
+      "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],";
+  json += buffer_json(buffer) + "}";
+  MeshData mesh;
+  std::string error;
+  REQUIRE_MESSAGE(load(json, mesh, error), error);
+  REQUIRE(mesh.materials.size() == 4);
+  const Material& ior = mesh.materials[0];
+  CHECK(ior.extensions == k_ext_ior);
+  CHECK(ior.ior == 1.33f);
+  CHECK(ior.specular == 1.0f);
+  CHECK(ior.specular_color == Vec3(1.0f, 1.0f, 1.0f));
+  const Material& specular = mesh.materials[1];
+  CHECK(specular.extensions == k_ext_specular);
+  CHECK(specular.ior == 1.5f);
+  CHECK(specular.specular == 0.5f);
+  CHECK(specular.specular_color == Vec3(1.0f, 0.8f, 2.5f));  // past 1 is the specification's
+  // Out of range: an IOR between 0 and 1 reads as the default, the factor is clamped to 1 and a
+  // negative colour channel to 0.
+  const Material& clamped = mesh.materials[2];
+  CHECK(clamped.extensions == (k_ext_ior | k_ext_specular));
+  CHECK(clamped.ior == 1.5f);
+  CHECK(clamped.specular == 1.0f);
+  CHECK(clamped.specular_color == Vec3(0.0f, 0.5f, 0.25f));
+  const Material& none = mesh.materials[3];
+  CHECK((none.extensions & (k_ext_ior | k_ext_specular)) == 0u);
+  // Both are drawn now: neither is among the extensions read and not drawn.
+  CHECK((k_ext_not_drawn & (k_ext_ior | k_ext_specular)) == 0u);
+
+  // Section 55: one record per material, written because some material stated one.
+  geometry::ClusterFileData data;
+  REQUIRE_MESSAGE(geometry::build_cluster_lod(mesh.positions, mesh.indices,
+                                              geometry::ClusterLodOptions{}, data.mesh, &error,
+                                              attribute_source(mesh)),
+                  error);
+  for (const Material& m : mesh.materials)
+    data.materials.push_back(cluster_file_material(m));
+  data.cluster_material.assign(data.mesh.mesh.clusters.size(), 0u);
+  write_import_sections(mesh, data);
+  REQUIRE(data.material_specular.size() == 4);
+  const test::TempDir tmp("assets_r234_specular");
+  const std::string path = tmp.file("specular.clusters");
+  REQUIRE_MESSAGE(geometry::write_cluster_file(path, data, &error), error);
+  geometry::ClusterFileData read;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(path, read, &error), error);
+  REQUIRE(read.material_specular.size() == 4);
+  for (u32 m = 0; m < 4; ++m) {
+    Material back;
+    set_material_specular(back, read.material_specular[m]);
+    const Material& source = mesh.materials[m];
+    CHECK(back.extensions == (source.extensions & (k_ext_ior | k_ext_specular)));
+    CHECK(back.ior == source.ior);
+    CHECK(back.specular == source.specular);
+    CHECK(back.specular_color == source.specular_color);
+  }
+
+  // A file whose materials state neither writes no section 55: its container is the bytes it was.
+  MeshData plain = mesh;
+  for (Material& m : plain.materials) {
+    m.extensions &= ~(k_ext_ior | k_ext_specular);
+  }
+  geometry::ClusterFileData plain_data;
+  for (const Material& m : plain.materials)
+    plain_data.materials.push_back(cluster_file_material(m));
+  write_import_sections(plain, plain_data);
+  CHECK(plain_data.material_specular.empty());
+}

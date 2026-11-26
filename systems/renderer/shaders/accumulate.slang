@@ -68,7 +68,7 @@ struct AccumulateParams {
   // and takes at least `reactive_weight` of the new frame. The material of the pixel's pair is
   // `materials[cluster_materials[cluster] + instances[instance].material_base]`, as everywhere;
   // `materials` 0 (a scene with no such material) reads nothing.
-  uint64_t materials;          // gfx::ResolveMaterial[] (112 bytes, flags at 44)
+  uint64_t materials;          // gfx::ResolveMaterial[] (128 bytes, flags at 44)
   uint64_t cluster_materials;  // u32 per cluster
   uint64_t instances;          // gfx::InstanceDesc[] (96 bytes, material_base at 64)
   float reactive_weight;
@@ -227,7 +227,7 @@ bool reactive(AccumulateParams* p, uint64_t word) {
   const uint2 at = ((uint2*)p->pairs)[pair];
   const uint base = *(uint*)(p->instances + uint64_t(at.x) * 96u + 64u);
   const uint material = ((uint*)p->cluster_materials)[at.y] + base;
-  const uint flags = *(uint*)(p->materials + uint64_t(material) * 112u + 44u);
+  const uint flags = *(uint*)(p->materials + uint64_t(material) * 128u + 44u);
   return (flags & 16u) != 0;  // k_material_water
 }
 

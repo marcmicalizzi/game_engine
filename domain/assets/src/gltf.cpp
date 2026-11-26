@@ -1066,10 +1066,11 @@ bool collect_images(const cgltf_data& data, MeshData& out, std::string* error) {
 //
 // - `KHR_materials_emissive_strength` multiplies the emissive factor, which the container stores
 //   as floats and the resolve draws unclamped: an HDR emitter draws at its strength.
-// - `KHR_materials_ior`, `_specular`, `_clearcoat`, `_transmission`, `_volume` and `_sheen` are
-// read
-//   into the record and **not drawn**: the BSDF (brdf.slang) has one dielectric F0 of 0.04 (an IOR
-//   of 1.5, which is the extension's own default), no coat lobe, no sheen lobe, and a visibility
+// - `KHR_materials_ior` and `_specular` are read and **drawn** (R234): the BSDF (brdf.slang) takes
+//   the dielectric's F0 and F90 from them as the specifications define them; their textures are
+//   not read.
+// - `_clearcoat`, `_transmission`, `_volume` and `_sheen` are read
+//   into the record and **not drawn**: the BSDF has no coat lobe, no sheen lobe, and a visibility
 //   buffer with no sorted transmission or volume. Mapping any of them onto what is there would
 //   change the picture in a way the source did not ask for (a clearcoat folded into roughness makes
 //   lacquer matte), so each is kept for the BSDF row that adds its term, and the import says which
@@ -1081,13 +1082,26 @@ void read_material_extensions(const cgltf_data& data, const cgltf_material& sour
     entry.emissive_strength = source.emissive_strength.emissive_strength;
     entry.emissive = entry.emissive * entry.emissive_strength;
   }
+  // R234: the two are drawn, and validated here because the file is external input. An IOR is 1
+  // or more, or 0 (the specular-glossiness mode); anything else, a NaN or an infinity included,
+  // reads as the extension's default. The factor is 0..1 (a NaN the default, 1) and the colour 0
+  // or more per channel (a NaN 1); the specification lets the colour pass 1, and F0 is clamped
+  // where it is formed (gfx::set_dielectric_specular).
   if (source.has_ior != 0) {
     entry.extensions |= k_ext_ior;
-    entry.ior = source.ior.ior;
+    const f32 ior = source.ior.ior;
+    entry.ior = (ior == 0.0f || (ior >= 1.0f && ior < 3.4e38f)) ? ior : 1.5f;
   }
   if (source.has_specular != 0) {
     entry.extensions |= k_ext_specular;
-    entry.specular = source.specular.specular_factor;
+    const f32 factor = source.specular.specular_factor;
+    entry.specular =
+        factor >= 0.0f ? (factor <= 1.0f ? factor : 1.0f) : (factor < 0.0f ? 0.0f : 1.0f);
+    const f32* colour = source.specular.specular_color_factor;
+    const auto channel = [](f32 v) {
+      return v >= 0.0f ? (v < 3.4e38f ? v : 1.0f) : (v < 0.0f ? 0.0f : 1.0f);
+    };
+    entry.specular_color = Vec3{channel(colour[0]), channel(colour[1]), channel(colour[2])};
   }
   if (source.has_clearcoat != 0) {
     entry.extensions |= k_ext_clearcoat;
@@ -1563,8 +1577,6 @@ void log_g2_import(const MeshData& mesh, std::string_view name) {
   if (not_drawn != 0) {
     ENGINE_LOG_INFO(log_assets, "glTF material extensions read and not drawn",
                     log::field("file", name), log::field("materials", not_drawn),
-                    log::field("ior", (kinds & k_ext_ior) != 0),
-                    log::field("specular", (kinds & k_ext_specular) != 0),
                     log::field("clearcoat", (kinds & k_ext_clearcoat) != 0),
                     log::field("transmission", (kinds & k_ext_transmission) != 0),
                     log::field("volume", (kinds & k_ext_volume) != 0),
@@ -1863,6 +1875,16 @@ bool source_mesh_hash(std::string_view path, u64& out, u64& bytes_out, std::stri
       break;
     }
   }
+  // And for a file whose material states KHR_materials_ior or KHR_materials_specular (R234): its
+  // container now carries section 55, which the renderer draws, so an entry built before, which
+  // draws every dielectric at 4 %, is rebuilt; every other file keeps its key.
+  for (cgltf_size i = 0; i < document.data->materials_count; ++i) {
+    const cgltf_material& material = document.data->materials[i];
+    if (material.has_ior != 0 || material.has_specular != 0) {
+      hash = hash_combine(hash, u64{0x4b48525350454331ull});  // "KHRSPEC1"
+      break;
+    }
+  }
   out = hash;
   return true;
 }
@@ -2043,8 +2065,37 @@ void write_import_sections(const MeshData& mesh, geometry::ClusterFileData& data
             geometry::encode_optional_image(mesh.materials[i].uv1_images[s]);
     }
   }
+  // Section 55 (R234): one record per entry when any material states its own reflectance; a
+  // material that states neither, and a default the caller appended, hold the extensions' defaults.
+  data.material_specular.clear();
+  bool any_specular = false;
+  for (const Material& m : mesh.materials)
+    any_specular = any_specular || (m.extensions & (k_ext_ior | k_ext_specular)) != 0;
+  if (any_specular) {
+    data.material_specular.resize(data.materials.size(), geometry::ClusterFileMaterialSpecular{});
+    for (u32 i = 0; i < mesh.materials.size() && i < data.materials.size(); ++i)
+      data.material_specular[i] = cluster_file_specular(mesh.materials[i]);
+  }
   data.lights = mesh.lights;
   data.cameras = mesh.cameras;
+}
+
+geometry::ClusterFileMaterialSpecular cluster_file_specular(const Material& material) noexcept {
+  geometry::ClusterFileMaterialSpecular record;
+  record.extensions = material.extensions & (k_ext_ior | k_ext_specular);
+  record.ior = material.ior;
+  record.specular = material.specular;
+  record.color = material.specular_color;
+  return record;
+}
+
+void set_material_specular(Material& material,
+                           const geometry::ClusterFileMaterialSpecular& record) noexcept {
+  material.extensions = (material.extensions & ~(k_ext_ior | k_ext_specular)) |
+                        (record.extensions & (k_ext_ior | k_ext_specular));
+  material.ior = record.ior;
+  material.specular = record.specular;
+  material.specular_color = record.color;
 }
 
 }  // namespace engine::assets

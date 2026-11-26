@@ -1,9 +1,10 @@
 // The BSDF the material resolve and the reference path tracer share (docs/plan/04-renderer.md
 // §4.3, "Materials"): Cook-Torrance with a GGX/Trowbridge-Reitz normal distribution, Smith
 // height-correlated visibility (Heitz 2014, "Understanding the Masking-Shadowing Function in
-// Microfacet-Based BRDFs"), Schlick's Fresnel with F0 = lerp(0.04, albedo, metallic), and a
-// Lambert diffuse lobe that takes what the specular lobe does not reflect and what the metallic
-// parameter does not remove. Everything is linear color, per steradian, and in world space.
+// Microfacet-Based BRDFs"), Schlick's Fresnel with F0 = lerp(0.04, albedo, metallic) — or the
+// dielectric's own F0 and F90 for a material that declares KHR_materials_ior or _specular (R234,
+// below) — and a Lambert diffuse lobe that takes what the specular lobe does not reflect and what
+// the metallic parameter does not remove. Everything is linear color, per steradian, and in world space.
 //
 // Nothing here declares a binding, a push constant, or an entry point, so a fragment, compute, or
 // ray tracing stage includes it and passes its own surface in. Clearcoat, sheen, and transmission
@@ -27,6 +28,11 @@ struct BrdfSurface {
   float3 view;      // unit, towards the eye
   float roughness;  // perceptual; alpha is its square
   float metallic;   // 0 dielectric, 1 conductor
+  // The dielectric's own reflectance (R234; `gfx::ResolveMaterial::specular`, "a dielectric's own
+  // reflectance" below): rgb its F0 less 0.04, w one less its F90. Zero, which every material that
+  // declares neither KHR_materials_ior nor KHR_materials_specular holds, is the 4 % and the 1 every
+  // material drew before, and takes the lines it always took.
+  float4 specular;
 };
 
 // Perceptual roughness to the GGX width.
@@ -80,6 +86,70 @@ float3 brdf_f_schlick(float3 f0, float cos_theta) {
   return f0 + (float3(1.0) - f0) * (m2 * m2 * m);
 }
 
+// ---- a dielectric's own reflectance (R234; KHR_materials_ior, KHR_materials_specular) ----------
+//
+// docs/subsystems/gfx.md, "A dielectric's own reflectance", has the two specifications' formulas
+// and why the record carries them as it does. The material's record holds the dielectric's F0 and
+// F90 as the extensions define them — F0 = min(((ior - 1) / (ior + 1))^2 * specularColor, 1) *
+// specular and F90 = specular — less the stand-in's, so a record of zeros is the 4 % and the 1 of
+// every material before (`gfx::set_dielectric_specular` packs it). A metal's are the base colour and
+// 1 whatever the record says; the metallic parameter blends the two as it always blended 0.04 with
+// the base colour. The diffuse lobe gives up the largest channel of the dielectric's Fresnel, the
+// specification's `max_value`, so a coloured coating does not tint what it lets through.
+//
+// **A material that declares neither takes the lines it took**: every function below branches on
+// `brdf_declares_specular` to the expression it replaced, verbatim, rather than evaluating the
+// general one with the stand-in's numbers, so the compiler sees the same arithmetic and a picture
+// without the extensions is the bytes it was (an F90 of exactly 1 fed through a multiply-add is
+// not always the same float as the constant it replaced, once a driver fuses it).
+
+bool brdf_declares_specular(float4 specular) { return any(specular != float4(0.0)); }
+
+// The dielectric's F0, per channel, and the surface's F0 and F90 with the metallic blend.
+float3 brdf_dielectric_f0(float4 specular) { return float3(0.04) + specular.rgb; }
+float3 brdf_surface_f0(BrdfSurface s) {
+  if (!brdf_declares_specular(s.specular)) return brdf_f0(s.albedo, s.metallic);
+  return lerp(brdf_dielectric_f0(s.specular), s.albedo, s.metallic);
+}
+float brdf_surface_f90(BrdfSurface s) { return 1.0 - s.specular.w * (1.0 - s.metallic); }
+
+// Schlick's Fresnel towards a reflectance at grazing of `f90` rather than 1.
+float3 brdf_f_schlick_f90(float3 f0, float f90, float cos_theta) {
+  const float m = clamp(1.0 - cos_theta, 0.0, 1.0);
+  const float m2 = m * m;
+  return f0 + (float3(f90) - f0) * (m2 * m2 * m);
+}
+
+// The surface's Fresnel at `cos_theta`.
+float3 brdf_fresnel(BrdfSurface s, float cos_theta) {
+  if (!brdf_declares_specular(s.specular))
+    return brdf_f_schlick(brdf_f0(s.albedo, s.metallic), cos_theta);
+  return brdf_f_schlick_f90(brdf_surface_f0(s), brdf_surface_f90(s), cos_theta);
+}
+
+// The largest channel of the dielectric's F0: what its Fresnel's `max_value` is taken from (the
+// Fresnel rises with F0 in every channel alike, so its largest channel is the largest F0's).
+float brdf_dielectric_f0_max(float4 specular) {
+  const float3 f0 = brdf_dielectric_f0(specular);
+  return max(f0.x, max(f0.y, f0.z));
+}
+
+// What the diffuse lobe gives up at `cos_theta`, `f` the surface's Fresnel there: `f` itself for a
+// material that declares neither, and for one that does the Fresnel of its dielectric's largest
+// channel, blended with the base colour by the metallic parameter as F0 is.
+float3 brdf_diffuse_fresnel(BrdfSurface s, float3 f, float cos_theta) {
+  if (!brdf_declares_specular(s.specular)) return f;
+  return brdf_f_schlick_f90(lerp(float3(brdf_dielectric_f0_max(s.specular)), s.albedo, s.metallic),
+                            brdf_surface_f90(s), cos_theta);
+}
+
+// The diffuse lobe's normal-incidence share for a foliage sheet's transmitted and sphere's light,
+// which takes 1 - F0 (below): the stand-in's F0, or the dielectric's largest channel blended.
+float3 brdf_diffuse_f0(BrdfSurface s) {
+  if (!brdf_declares_specular(s.specular)) return brdf_f0(s.albedo, s.metallic);
+  return lerp(float3(brdf_dielectric_f0_max(s.specular)), s.albedo, s.metallic);
+}
+
 // How much of a uniform environment the specular lobe reflects towards the eye: the GGX lobe
 // integrated over the hemisphere, which is the second factor of the split-sum approximation
 // (Karis 2013), in the analytic fit Karis gave for mobile ("Physically Based Shading on Mobile",
@@ -91,14 +161,40 @@ float3 brdf_f_schlick(float3 f0, float cos_theta) {
 // stone wall seen edge-on, or any texel of a normal map turned away from the camera (n.v clamped
 // to zero), reflected the whole sky as a white-blue sheen, which is the "reflective instead of
 // matte" of the second owner session (docs/experiments/second-interactive-session-2026-09-25.md).
-float3 brdf_env_specular(float3 f0, float roughness, float n_dot_v) {
+float2 brdf_env_fit(float roughness, float n_dot_v) {
   const float r = clamp(roughness, k_min_roughness, 1.0);
   const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
   const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
   const float4 k = c0 * r + c1;
   const float a004 = min(k.x * k.x, exp2(-9.28 * max(n_dot_v, 0.0))) * k.x + k.y;
-  const float2 ab = float2(-1.04, 1.04) * a004 + k.zw;
+  return float2(-1.04, 1.04) * a004 + k.zw;
+}
+float3 brdf_env_specular(float3 f0, float roughness, float n_dot_v) {
+  const float2 ab = brdf_env_fit(roughness, n_dot_v);
   return max(f0 * ab.x + ab.y, float3(0.0));
+}
+
+// The same for a surface (R234): the split sum is F0 times the scale plus F90 times the bias
+// (Karis 2013), and a material that declares neither extension takes the line above.
+float3 brdf_env_specular_of(BrdfSurface s, float n_dot_v) {
+  if (!brdf_declares_specular(s.specular))
+    return brdf_env_specular(brdf_f0(s.albedo, s.metallic), s.roughness, n_dot_v);
+  const float2 ab = brdf_env_fit(s.roughness, n_dot_v);
+  return max(brdf_surface_f0(s) * ab.x + brdf_surface_f90(s) * ab.y, float3(0.0));
+}
+
+// The albedo the hemisphere's diffuse term takes (R234). The stand-in's hemisphere takes the whole
+// albedo and no Fresnel off it, and a material that declares neither keeps exactly that; one that
+// declares a reflectance gives up what its dielectric reflects of a uniform environment beyond what
+// the stand-in's 4 % reflects (the largest channel, as `brdf_diffuse_fresnel` takes it), so a
+// coating of 30 % does not add its reflection to a diffuse term that kept everything, and one that
+// reflects less than 4 % keeps the albedo it always had.
+float3 brdf_env_albedo(BrdfSurface s, float n_dot_v) {
+  if (!brdf_declares_specular(s.specular)) return s.albedo;
+  const float2 ab = brdf_env_fit(s.roughness, n_dot_v);
+  const float own = brdf_dielectric_f0_max(s.specular) * ab.x + (1.0 - s.specular.w) * ab.y;
+  const float stand_in = 0.04 * ab.x + ab.y;
+  return s.albedo * clamp(1.0 - (max(own, 0.0) - max(stand_in, 0.0)), 0.0, 1.0);
 }
 
 // ---- the environment: the sky above the horizon, the ground below it ---------------------------
@@ -155,9 +251,10 @@ float3 brdf_eval(BrdfSurface s, float3 light_dir) {
   const float n_dot_h = clamp(dot(s.normal, h), 0.0, 1.0);
   const float v_dot_h = clamp(dot(s.view, h), 0.0, 1.0);
   const float alpha = brdf_alpha(s.roughness);
-  const float3 f = brdf_f_schlick(brdf_f0(s.albedo, s.metallic), v_dot_h);
+  const float3 f = brdf_fresnel(s, v_dot_h);
   const float3 specular = f * (brdf_d_ggx(n_dot_h, alpha) * brdf_v_smith(n_dot_v, n_dot_l, alpha));
-  const float3 diffuse = (float3(1.0) - f) * ((1.0 - s.metallic) / k_brdf_pi) * s.albedo;
+  const float3 diffuse =
+      (float3(1.0) - brdf_diffuse_fresnel(s, f, v_dot_h)) * ((1.0 - s.metallic) / k_brdf_pi) * s.albedo;
   return diffuse + specular;
 }
 
@@ -231,7 +328,7 @@ float3 brdf_foliage_eval_cos(BrdfSurface s, float3 light_dir, float transmit, fl
 // lobe and not a second copy of it (R164-2).
 float3 brdf_foliage_diffuse_cos(BrdfSurface s, float3 light_dir, float transmit, float spread) {
   const float n_dot_l = dot(s.normal, light_dir);
-  const float3 diffuse = (float3(1.0) - brdf_f0(s.albedo, s.metallic)) *
+  const float3 diffuse = (float3(1.0) - brdf_diffuse_f0(s)) *
                          ((1.0 - s.metallic) / k_brdf_pi) * s.albedo;
   const float3 share = brdf_foliage_share(s.albedo, transmit);  // R164-3: never past 1 - albedo
   const float3 back = share * max(-n_dot_l, 0.0);

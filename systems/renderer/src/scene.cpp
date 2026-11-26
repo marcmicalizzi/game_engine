@@ -685,6 +685,9 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
     // says the same (T150), as the import's did on the miss.
     const u32 sampling_flags = geometry::cluster_material_sampling(container_data, m).flags;
     material.stochastic = (sampling_flags & geometry::k_material_sampling_stochastic) != 0;
+    // What it states of its own reflectance (R234; section 55), or the defaults where it is absent.
+    if (m < container_data.material_specular.size())
+      assets::set_material_specular(material, container_data.material_specular[m]);
     out.data.materials.push_back(std::move(material));
     out.part_material.push_back(static_cast<i32>(out.part_material.size()));
     out.material_sampling_flags.push_back(sampling_flags);

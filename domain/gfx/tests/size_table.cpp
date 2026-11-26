@@ -392,12 +392,15 @@ ENGINE_EXPECT_SIZE(368, 8, gfx::PathTraceParams);
 // 2x2 matrix and an offset, KHR_texture_transform). The table is read per pixel through the
 // cluster's index, so it is a handful of cache lines a frame whatever its size; one transform per
 // material rather than one per slot is what kept it from 208 (gfx.md, "The material table").
-ENGINE_EXPECT_SIZE(112, 4, gfx::ResolveMaterial);
+// R234 (2026-11-25): 128, the dielectric's own reflectance (`specular`, rgb F0 - 0.04 and w 1 - F90,
+// KHR_materials_ior and _specular), for which no word of the 112 was free on every material.
+ENGINE_EXPECT_SIZE(128, 4, gfx::ResolveMaterial);
 // An open sea's wave (water_spectrum.h; S93), GPU-mirrored by water.slang's `WaterWave`: sixteen of
 // them fill five material entries after a water material's next one.
 ENGINE_EXPECT_SIZE(32, 4, gfx::WaterWave);
 // A fall's foot in a body (visibility_resolve.h; S98, water.md "The plunge"), GPU-mirrored by
-// water.slang's `WaterPlunge`: seven of them fill one material entry.
+// water.slang's `WaterPlunge`: seven of them filled one 112-byte material entry, and still do
+// (`k_water_plunges`); the eighth row of a 128-byte entry is zero.
 ENGINE_EXPECT_SIZE(16, 4, gfx::WaterPlunge);
 // A terrain's record (renderer.md, "Ground materials by place"; 2026-10-24): one material-table
 // entry no cluster names, so it is exactly a ResolveMaterial's size and is bit-cast into the table.
@@ -405,7 +408,8 @@ ENGINE_EXPECT_SIZE(16, 4, gfx::WaterPlunge);
 // (the layers' range, the detail distances, the map frame), which an ungated reader would have read
 // as a material's; the root now overloads one word, uv_offset.z, its record's index. Eight-aligned
 // for the mask buffer's device address.
-ENGINE_EXPECT_SIZE(112, 8, gfx::TerrainRecord);
+// 128 since R234 grew the entry (four more pad words).
+ENGINE_EXPECT_SIZE(128, 8, gfx::TerrainRecord);
 static_assert(offsetof(gfx::TerrainRecord, mask) == 32);
 // W85: the formation block's address in two of the pad words, read as `uint2 formation` at 80.
 static_assert(offsetof(gfx::TerrainRecord, formation) == 80);

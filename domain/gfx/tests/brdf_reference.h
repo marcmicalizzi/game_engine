@@ -56,6 +56,10 @@ struct Surface {
   // reflectance, and the share of normals that are a sphere's. Both zero: the sheet it always was.
   double transmit = 0.0;
   double spread = 0.0;
+  // A dielectric's own reflectance (R234; `gfx::ResolveMaterial::specular`): the dielectric's F0
+  // less 0.04 per channel, and one less its F90. Zero: the 4 % and the 1 of the stand-in.
+  Dvec3 specular{};
+  double specular_w = 0.0;
 };
 
 // Mirrors gfx::ResolveLight, plus what the resolve's shadow ray decides about it: `shadowed`
@@ -80,6 +84,38 @@ inline double alpha_of(double roughness) {
 }
 
 inline Dvec3 f0_of(Dvec3 albedo, double metallic) { return lerp(splat(0.04), albedo, metallic); }
+
+// ---- a dielectric's own reflectance (brdf.slang; R234) -----------------------------------------
+//
+// The double-precision twins of brdf.slang's functions of that heading. `dielectric_f0` adds the
+// record's float to 0.04 in double, where the shader adds it in float: the two differ by less than
+// a float's rounding of F0, far under a display code. `set_dielectric_specular` (visibility_
+// resolve.h) is what the record holds; `specular_of` here is the extensions' formula in double,
+// which the tests hold it to.
+
+inline bool declares_specular(const Surface& s) {
+  return s.specular.x != 0.0 || s.specular.y != 0.0 || s.specular.z != 0.0 || s.specular_w != 0.0;
+}
+inline Dvec3 dielectric_f0(const Surface& s) { return splat(0.04) + s.specular; }
+inline double dielectric_f0_max(const Surface& s) {
+  const Dvec3 f0 = dielectric_f0(s);
+  return f0.x > f0.y ? (f0.x > f0.z ? f0.x : f0.z) : (f0.y > f0.z ? f0.y : f0.z);
+}
+inline Dvec3 surface_f0(const Surface& s) {
+  return declares_specular(s) ? lerp(dielectric_f0(s), s.albedo, s.metallic)
+                              : f0_of(s.albedo, s.metallic);
+}
+inline double surface_f90(const Surface& s) { return 1.0 - s.specular_w * (1.0 - s.metallic); }
+
+// KHR_materials_ior and KHR_materials_specular as their specifications write them: the
+// dielectric's F0 (min(((ior - 1) / (ior + 1))^2 * specularColor, 1) * specular, an ior of 0 the
+// specular-glossiness mode's Fresnel of 1) and F90 (specular), as the record's two deltas.
+inline void specular_of(double ior, double specular, Dvec3 colour, Dvec3& delta, double& w) {
+  const double reflectance = ior == 0.0 ? 1.0 : ((ior - 1.0) / (ior + 1.0)) * ((ior - 1.0) / (ior + 1.0));
+  const auto f0 = [&](double c) { return (reflectance * c < 1.0 ? reflectance * c : 1.0) * specular; };
+  delta = Dvec3{f0(colour.x), f0(colour.y), f0(colour.z)} - splat(0.04);
+  w = 1.0 - specular;
+}
 
 inline double normal_variance(double shortening, double normal_scale) {
   const double loss = clamp01(shortening);
@@ -140,6 +176,53 @@ inline Dvec3 env_specular(Dvec3 f0, double roughness, double n_dot_v) {
   return {out.x > 0.0 ? out.x : 0.0, out.y > 0.0 ? out.y : 0.0, out.z > 0.0 ? out.z : 0.0};
 }
 
+// The fit's scale and bias alone (brdf.slang, `brdf_env_fit`).
+inline void env_fit(double roughness, double n_dot_v, double& a, double& b) {
+  const double r =
+      roughness < k_min_roughness ? k_min_roughness : (roughness > 1.0 ? 1.0 : roughness);
+  const double k[4] = {-1.0 * r + 1.0, -0.0275 * r + 0.0425, -0.572 * r + 1.04, 0.022 * r - 0.04};
+  const double falloff = std::exp2(-9.28 * (n_dot_v > 0.0 ? n_dot_v : 0.0));
+  const double a004 = (k[0] * k[0] < falloff ? k[0] * k[0] : falloff) * k[0] + k[1];
+  a = -1.04 * a004 + k[2];
+  b = 1.04 * a004 + k[3];
+}
+
+// R234 (brdf.slang, "a dielectric's own reflectance"): Schlick towards `f90`, the surface's
+// Fresnel, what the diffuse lobe gives up, and the hemisphere's two weights.
+inline Dvec3 f_schlick_f90(Dvec3 f0, double f90, double cos_theta) {
+  const double m = clamp01(1.0 - cos_theta);
+  const double m2 = m * m;
+  return f0 + (splat(f90) - f0) * (m2 * m2 * m);
+}
+inline Dvec3 fresnel_of(const Surface& s, double cos_theta) {
+  if (!declares_specular(s)) return f_schlick(f0_of(s.albedo, s.metallic), cos_theta);
+  return f_schlick_f90(surface_f0(s), surface_f90(s), cos_theta);
+}
+inline Dvec3 diffuse_fresnel(const Surface& s, Dvec3 f, double cos_theta) {
+  if (!declares_specular(s)) return f;
+  return f_schlick_f90(lerp(splat(dielectric_f0_max(s)), s.albedo, s.metallic), surface_f90(s),
+                       cos_theta);
+}
+inline Dvec3 diffuse_f0(const Surface& s) {
+  if (!declares_specular(s)) return f0_of(s.albedo, s.metallic);
+  return lerp(splat(dielectric_f0_max(s)), s.albedo, s.metallic);
+}
+inline Dvec3 env_specular_of(const Surface& s, double n_dot_v) {
+  if (!declares_specular(s)) return env_specular(f0_of(s.albedo, s.metallic), s.roughness, n_dot_v);
+  double a = 0.0, b = 0.0;
+  env_fit(s.roughness, n_dot_v, a, b);
+  const Dvec3 out = surface_f0(s) * a + splat(surface_f90(s) * b);
+  return {out.x > 0.0 ? out.x : 0.0, out.y > 0.0 ? out.y : 0.0, out.z > 0.0 ? out.z : 0.0};
+}
+inline Dvec3 env_albedo(const Surface& s, double n_dot_v) {
+  if (!declares_specular(s)) return s.albedo;
+  double a = 0.0, b = 0.0;
+  env_fit(s.roughness, n_dot_v, a, b);
+  const double own = dielectric_f0_max(s) * a + (1.0 - s.specular_w) * b;
+  const double stand_in = 0.04 * a + b;
+  return s.albedo * clamp01(1.0 - ((own > 0.0 ? own : 0.0) - (stand_in > 0.0 ? stand_in : 0.0)));
+}
+
 // brdf.slang's `brdf_eval`, with n.v clamped to `k_min_n_dot_v` rather than rejected: a shading
 // normal that leans away from the eye still takes a light it faces.
 inline constexpr double k_min_n_dot_v = 1e-4;
@@ -154,9 +237,10 @@ inline Dvec3 eval(const Surface& s, Dvec3 light_dir) {
   const double n_dot_h = clamp01(dot(s.normal, h));
   const double v_dot_h = clamp01(dot(s.view, h));
   const double alpha = alpha_of(s.roughness);
-  const Dvec3 f = f_schlick(f0_of(s.albedo, s.metallic), v_dot_h);
+  const Dvec3 f = fresnel_of(s, v_dot_h);
   const Dvec3 specular = f * (d_ggx(n_dot_h, alpha) * v_smith(n_dot_v, n_dot_l, alpha));
-  const Dvec3 diffuse = (splat(1.0) - f) * s.albedo * ((1.0 - s.metallic) / k_pi);
+  const Dvec3 diffuse =
+      (splat(1.0) - diffuse_fresnel(s, f, v_dot_h)) * s.albedo * ((1.0 - s.metallic) / k_pi);
   return diffuse + specular;
 }
 
@@ -193,8 +277,7 @@ inline Dvec3 foliage_share(Dvec3 albedo, double transmit) {
 inline Dvec3 foliage_eval_cos(const Surface& s, Dvec3 light_dir) {
   const double n_dot_l = dot(s.normal, light_dir);
   const Dvec3 sheet = sheet_direct(s, light_dir, splat(1.0));
-  const Dvec3 diffuse =
-      (splat(1.0) - f0_of(s.albedo, s.metallic)) * s.albedo * ((1.0 - s.metallic) / k_pi);
+  const Dvec3 diffuse = (splat(1.0) - diffuse_f0(s)) * s.albedo * ((1.0 - s.metallic) / k_pi);
   const Dvec3 share = foliage_share(s.albedo, s.transmit);
   const Dvec3 back = share * (n_dot_l < 0.0 ? -n_dot_l : 0.0);
   const double c = dot(light_dir, s.view);
@@ -373,15 +456,16 @@ inline Dvec3 shade(const Surface& s, Dvec3 sun_dir, double sun_intensity, Dvec3 
   const Dvec3 lit_ground = ground_radiance(ground, sun_dir, sun_intensity, sky);
   const Dvec3 ambient = hemisphere_ambient(sky_radiance(sky), lit_ground, s.normal.y);
   const double n_dot_v = dot(s.normal, s.view);
-  const Dvec3 specular = env_specular(f0_of(s.albedo, s.metallic), s.roughness, n_dot_v);
+  const Dvec3 specular = env_specular_of(s, n_dot_v > 0.0 ? n_dot_v : 0.0);
+  const Dvec3 albedo = env_albedo(s, n_dot_v > 0.0 ? n_dot_v : 0.0);  // R234: s.albedo, or less
   if (is_foliage(s)) {
     const auto at = [&](Dvec3 n) { return hemisphere_ambient(sky_radiance(sky), lit_ground, n.y); };
     const Dvec3 diffuse = foliage_ambient(ambient, at(-s.normal), at(s.view), at(-s.view),
                                           foliage_share(s.albedo, s.transmit), s.spread);
-    return color + (diffuse * s.albedo * (1.0 - s.metallic) + ambient * specular) * occlusion +
+    return color + (diffuse * albedo * (1.0 - s.metallic) + ambient * specular) * occlusion +
            emissive;
   }
-  color = color + ambient * (s.albedo * (1.0 - s.metallic) + specular) * occlusion + emissive;
+  color = color + ambient * (albedo * (1.0 - s.metallic) + specular) * occlusion + emissive;
   return color;
 }
 
@@ -547,7 +631,7 @@ inline bool sample_bsdf(const Surface& s, Dvec3 v_local, double u_lobe, double u
   const double n_dot_v = v_local.z;
   if (n_dot_v <= 0.0) return false;
   const double alpha = alpha_of(s.roughness);
-  const Dvec3 fresnel = f_schlick(f0_of(s.albedo, s.metallic), n_dot_v);
+  const Dvec3 fresnel = fresnel_of(s, n_dot_v);
   const double p_specular = specular_probability(s.albedo, s.metallic, n_dot_v, fresnel);
   Dvec3 l_local;
   if (u_lobe < p_specular) {
@@ -578,7 +662,7 @@ inline bool sample_foliage_bsdf(const Surface& s, Dvec3 v_local, const double u[
   const double n_dot_v = v_local.z;
   if (n_dot_v <= 0.0) return false;
   const double alpha = alpha_of(s.roughness);
-  const Dvec3 fresnel = f_schlick(f0_of(s.albedo, s.metallic), n_dot_v);
+  const Dvec3 fresnel = fresnel_of(s, n_dot_v);
   const double p_specular = specular_probability(s.albedo, s.metallic, n_dot_v, fresnel);
   Dvec3 l_local;
   if (u[0] < 0.5) {

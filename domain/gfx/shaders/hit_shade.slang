@@ -192,6 +192,7 @@ float3 shade_hit(ResolveParams* params, RayDesc ray, SceneHit hit, float footpri
   surface.view = -ray.Direction;
   surface.roughness = roughness;
   surface.metallic = metallic;
+  surface.specular = material.specular;  // R234, as the resolve reads it
   SkyParams* sky = (SkyParams*)params->sky_params;
   const bool has_sky = params->sky_params != 0;
   float3 light = emissive;
@@ -229,7 +230,8 @@ float3 shade_hit(ResolveParams* params, RayDesc ray, SceneHit hit, float footpri
                           params->gi_cell_scale, params->eye, surf.position,
                           length(surf.position - params->camera.xyz), n, ambient, crown);
   const float n_dot_v = max(dot(n, surface.view), 0.0);
-  const float3 specular = brdf_env_specular(brdf_f0(albedo, metallic), roughness, n_dot_v);
+  const float3 specular = brdf_env_specular_of(surface, n_dot_v);
+  const float3 env_albedo = brdf_env_albedo(surface, n_dot_v);
   if (foliage) {
     // Foliage's ambient as the resolve takes it (R164-3, review B7; brdf.slang,
     // `brdf_foliage_ambient`): the hemisphere the sheet's back sees through the transmittance and
@@ -242,9 +244,9 @@ float3 shade_hit(ResolveParams* params, RayDesc ray, SceneHit hit, float footpri
         gain * hit_raw_ambient(params, sky, has_sky, surface.view),
         gain * hit_raw_ambient(params, sky, has_sky, -surface.view),
         brdf_foliage_share(albedo, transmit), spread);
-    light += diffuse * (albedo * (1.0 - metallic)) + ambient * specular;
+    light += diffuse * (env_albedo * (1.0 - metallic)) + ambient * specular;
     return light;
   }
-  light += ambient * (albedo * (1.0 - metallic) + specular);
+  light += ambient * (env_albedo * (1.0 - metallic) + specular);
   return light;
 }

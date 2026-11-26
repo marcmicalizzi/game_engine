@@ -18,5 +18,6 @@ ENGINE_EXPECT_SIZE(16, 4, assets::Primitive);
 // hot path's. 224, not 216: a two-sided material's foliage optics (R164), two f32 shares. 272, not
 // 224 (G2): the five images read through the second UV set, the extensions word and the seven
 // factors of the material extensions the BSDF does not draw yet (52 bytes into the 4 of padding
-// there were). Import-time data still.
-ENGINE_EXPECT_SIZE(sizeof(std::string) + 272, 8, assets::Material);
+// there were). Import-time data still. 288, not 272 (R234): KHR_materials_specular's colour factor,
+// three floats, now that the IOR and the specular factors are drawn.
+ENGINE_EXPECT_SIZE(sizeof(std::string) + 288, 8, assets::Material);

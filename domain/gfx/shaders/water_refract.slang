@@ -155,6 +155,7 @@ float3 water_refraction(ResolveParams* params, SceneGeometry geo, WaterOptics o,
   surface.view = -ray.Direction;
   surface.roughness = roughness;
   surface.metallic = metallic;
+  surface.specular = material.specular;  // R234, as the resolve reads it
 
   // The light the water lets down to it (above).
   float3 light = emissive;
@@ -172,8 +173,8 @@ float3 water_refraction(ResolveParams* params, SceneGeometry geo, WaterOptics o,
   const float3 sky_in = ambient * (1.0 - k_water_f0) *
                         exp(-o.extinction * (depth * k_water_diffuse_path)) * (0.5 + 0.5 * n.y);
   const float n_dot_v = max(dot(n, surface.view), 0.0);
-  light += sky_in * (albedo * (1.0 - metallic) +
-                     brdf_env_specular(brdf_f0(albedo, metallic), roughness, n_dot_v));
+  light += sky_in * (brdf_env_albedo(surface, n_dot_v) * (1.0 - metallic) +
+                     brdf_env_specular_of(surface, n_dot_v));
 
   // The eye's path in the water from the surface to the hit, as the ground's: dimmed, passed by
   // the transmission, and the water's own light gathered along it (`water_volume`, a black bottom).

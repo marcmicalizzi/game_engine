@@ -380,6 +380,7 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     surface.view = -direction;
     surface.roughness = roughness;
     surface.metallic = sampled.metallic;
+    surface.specular = material.specular;  // R234, as the resolve reads it
 
     // Every ray from here leaves the surface by the resolve's own offset (`ray_offset`): the hit
     // is rebuilt off the mesh's grid by `fetch_triangle` exactly as a rasterized pixel is, so it
@@ -403,7 +404,7 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     onb_from_normal(surface.normal, tangent, bitangent);
     const float3 v_local = to_local(surface.view, tangent, bitangent, surface.normal);
     const float alpha = brdf_alpha(surface.roughness);
-    const float3 fresnel = brdf_f_schlick(brdf_f0(surface.albedo, surface.metallic), n_dot_v);
+    const float3 fresnel = brdf_fresnel(surface, n_dot_v);
     const float p_specular =
         specular_probability(surface.albedo, surface.metallic, n_dot_v, fresnel);
     // Foliage samples the back hemisphere half the time (cosine about the sheet's back), and

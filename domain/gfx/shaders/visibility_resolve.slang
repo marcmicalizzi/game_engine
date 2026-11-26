@@ -1875,6 +1875,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   surface.view = normalize(-from_eye);
   surface.roughness = roughness;
   surface.metallic = sampled.metallic;
+  surface.specular = material.specular;  // R234: zero but where the material declares its own
   // **Foliage optics** (R164; brdf.slang, "foliage"; renderer.md, "Foliage lit from both sides"):
   // a material that declares them takes a light from behind its sheet (transmitted) and, for the
   // share of it whose normals are a sphere's, from any side; its shadow ray leaves from the side of
@@ -2062,9 +2063,8 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       foliage_raw_ambient_pair(params, sky, has_sky, surface.view, along, against);
       diffuse += brdf_foliage_ambient(float3(0.0), float3(0.0), gain * along, gain * against,
                                       transmit, spread);
-      indirect = diffuse * (albedo * (1.0 - surface.metallic)) +
-                 ambient * brdf_env_specular(brdf_f0(albedo, surface.metallic), surface.roughness,
-                                             n_dot_v);
+      indirect = diffuse * (brdf_env_albedo(surface, n_dot_v) * (1.0 - surface.metallic)) +
+                 ambient * brdf_env_specular_of(surface, n_dot_v);
       // The backlit sun's tier (R177, above): the sun through the sheet at the share of the sky the
       // cache measured reaching this point — what the scene let through of the front's hemisphere,
       // its luminance — in place of the ray, as shadow-mapped foliage takes its back light at the
@@ -2074,9 +2074,8 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
         color += backlit_sun * sun_visibility;
       }
     } else {
-      indirect = ambient * (albedo * (1.0 - surface.metallic) +
-                            brdf_env_specular(brdf_f0(albedo, surface.metallic), surface.roughness,
-                                              n_dot_v));
+      indirect = ambient * (brdf_env_albedo(surface, n_dot_v) * (1.0 - surface.metallic) +
+                            brdf_env_specular_of(surface, n_dot_v));
     }
     if (material.occlusion_texture != k_no_texture) {
       indirect *= sample_occlusion(material, uv, duv_dx, duv_dy);
@@ -2336,8 +2335,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
 #endif
       const float film_spec =
           brdf_env_specular(float3(k_wet_film_f0), surface.roughness, n_dot_v).x;
-      const float3 lobe_spec =
-          brdf_env_specular(brdf_f0(albedo, surface.metallic), surface.roughness, n_dot_v);
+      const float3 lobe_spec = brdf_env_specular_of(surface, n_dot_v);
       color = max(color + film_w * (reflected * film_spec - ambient * lobe_spec), float3(0.0));
     }
     if (wet_foam > 0.0) {

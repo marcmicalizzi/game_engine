@@ -83,9 +83,10 @@ inline constexpr u8 k_alpha_mask = 1;    // alpha < alpha_cutoff is not drawn
 inline constexpr u8 k_alpha_blend = 2;   // alpha weighs the surface against what is behind it
 
 // The material extensions a file may state, as `Material::extensions` records which it did (G2;
-// assets.md, "Material extensions"). Emissive strength is folded into `emissive`; the others are
-// read into `Material`'s fields and not drawn, because the engine's BSDF has no term for them (one
-// dielectric F0 of 0.04, no coat lobe, no sorted transmission, no volume, no sheen).
+// assets.md, "Material extensions"). Emissive strength is folded into `emissive`; the IOR and the
+// specular factors are drawn (R234: the dielectric's own F0 and F90, brdf.slang); the others are
+// read into `Material`'s fields and not drawn, because the engine's BSDF has no term for them (no
+// coat lobe, no sorted transmission, no volume, no sheen).
 inline constexpr u32 k_ext_emissive_strength = 1u << 0;
 inline constexpr u32 k_ext_ior = 1u << 1;
 inline constexpr u32 k_ext_specular = 1u << 2;
@@ -96,7 +97,7 @@ inline constexpr u32 k_ext_sheen = 1u << 6;
 inline constexpr u32 k_ext_diffuse_transmission = 1u << 7;
 // The extensions above the engine reads into a record but does not draw.
 inline constexpr u32 k_ext_not_drawn =
-    k_ext_ior | k_ext_specular | k_ext_clearcoat | k_ext_transmission | k_ext_volume | k_ext_sheen;
+    k_ext_clearcoat | k_ext_transmission | k_ext_volume | k_ext_sheen;
 
 // Metallic-roughness material parameters. Texture slots are indices into MeshData::images, or
 // -1 when the material has no such texture. A slot's texture reads TEXCOORD_0 there; one that
@@ -151,8 +152,13 @@ struct Material {
   // `emissive_strength` is already folded into `emissive`.
   u32 extensions = 0;
   f32 emissive_strength = 1.0f;
+  // KHR_materials_ior and KHR_materials_specular (R234; drawn, brdf.slang): the index of
+  // refraction (1 or more, or 0 for the specular-glossiness mode; anything else reads as 1.5), and
+  // the specular factor (0..1) and colour factor (0 or more per channel), validated as read. Their
+  // two textures are not read (assets.md, "Material extensions").
   f32 ior = 1.5f;
   f32 specular = 1.0f;
+  Vec3 specular_color{1.0f, 1.0f, 1.0f};
   f32 clearcoat = 0.0f;
   f32 clearcoat_roughness = 0.0f;
   f32 transmission_factor = 0.0f;  // KHR_materials_transmission, not the foliage share above
@@ -421,13 +427,21 @@ u32 weld_vertices(MeshData& mesh);
 // record of section 9; `write_import_sections` fills what an import adds beyond the materials and
 // images — the second-UV slots (section 50, one record per entry of `data.materials`, the default
 // material a caller appended included, and nothing when no material reads the second set), the
-// lights (51) and the cameras (52) — after the caller has filled `data.materials`.
+// lights (51) and the cameras (52), and the stated reflectances (55, R234; likewise one per entry,
+// and nothing when no material states KHR_materials_ior or _specular) — after the caller has
+// filled `data.materials`.
 geometry::ClusterFileMaterial cluster_file_material(const Material& material) noexcept;
 // Its section 33 record: the slots' sampling, the occlusion strength, and in `flags` the request
 // for stochastic sampling (`Material::stochastic`, T150), zero when it asks for nothing.
 geometry::ClusterFileMaterialSampling cluster_file_material_sampling(
     const Material& material) noexcept;
 void write_import_sections(const MeshData& mesh, geometry::ClusterFileData& data);
+// A material's section-55 record (R234), and the reverse: the record's numbers and its two bits of
+// `Material::extensions` back onto a material, which is how a container's material is drawn as its
+// source's.
+geometry::ClusterFileMaterialSpecular cluster_file_specular(const Material& material) noexcept;
+void set_material_specular(Material& material,
+                           const geometry::ClusterFileMaterialSpecular& record) noexcept;
 
 // **The alpha word's five constants, one way** (R207-M1): the record's alpha word keeps the mode,
 // the sidedness, the cutoff as a unorm16 and the foliage optics in fifteenths, so a material read

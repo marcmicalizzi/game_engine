@@ -1,5 +1,5 @@
 // Optional native surface evaluator. Included only in MATERIAL_TERRAIN shader modules; ordinary
-// scenes retain their existing shaders. Layout: gfx::k_material_terrain_layers (112-byte entries).
+// scenes retain their existing shaders. Layout: gfx::k_material_terrain_layers (128-byte entries).
 #ifndef ENGINE_TERRAIN_MATERIAL_SLANG
 #define ENGINE_TERRAIN_MATERIAL_SLANG
 
@@ -20,7 +20,7 @@ static const uint k_material_terrain_formation = 262144u;  // W85 (gfx::k_materi
 static const uint k_terrain_masked = 1u;
 static const uint k_terrain_no_mask_tile = 0xFFFFFFFFu;
 
-// gfx::TerrainRecord (visibility_resolve.h), one 112-byte table entry the root names by
+// gfx::TerrainRecord (visibility_resolve.h), one 128-byte table entry the root names by
 // `uv_offset.z`. Scalars only, so its layout is the C++ one word for word.
 struct TerrainRecord {
   uint first_layer;
@@ -49,6 +49,7 @@ struct TerrainRecord {
   uint pad5;
   uint pad6;
   uint pad7;
+  uint4 pad8;  // R234: the entry grew to 128 bytes (gfx::ResolveMaterial::specular)
 };
 
 // The root's one terrain word (gfx::terrain_record_index).

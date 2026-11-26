@@ -413,6 +413,10 @@ bool GpuScene::fill_material(const assets::Material& source, bool built, const T
   material.normal_scale = source.normal_scale;
   material.occlusion_strength = source.occlusion_strength;
   material.uv_scale = 1.0f;
+  // A dielectric's own reflectance (R234; gfx.md, "A dielectric's own reflectance"): zero, the
+  // stand-in's 4 %, unless the material states KHR_materials_ior or KHR_materials_specular.
+  if ((source.extensions & (assets::k_ext_ior | assets::k_ext_specular)) != 0)
+    gfx::set_dielectric_specular(material, source.ior, source.specular, source.specular_color);
   if (built) {
     material.flags |= gfx::k_material_mipped;
     // A BC5 normal map holds x and y; the shader rebuilds z (material.slang).

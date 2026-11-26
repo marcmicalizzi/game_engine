@@ -267,7 +267,7 @@ static_assert(sizeof(ShadowMapParams) % 16 == 0, "the block is read as float4 ro
 inline constexpr u32 k_same_sampler = 0xFFFFu;
 inline constexpr u32 k_same_samplers = 0xFFFFFFFFu;  // both halves
 
-// Mirrors ResolveMaterial in material.slang. 112 bytes. Every texture slot is a bindless sampled
+// Mirrors ResolveMaterial in material.slang. 128 bytes. Every texture slot is a bindless sampled
 // image read at `uv * uv_scale`, then through the material's UV transform when
 // `k_material_uv_transform` is set, with a sampler of its own: `sampler` for the base colour, and
 // the halves of `samplers_mr_normal` and `samplers_occlusion_emissive` for the others (either
@@ -303,8 +303,15 @@ struct ResolveMaterial {
   // (`set_stochastic`, which refuses an alpha-tested one); unused otherwise.
   Vec4 uv_transform{1.0f, 0.0f, 0.0f, 1.0f};
   Vec4 uv_offset{};
+  // **A dielectric's own reflectance** (R234; `set_dielectric_specular` below; brdf.slang, "a
+  // dielectric's own reflectance"): rgb the dielectric's F0 less 0.04, w one less its F90, as
+  // KHR_materials_ior and KHR_materials_specular define the two. Zero — every material that
+  // declares neither, and every entry that is not a surface's (a terrain record, a water body's
+  // waves and plunges) — is the 4 % and the 1 of the stand-in, drawn by the lines it always took.
+  // The record grew from 112 bytes for it: no word of the 112 was free on every material.
+  Vec4 specular{};
 };
-static_assert(sizeof(ResolveMaterial) == 112);
+static_assert(sizeof(ResolveMaterial) == 128);
 static_assert(sizeof(ResolveMaterial) % 16 == 0, "the table is read as float4 rows on the GPU");
 
 // `KHR_texture_transform`'s matrix, T(offset) * R(rotation) * S(scale), into a material's two
@@ -356,7 +363,8 @@ inline constexpr u32 k_material_water = 16u;
 // range, the detail distances, the map frame) and the mask level's addressing, under names.
 // Layer entries are named by the record, never by a cluster, and read only by
 // `sample_terrain_material`, through the accessors below; `tools/lint.ps1` (`terrain-ungated`)
-// holds every shader call of it behind the flag. No hot record grows (112 bytes).
+// holds every shader call of it behind the flag. No hot record grew for it (112 bytes then; 128
+// since R234's `specular`, which a terrain record leaves as padding).
 inline constexpr u32 k_material_terrain_layers = 512u;
 inline constexpr u32 k_material_terrain_map = 1024u;
 // A layer whose metallic-roughness map carries height detail in B (the palette's `height`).
@@ -387,7 +395,7 @@ inline constexpr u32 k_material_terrain_formation = 262144u;
 // TerrainRecord::flags: the terrain has a mask level (`mask` names its buffer).
 inline constexpr u32 k_terrain_masked = 1u;
 
-// **The terrain's record**, one material-table entry (112 bytes) no cluster names, mirrored in
+// **The terrain's record**, one material-table entry (128 bytes) no cluster names, mirrored in
 // terrain_material.slang. The mask buffer is the page table — `mask_tiles_x * mask_tiles_z` words,
 // a resident slot or `k_terrain_no_mask_tile` per tile from (`mask_tile_x0`, `mask_tile_z0`) —
 // then the slots, `mask_words` words each in `scene_gen::GroundMasks`'s tile layout.
@@ -415,9 +423,11 @@ struct TerrainRecord {
   // block, read by a layer with `k_material_terrain_formation`; zero is none. Two of the eight pad
   // words this record always had, so a scene without a formation uploads the bytes it did.
   u64 formation = 0;
-  u32 pad[6] = {};
+  // Six pad words, and four more since the entry grew to 128 bytes (R234's `specular`), all zero.
+  u32 pad[10] = {};
 };
-static_assert(sizeof(TerrainRecord) == 112, "a terrain record is one material-table entry");
+static_assert(sizeof(TerrainRecord) == sizeof(ResolveMaterial),
+              "a terrain record is one material-table entry");
 inline constexpr u32 k_terrain_no_mask_tile = 0xFFFFFFFFu;
 
 // The root's one terrain word: its record's absolute table index.
@@ -534,6 +544,44 @@ inline f32 foliage_spread(const ResolveMaterial& material) noexcept {
   return static_cast<f32>(material.flags >> 28u) / 15.0f;
 }
 
+// **A dielectric's own reflectance** (R234; gfx.md, "A dielectric's own reflectance"): the
+// material's `specular` from `KHR_materials_ior`'s `ior` and `KHR_materials_specular`'s
+// `specularFactor` and `specularColorFactor`, as the two specifications define them:
+//
+//   F0  = min(((ior - 1) / (ior + 1))^2 * specularColor, 1) * specular,   F90 = specular
+//
+// with an `ior` of 0 the specular-glossiness compatibility mode, whose Fresnel term is 1. Taken in
+// double precision and stored less the stand-in's, so the defaults (1.5, 1, white) store zero and
+// a material that states them draws the bytes one that states nothing draws. The arguments are
+// what the importer validated (assets.md, "Material extensions"); the clamps here only keep a
+// record finite whatever it is handed.
+inline void set_dielectric_specular(ResolveMaterial& material, f32 ior, f32 specular,
+                                    Vec3 colour) noexcept {
+  const auto unit = [](f32 v, f64 fallback) {
+    return v >= 0.0f ? (v <= 1.0f ? static_cast<f64>(v) : 1.0) : (v < 0.0f ? 0.0 : fallback);
+  };
+  const auto positive = [](f32 v) {  // a NaN reads as white, a negative as black
+    return v >= 0.0f ? static_cast<f64>(v) : (v < 0.0f ? 0.0 : 1.0);
+  };
+  // ior 1.5, and an ior out of the extension's range (below 1 but not 0, infinite, NaN). 1.5 is
+  // not computed: (0.5 / 2.5)^2 in double is a rounding above the 0.04 the stand-in subtracts.
+  f64 reflectance = 0.04;
+  if (ior == 0.0f) {
+    reflectance = 1.0;
+  } else if (ior >= 1.0f && ior < 3.4e38f && ior != 1.5f) {
+    const f64 n = static_cast<f64>(ior);
+    reflectance = ((n - 1.0) / (n + 1.0)) * ((n - 1.0) / (n + 1.0));
+  }
+  const f64 weight = unit(specular, 1.0);
+  const f64 tint[3] = {positive(colour.x), positive(colour.y), positive(colour.z)};
+  f32 delta[3];
+  for (u32 c = 0; c < 3; ++c) {
+    const f64 f0 = reflectance * tint[c];
+    delta[c] = static_cast<f32>((f0 < 1.0 ? f0 : 1.0) * weight - 0.04);
+  }
+  material.specular = Vec4{delta[0], delta[1], delta[2], static_cast<f32>(1.0 - weight)};
+}
+
 // Marks `material` alpha-tested at `cutoff` (0..1), with the base colour factor's alpha
 // `factor_alpha`, which multiplies the texture's as glTF says.
 inline void set_alpha_mask(ResolveMaterial& material, f32 cutoff, f32 factor_alpha) noexcept {
@@ -617,8 +665,10 @@ struct WaterPlunge {
 };
 static_assert(sizeof(WaterPlunge) == 16);
 // How many one body keeps: one table entry of 16-byte rows. A body with more keeps the highest.
-inline constexpr u32 k_water_plunges = sizeof(ResolveMaterial) / sizeof(WaterPlunge);
-static_assert(k_water_plunges == 7);
+// Seven, which were the 112-byte entry's rows; the entry's eighth row since R234 stays zero, so the
+// water's reading of the list is the one it was.
+inline constexpr u32 k_water_plunges = 7;
+static_assert(k_water_plunges * sizeof(WaterPlunge) <= sizeof(ResolveMaterial));
 // The records into `entry` (the rest zero, so the list ends), and the flag on the water material;
 // at most `k_water_plunges` of them, a record of no radius dropped. Returns how many were packed.
 inline u32 set_water_plunges(ResolveMaterial& water, ResolveMaterial& entry,
@@ -629,7 +679,8 @@ inline u32 set_water_plunges(ResolveMaterial& water, ResolveMaterial& entry,
     if (!(plunges[i].radius_m > 0.0f)) continue;
     rows[packed++] = plunges[i];
   }
-  static_assert(sizeof(rows) == sizeof(ResolveMaterial));
+  static_assert(sizeof(rows) <= sizeof(ResolveMaterial));
+  std::memset(static_cast<void*>(&entry), 0, sizeof(entry));
   std::memcpy(static_cast<void*>(&entry), static_cast<const void*>(rows), sizeof(rows));
   if (packed > 0) water.flags |= k_material_water_plunge;
   return packed;

@@ -1484,7 +1484,8 @@ mask. Measurement views, not display colours.
 The normal resolve, ray-shadow resolve and reference path tracer share `terrain_material.slang`.
 The water volume tier evaluates it at the analytic bottom hit too; this does not add submerged
 scene objects or reflections. Separate `_terrain` modules are selected only for scenes that
-name layers. `ResolveMaterial` remains 112 bytes. **The root is an ordinary material plus its flag
+name layers. `ResolveMaterial` remained 112 bytes for it (128 since R234's `specular`, which a
+terrain record leaves as padding). **The root is an ordinary material plus its flag
 and one word** (2026-10-24): `uv_offset.z` names the terrain's **record** (`gfx::TerrainRecord`,
 `gfx::set_terrain_root`), a table entry after the layers that no cluster names, holding the
 layers' range, the detail distances, the map frame and the mask level's addressing under names.
@@ -1716,11 +1717,14 @@ the resolve; the beach's swash marks and rills. **Measured** (the page): the tes
 all Default, draws 0 changed pixels of 2,073,600 at every pose after the change, and the material
 stage's median (`renderer.resolve.stop_after=material`) stays within the shared machine's noise,
 0.41–0.44 ms at 1080p with or without the change and 0.29 ms with the responses.
-**What a material table entry carries** (`gfx::ResolveMaterial`, 112 bytes; [gfx](gfx.md), "The
-material table"): the factors, five texture slots — base colour, metallic-roughness, normal,
-occlusion, emissive — a bindless sampler per slot, the occlusion strength, and one UV transform.
+**What a material table entry carries** (`gfx::ResolveMaterial`, 128 bytes since R234; [gfx](gfx.md),
+"The material table"): the factors, five texture slots — base colour, metallic-roughness, normal,
+occlusion, emissive — a bindless sampler per slot, the occlusion strength, one UV transform, and
+the dielectric's own reflectance (`specular`, zero unless the material states `KHR_materials_ior`
+or `KHR_materials_specular`; [gfx](gfx.md), "A dielectric's own reflectance").
 `upload_materials` fills it from `assets::Material`, which the glTF import or a container's
-section 33 filled ([texture](texture.md#samplers-and-texture-transforms)).
+section 33 filled ([texture](texture.md#samplers-and-texture-transforms)), and section 55 for the
+reflectance ([geometry](geometry.md#a-materials-own-reflectance)).
 
 **Samplers, one per combination.** A slot with a texture asks for the sampler its glTF texture
 names — wrap s and t, the three filters — built (the whole chain, 16x anisotropic where the

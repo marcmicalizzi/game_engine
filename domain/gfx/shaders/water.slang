@@ -184,7 +184,7 @@ float water_edge(WaterParams w, uint flags, float edge, float depth) {
 // the footprint and the shore's calm alike; the Gerstner crest sharpens the normal by its
 // steepness (Q k a). The silhouette stays flat: only the normal is evaluated.
 static const uint k_material_water_spectrum = 256u;  // gfx::k_material_water_spectrum
-static const uint k_water_waves = 16;  // gfx::k_water_waves; the entries are scene.slang's 112 bytes
+static const uint k_water_waves = 16;  // gfx::k_water_waves; the entries are scene.slang's 128 bytes
 
 
 // The table of the water material at `index` of the table at `materials` (an address).

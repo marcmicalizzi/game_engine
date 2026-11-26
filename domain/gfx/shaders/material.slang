@@ -67,7 +67,7 @@ static const uint k_material_stochastic = 131072u;
 // A per-slot sampler half that borrows the material's `sampler` (gfx::k_same_sampler).
 static const uint k_same_sampler = 0xffffu;
 
-// Mirrors gfx::ResolveMaterial (112 bytes).
+// Mirrors gfx::ResolveMaterial (128 bytes since R234's `specular`).
 struct ResolveMaterial {
   float4 albedo;    // rgb linear, w roughness
   float4 emissive;  // rgb linear factor, w metallic
@@ -86,6 +86,7 @@ struct ResolveMaterial {
   float4 uv_transform;              // u' = x u + y v + offset.x, v' = z u + w v + offset.y
   float4 uv_offset;                 // xy; z an alpha-tested material's cutoff or a stochastic one's
                                     // means, w the alpha-tested one's factor alpha
+  float4 specular;                  // R234: rgb the dielectric's F0 - 0.04, w 1 - its F90; 0 none
 };
 
 // The bindless sampler a slot reads with: its half of a per-slot word, or the material's own

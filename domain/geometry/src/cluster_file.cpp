@@ -330,6 +330,13 @@ u64 encode(const ClusterFileData& data, std::string& out) {
                 static_cast<u32>(sizeof(ClusterFileUv1Slots)), data.material_uv1.size(),
                 data.material_uv1.data());
   }
+  // A dielectric's own reflectance (R234), only when some material states KHR_materials_ior or
+  // KHR_materials_specular: every other container is the bytes it was.
+  if (!data.material_specular.empty()) {
+    add_section(payloads, ClusterSection::MaterialSpecular,
+                static_cast<u32>(sizeof(ClusterFileMaterialSpecular)), data.material_specular.size(),
+                data.material_specular.data());
+  }
   if (!data.lights.empty()) {
     add_section(payloads, ClusterSection::Lights, static_cast<u32>(sizeof(ClusterFileLight)),
                 data.lights.size(), data.lights.data());
@@ -583,6 +590,7 @@ const char* cluster_section_name(u32 kind) noexcept {
     case ClusterSection::Cameras: return "cameras";
     case ClusterSection::Doors: return "doors";
     case ClusterSection::ContentClasses: return "content_classes";
+    case ClusterSection::MaterialSpecular: return "material_specular";
   }
   return "unknown";
 }
@@ -918,6 +926,13 @@ bool read_memory(std::span<const u8> bytes, ClusterFileData& out, std::string* e
     if (uv1->element_size != sizeof(ClusterFileUv1Slots))
       return fail(error, "cluster file section material_uv1 is not 24-byte records");
     copy_section(bytes, *uv1, result.material_uv1);
+  }
+  if (const ClusterFileSection* specular =
+          found[static_cast<u32>(ClusterSection::MaterialSpecular)];
+      specular != nullptr && specular->element_count != 0) {
+    if (specular->element_size != sizeof(ClusterFileMaterialSpecular))
+      return fail(error, "cluster file section material_specular is not 24-byte records");
+    copy_section(bytes, *specular, result.material_specular);
   }
   if (const ClusterFileSection* lights = found[static_cast<u32>(ClusterSection::Lights)];
       lights != nullptr && lights->element_count != 0) {
@@ -1348,6 +1363,12 @@ bool read_memory(std::span<const u8> bytes, ClusterFileData& out, std::string* e
                            " second-UV slot records for " +
                            std::to_string(result.materials.size()) + " materials");
   }
+  if (!result.material_specular.empty() &&
+      result.material_specular.size() != result.materials.size()) {
+    return fail(error, "cluster file has " + std::to_string(result.material_specular.size()) +
+                           " specular records for " + std::to_string(result.materials.size()) +
+                           " materials");
+  }
   u64 level_total = 0;
   for (const u32 count : result.mesh.level_cluster_counts)
     level_total += count;
@@ -1507,6 +1528,8 @@ constexpr ClusterSection k_resident_kinds[] = {
     ClusterSection::MaterialUv1,
     ClusterSection::Lights,
     ClusterSection::Cameras,
+    // 24 bytes a material, and only where a material states its own reflectance (R234).
+    ClusterSection::MaterialSpecular,
     // 48 bytes a leaf, and only in a mesh that declares one (S91).
     ClusterSection::Doors,
     // A few dozen bytes, and only in a container whose source is classified (C62): the load

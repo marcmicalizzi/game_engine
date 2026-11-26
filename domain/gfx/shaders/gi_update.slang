@@ -192,6 +192,7 @@ float3 gi_bounce(ResolveParams* params, float3 origin, float3 dir) {
   surface.view = -dir;
   surface.roughness = sampled.roughness;
   surface.metallic = sampled.metallic;
+  surface.specular = material.specular;  // R234, as the resolve reads it
   float3 light = sampled.emissive;
   const float3 sun_dir = params->sun.xyz;
   // **A foliage hit is lit as the resolve lights it** (R177; renderer.md, "Foliage lit from both
@@ -252,6 +253,9 @@ float3 gi_bounce(ResolveParams* params, float3 origin, float3 dir) {
   if (taken > 0.0) {
     ambient = lerp(ambient, ratio * gi_luminance(harmonics), gi_confidence_weight(taken));
   }
+  // The albedo the hemisphere's diffuse takes (R234; brdf.slang, `brdf_env_albedo`): the albedo,
+  // less what a declared reflectance takes beyond the stand-in's.
+  const float3 env_albedo = brdf_env_albedo(surface, max(dot(n, surface.view), 0.0));
   if (optics) {
     // Foliage's ambient as the resolve and the reflection take it (R177; brdf.slang,
     // `brdf_foliage_ambient`): the hemisphere the sheet's back sees through the transmittance and
@@ -263,9 +267,9 @@ float3 gi_bounce(ResolveParams* params, float3 origin, float3 dir) {
         ambient, gain * gi_harmonics(params, -n), gain * gi_harmonics(params, surface.view),
         gain * gi_harmonics(params, -surface.view),
         brdf_foliage_share(sampled.albedo, transmit), spread);
-    return light + diffuse * sampled.albedo * (1.0 - sampled.metallic);
+    return light + diffuse * env_albedo * (1.0 - sampled.metallic);
   }
-  return light + ambient * sampled.albedo * (1.0 - sampled.metallic);
+  return light + ambient * env_albedo * (1.0 - sampled.metallic);
 }
 
 // A cell's stamp: the cache's frame, and — a foliage cell's — the bit the fold knows it by

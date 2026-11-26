@@ -273,10 +273,19 @@ enum class ClusterSection : u32 {
   // is above `none`**, so every unclassified container is the bytes it was; a reader that does
   // not know the kind skips it, which is the limit an engine built before C64 has. Resident.
   ContentClasses = 54,
+  // **A dielectric's own reflectance** (R234; geometry.md, "A material's own reflectance";
+  // assets.md, "Material extensions"): one `ClusterFileMaterialSpecular` per material, parallel to
+  // `Materials` — what `KHR_materials_ior` and `KHR_materials_specular` stated, validated, and which
+  // of the two the source stated. A section of its own because the material record's 64 bytes are
+  // all spoken for. **Written only when some material states either**, like 49 to 54, so every
+  // other container is the bytes it was; a reader without it draws every material at the
+  // extensions' defaults, which is what a material that states neither is. Resident.
+  MaterialSpecular = 55,
 };
 
 // One past the highest kind this build knows, which is how wide a by-kind table has to be.
-inline constexpr u32 k_cluster_section_kinds = static_cast<u32>(ClusterSection::ContentClasses) + 1;
+inline constexpr u32 k_cluster_section_kinds =
+    static_cast<u32>(ClusterSection::MaterialSpecular) + 1;
 
 // Names the kinds this build knows, "unknown" for anything else; for diagnostics and for
 // `engine-content info`.
@@ -515,6 +524,18 @@ struct ClusterFileUv1Slots {
   u32 flags = 0;
 };
 
+// What a material states of its own reflectance, as section 55 records it (R234). 24 bytes,
+// parallel to `Materials`. `extensions` holds `assets::k_ext_ior` and `k_ext_specular` (bits 1 and
+// 2) for whichever the source stated; the numbers are the importer's, validated
+// (`assets::Material::ior`, `specular`, `specular_color`), and a material that stated neither holds
+// the extensions' defaults — 1.5, 1 and white — which draw what it always drew.
+struct ClusterFileMaterialSpecular {
+  u32 extensions = 0;
+  f32 ior = 1.5f;
+  f32 specular = 1.0f;
+  Vec3 color{1.0f, 1.0f, 1.0f};
+};
+
 // A punctual light the glTF declares (`KHR_lights_punctual`), as section 51 records it (G2). 80
 // bytes. In the mesh's space, like the positions: `position` the node's world translation,
 // `direction` its world -z normalized (where a spot or directional light points). `type` is
@@ -615,6 +636,7 @@ static_assert(sizeof(ClusterFileImpostor) == 48, "a cluster file impostor record
 static_assert(sizeof(ClusterFilePerch) == 32, "a cluster file perch is 32 bytes");
 static_assert(sizeof(ClusterFileDoor) == 48, "a cluster file door is 48 bytes");
 static_assert(sizeof(ClusterFileUv1Slots) == 24, "a material's second-UV slots are 24 bytes");
+static_assert(sizeof(ClusterFileMaterialSpecular) == 24, "a material's reflectance record is 24 bytes");
 static_assert(sizeof(ClusterFileLight) == 80, "a cluster file light is 80 bytes");
 static_assert(sizeof(ClusterFileCamera) == 80, "a cluster file camera is 80 bytes");
 static_assert(sizeof(ClusterFileSection) == 24, "a cluster file section record is 24 bytes");
@@ -708,6 +730,9 @@ struct ClusterFileData {
   // and cameras (52); each written only when not empty (G2). The per-vertex tangent, second-UV and
   // colour records are `mesh.mesh.extra` (section 49).
   Vector<ClusterFileUv1Slots> material_uv1;
+  // Section 55 (R234): each material's stated reflectance, parallel to `materials`; empty when no
+  // material states KHR_materials_ior or KHR_materials_specular.
+  Vector<ClusterFileMaterialSpecular> material_specular;
   Vector<ClusterFileLight> lights;
   Vector<ClusterFileCamera> cameras;
   // The leaves the mesh declares (section 53, S91), in the mesh's space; empty for most. Written
@@ -936,6 +961,10 @@ bool read_cluster_file_identity(std::string_view path, u64& source_hash, u64& bu
 // (2026-11-15, T147: the loose-island rule moved no version. `ClusterLodOptions::loose_islands`
 //    is in the key when it is on, and every import sets it, so an imported mesh's entry from
 //    before the rule is simply never read again; a mesh built without it keeps its key.)
+// (2026-11-25, R234: section 55, a material's stated reflectance, moved no version either. A glTF
+//    stating KHR_materials_ior or KHR_materials_specular takes a tag in its source hash
+//    (`assets::source_mesh_hash`, "KHRSPEC1"), so its entry from before, which has no records and
+//    would draw every dielectric at 4 %, is rebuilt; every other file keeps its key.)
 inline constexpr u32 k_cluster_cache_version = 16;
 
 // The cache key: the source's content hash (`assets::source_mesh_hash`) mixed with the build

@@ -353,7 +353,7 @@ struct MaskedEye {
 // ResolveMaterial's size and its `flags` word's offset (gfx::ResolveMaterial, pinned by gfx's size
 // table), so that the cull pass and the plain rasterizers can read one word of a material without
 // declaring the bindless arrays material.slang brings.
-static const uint k_resolve_material_bytes = 112;
+static const uint k_resolve_material_bytes = 128;  // 112 until R234's `specular`
 static const uint k_resolve_material_flags_offset = 44;
 // gfx::k_material_alpha_mask, a common flag: this test asks no class, so no class's bit may be 32
 // (water.slang's `material_flag_classes_are_apart` refuses one; R141).
