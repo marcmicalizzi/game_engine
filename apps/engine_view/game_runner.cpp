@@ -235,6 +235,7 @@ struct GameRunner::Impl {
   f64 sun_offset_s = 0.0;
   f64 sun_rate = 0.0;
   f64 ground_time_s = 0.0;  // the scene's epoch: the ground's start, which the sky's hour adds to
+  f64 clock_start_s = 0.0;  // the sky clock's seconds into its day at game time 0 (W185)
   f64 day_s = 0.0;          // the day's game seconds so far
   u32 rate_changes = 0;
   u32 last_slower = 0;  // the sun keys' presses acted on
@@ -1500,8 +1501,10 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   return true;
 }
 
-void GameRunner::set_clock(f64 sun_offset_s, f64 sun_rate, f64 epoch_s, f64 world_rate) noexcept {
+void GameRunner::set_clock(f64 sun_offset_s, f64 sun_rate, f64 epoch_s, f64 world_rate,
+                           f64 clock_start_s) noexcept {
   Impl& g = *impl_;
+  g.clock_start_s = clock_start_s;
   g.sun_offset_s = sun_offset_s;
   g.sun_rate = sun_rate > 0.0 ? sun_rate : 0.0;
   g.ground_time_s = epoch_s;
@@ -1792,8 +1795,9 @@ void GameRunner::tick(const GameTickInput& in) {
   t.sun_time_s = g.sun_offset_s + g.day_s;
   t.sky_time_s = g.ground_time_s + t.sun_time_s;
   t.world_time_s = g.world_time_s;
-  const f64 days = t.sky_time_s / 86'400.0;
-  t.day_fraction = days - std::floor(days);
+  // The sky clock's own day (clocks.h): 0 at its midnight, which under a sky by place and civil
+  // time (W185) is the scene's clock's and not its game time 0.
+  t.day_fraction = renderer::day_fraction_of(t.sky_time_s, g.clock_start_s);
   t.day_length_s = renderer::day_length_of_rate(g.sun_rate);
   t.world_rate = g.world_rate;
   // The pose the state file keeps (`SavedSession`), the tick's whether or not the module runs.

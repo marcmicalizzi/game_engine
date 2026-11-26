@@ -318,6 +318,51 @@ TEST_CASE("sky scene: a scene's sky is read and checked, and a scene without one
   CHECK(error.find("sky.turbidity must be within [1, 10]") != std::string::npos);
 }
 
+TEST_CASE("sky scene: a sky by place and civil time is read, and a mixed one refused") {
+  // W185 (sky.md, "The sky by place and civil time").
+  const test::TempDir tmp("renderer_sky_civil");
+  std::string error;
+  const std::string civil_fields =
+      R"("latitude_deg":43.65,"longitude_deg":-79.38,"date":{"year":2025,"month":7,"day":15},)"
+      R"("time_of_day_h":15,"utc_offset_h":-4)";
+  const std::string civil = tmp.file("civil.json");
+  REQUIRE(write_text(civil, scene_with(",\"sky\":{" + civil_fields + "}")));
+  SceneDesc desc;
+  REQUIRE_MESSAGE(read_scene_file(civil, desc, error), error);
+  REQUIRE(desc.sky.has_value());
+  REQUIRE(desc.sky->date.has_value());
+  CHECK(desc.sky->date->month == 7u);
+  CHECK(*desc.sky->time_of_day_h == 15.0);
+  CHECK(*desc.sky->utc_offset_h == -4.0);
+  // The old fields alone read as they did: no civil field appears.
+  const std::string solar = tmp.file("solar.json");
+  REQUIRE(write_text(solar, scene_with(R"(,"sky":{"day_of_year":172})")));
+  REQUIRE_MESSAGE(read_scene_file(solar, desc, error), error);
+  CHECK_FALSE(desc.sky->date.has_value());
+  CHECK_FALSE(desc.sky->longitude_deg.has_value());
+  // Refused, naming what to drop: a day of the year by hand beside the date, a civil form short of
+  // a field, and a terrain's time (the hour by hand) beside a civil sky.
+  const std::string mixed = tmp.file("mixed.json");
+  REQUIRE(write_text(mixed, scene_with(",\"sky\":{" + civil_fields + ",\"day_of_year\":196}")));
+  CHECK_FALSE(read_scene_file(mixed, desc, error));
+  CHECK(error.find("drop sky.day_of_year") != std::string::npos);
+  const std::string partial = tmp.file("partial.json");
+  REQUIRE(write_text(partial, scene_with(R"(,"sky":{"longitude_deg":-79.38})")));
+  CHECK_FALSE(read_scene_file(partial, desc, error));
+  CHECK(error.find("this one has no sky.date, sky.time_of_day_h, sky.utc_offset_h") !=
+        std::string::npos);
+  const std::string timed = tmp.file("timed.json");
+  REQUIRE(write_text(timed,
+                     scene_with(",\"sky\":{" + civil_fields + "},\"terrain\":{\"time\":46200}")));
+  CHECK_FALSE(read_scene_file(timed, desc, error));
+  CHECK(error.find("drop terrain.time") != std::string::npos);
+  // And a ground time asked of the reader, which would replace the terrain's and be the epoch.
+  SceneFileOptions ground;
+  ground.ground_time_s = 189'216'000.0;
+  CHECK_FALSE(read_scene_file(civil, ground, desc, error));
+  CHECK(error.find("so drop the ground time") != std::string::npos);
+}
+
 TEST_CASE("sky scene: the frame's lights are the sky's sun and a directional moon") {
   SceneData scene;
   FrameSky sky;

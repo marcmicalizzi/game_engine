@@ -191,8 +191,9 @@ the module keeps to these — they are the contract's determinism paragraph in t
 and two rates to set. **`world_time_s` is the world clock** — real seconds, scaled by the world rate
 — which every animation in the engine runs on (the water, the smoke and the fire's flicker, the
 trees' sway, the cloud drift) and a module animates by too. **`sky_time_s` is the sky's hour**,
-absolute game seconds since the world's midnight epoch, and `day_fraction` where the sky stands in
-its day: count days, schedule a night, by these. **A game sets its day's length**: the length of a
+absolute game seconds since the world's epoch — midnight in the solar form, the scene's own date and
+time under a sky by place and civil time (W185) — and `day_fraction` where the sky stands in its
+day, 0 at that clock's midnight in both forms (a civil sky at 15:00 reads 0.625 at game time 0): count days, schedule a night, by these. **A game sets its day's length**: the length of a
 game day in real seconds, `--day-length` (or `--sun-rate`, the same said as `86,400 / length`) on its
 run line and `-DayLength` (or `-SunRate`) to `package-game.ps1` — a sixty-minute day is 3,600, and
 every animation stays at real speed whatever it is. **The dunes' time-lapse** is `--time-rate`

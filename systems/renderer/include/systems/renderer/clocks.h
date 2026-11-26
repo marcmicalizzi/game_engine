@@ -34,6 +34,8 @@
 
 #include <core/base/types.h>
 
+#include <cmath>
+
 namespace engine::renderer {
 
 inline constexpr f64 k_day_s = 86'400.0;
@@ -45,6 +47,15 @@ inline f64 day_length_of_rate(f64 sun_rate) noexcept {
 }
 inline f64 sun_rate_of_day(f64 day_length_s) noexcept {
   return day_length_s > 0.0 ? k_day_s / day_length_s : 0.0;
+}
+
+// The sky clock's fraction of its day, 0 at that clock's midnight: `sky_time_s` (game seconds since
+// the sky's game time 0) plus where that clock stood in its day at game time 0, `clock_start_s`
+// (`scene_clock_start_s`, request.h): 0 for the solar form, whose game time 0 is midnight, and a
+// sky by place and civil time's `time_of_day_h` (W185), so a game's night is that clock's night.
+inline f64 day_fraction_of(f64 sky_time_s, f64 clock_start_s) noexcept {
+  const f64 days = (sky_time_s + clock_start_s) / k_day_s;
+  return days - std::floor(days);
 }
 
 struct WorldClocks {

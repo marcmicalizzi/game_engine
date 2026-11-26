@@ -65,6 +65,35 @@ struct Ephemeris {
 // Where everything is `time_s` game seconds after the epoch.
 void ephemeris(const Calendar& calendar, f64 time_s, Ephemeris& out) noexcept;
 
+// **The civil form** (W185; docs/subsystems/sky.md, "The sky by place and civil time"): a place
+// and a moment on the real calendar, where the solar form above has a latitude and a day of no
+// year. Game time 0 is the moment; game time runs on from it in UT, so the date advances as the
+// clock passes midnight. The sun is the same Almanac formula and the moon the same terms, at the
+// moment's own days from J2000.0 instead of 2000's run on from a day of the year; the sky turns by
+// Greenwich mean sidereal time plus the longitude rather than by the hour. The Ephemeris's `hour`
+// is the local apparent solar time and its `day_of_year` the clock's own (1 at the clock's January
+// 1 00:00, back to 1 at each new year). Neither ΔT (about 70 s: 0.0008° of the sun, 0.01° of the
+// moon), nutation (0.005°), the moon's parallax (up to 1°) nor refraction (0.57° at the horizon,
+// 0.1° at 10° up) is modelled.
+struct CivilCalendar {
+  f64 latitude_deg = 0.0;   // north positive
+  f64 longitude_deg = 0.0;  // east positive
+  f64 days_j2000 = 0.0;     // the moment in UT days from 2000-01-01 12:00 (JD 2451545.0)
+  f64 utc_offset_h = 0.0;   // the clock's offset from UTC, east positive: for the reported date
+};
+
+// Days from 2000-01-01 to a Gregorian date, by the calendar's leap rule (a March-based year, so
+// the leap day is the year's last): 0 for 2000-01-01, -10957 for 1970-01-01. And back.
+i64 days_from_civil(i32 year, u32 month, u32 day) noexcept;
+void civil_from_days(i64 days, i32& year, u32& month, u32& day) noexcept;
+// Whether a year, month and day name a day of the Gregorian calendar.
+bool valid_civil_date(i32 year, u32 month, u32 day) noexcept;
+// The UT days from J2000.0 of a clock's date and time of day (hours) at its offset from UTC.
+f64 days_from_j2000(i32 year, u32 month, u32 day, f64 time_of_day_h, f64 utc_offset_h) noexcept;
+
+// Where everything is `time_s` seconds of UT after the civil calendar's moment.
+void ephemeris(const CivilCalendar& calendar, f64 time_s, Ephemeris& out) noexcept;
+
 // The world direction of a celestial one, through the frame an ephemeris gave.
 Direction to_world(const Ephemeris& e, const Direction& celestial) noexcept;
 
