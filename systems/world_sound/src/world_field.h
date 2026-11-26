@@ -23,9 +23,8 @@ struct FieldConfig {
   f64 reach_m = 2000.0;
   u32 refresh_hz = 8;
   f64 reference_db = 105.0;
-  f64 ears_db = -30.0;
+  f64 ears_db = -26.0;
   f64 ears_side_db = 4.0;
-  f64 ears_slope_db = 26.0;
   f64 calm_m_s = 0.5;
   f64 floor_db = 10.0;
   f64 ceiling_db = -12.0;
@@ -103,6 +102,9 @@ class WorldField {
   // The wind 10 m up at a place of the world, by the sway's arguments (S112): the live mean and
   // direction under the scene's turbulence with the forced gust over it, or the scene's own wind.
   f64 wind10_at(f64 x, f64 z, Vec2& to, f64& z0) const noexcept;
+  // The mean wind 10 m up at the sky's hour, with no gust (S121: what carries the head's
+  // turbulence past the listener).
+  f64 wind10_mean() const noexcept;
 
  private:
   struct Voice {
@@ -113,6 +115,7 @@ class WorldField {
     Crown crown{};  // a crown voice's crown, as the last refresh sent it
     f32 spread = 0.0f;
     f32 sent_tone_hz = 0.0f;
+    f32 sent_lowpass_hz = 0.0f;  // the ears' low-pass after the bands (S121)
     audio::NoiseParams sent{};
     bool has_sent = false;
     bool needs_place = false;  // a move the ring refused: placed again on the next tick (L3)
@@ -120,6 +123,9 @@ class WorldField {
     // This tick's description before the world's ceiling (`tick`'s two passes).
     f64 bands[9] = {};
     f64 tone_hz = 0.0;
+    // An ear's buffeting this tick (S121): a factor on its gains alone, after the ceiling and the
+    // floor, which both read the bands' mean. One for every other voice.
+    f64 buffet = 1.0;
     // A crown voice's path (S114): what the path leaves of each band, as the last refresh found it.
     f64 path[8] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
   };
@@ -207,8 +213,9 @@ class WorldField {
   void take(const Crown& c) noexcept;
   // Placed in `frame` again (a moved frame, a moved bed, or a move the ring refused).
   void place(Voice& v, const WorldPos& frame) noexcept;
+  // `lowpass_hz` above 0 passes the voice through the low-pass after its bands (S121: the ears).
   void describe(Voice& v, const f64 (&band_power)[9], f64 tone_hz, f64 extra, bool two_d, f32 pan,
-                u64 seed, u8 priority, const WorldPos& frame) noexcept;
+                u64 seed, u8 priority, const WorldPos& frame, f64 lowpass_hz = 0.0) noexcept;
   void silence(Voice& v) noexcept;
   // ---- running water and the surf (S113; water_field.cpp) -----------------------------------
   // At a refresh, after the crowns: the flow and surf tables visited, each source's power at the
@@ -256,7 +263,15 @@ class WorldField {
   u32 refresh_every_ = 30;
   CanopySource canopy_{};
   ShelterSource shelter_{};
-  f64 shelter_share_ = 1.0;  // the ears' share of the open wind, from the last refresh
+  f64 shelter_share_ = 1.0;    // the ears' share of the open wind, from the last refresh
+  f64 ears_lowpass_hz_ = 0.0;  // the ears' low-pass corner this tick (S121)
+  f64 ears_ramp_gain_ = 1.0;   // what the mixer's ramp takes of the buffeting, given back
+  // The head's turbulence's clock (S121): the world's less the travel down the wind over the head's
+  // mean speed, summed from the listener's last place and time.
+  f64 ears_tau_s_ = 0.0;
+  f64 ears_time_s_ = 0.0;
+  WorldPos ears_at_{};
+  bool ears_clock_ = false;
   WorldWind wind_{};
   Vector<Crown> crowns_;      // the last refresh's crowns
   Vector<f64> crown_static_;  // each one's power at the listener per (U10 / 5)^3, from the refresh

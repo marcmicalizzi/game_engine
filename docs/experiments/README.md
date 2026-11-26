@@ -4,6 +4,8 @@ The measurements the decisions rest on. [10 §10.5](../plan/10-roadmap-risks.md#
 
 A write-up is not a benchmark log. It is the page a future contributor reads instead of re-running the experiment, so it has to say what was measured, on what, **beside what**, and what the numbers do not cover.
 
+**A source's licence is read before a number is taken from it** (roadmap T229). Beside how far each source was read, a page marks under what licence its text or code stands. A number that exists only in code under a licence [ADR-0014](../adr/0014-apache-2-license-and-dependency-policy.md) excludes (GPL, LGPL, non-commercial) is taken from the paper or measured again here, never from the code: S121's spectrum was first read from such a generator's source and was grounded again from the dissertation that prints its coefficients.
+
 | Experiment | Page | Settles |
 |---|---|---|
 | T232 | [perceptual-difference-grounding.md](perceptual-difference-grounding.md) | Measures of a visible difference, still and in motion, stage 0 (2026-11-25, read, nothing run): FLIP, SSIM, HDR-VDP-3, LPIPS, the spatio-temporal CSFs, FovVideoVDP, ColorVideoVDP, CGVQM, VMAF; each source's text and code licences apart; eccentricity and the surround; R213's cap by each model, as reasoning |
