@@ -310,7 +310,8 @@ constexpr const char* k_usage =
     "                   render.load's ground_time_s\n"
     "  --exposure <s>   a sky's exposure s stops brighter than its rule (renderer.md,\n"
     "                   \"Exposure\"); --exposure-ev100 <ev> holds it at that exposure value\n"
-    "                   instead (15 a sunlit scene, -3 a moonlit one). - = and 0 in a window\n"
+    "                   instead (15 a sunlit scene, -3 a moonlit one); a scene with no sky\n"
+    "                   has no exposure to set, and a line says so. - = and 0 in a window\n"
     "  --dither on|off  triangular noise of one code step of the colour target added to the picture\n"
     "                   at its output encode, a function of the pixel alone, so a slow gradient (a\n"
     "                   dusk sky) is a fine grain instead of bands (default on; renderer.md, \"The\n"
@@ -923,6 +924,15 @@ renderer::FrameClock frames_clock(const Options& options, const renderer::SceneD
 void look_overrides(const Options& options, renderer::SceneData& scene) {
   if (options.sky_disc_scale.has_value() && scene.sky.has_value())
     scene.sky->disc_scale = *options.sky_disc_scale;
+  // `--exposure` and `--exposure-ev100` are a sky's (R239): with none, nothing; said once.
+  static bool said = false;
+  if (!said && !scene.sky.has_value() &&
+      (options.settings.exposure_ev != 0.0f || options.settings.exposure_ev100.has_value())) {
+    said = true;
+    std::fprintf(stderr,
+                 "engine-view: --exposure and --exposure-ev100 set a sky's exposure; this "
+                 "scene has no sky, so they change nothing\n");
+  }
 }
 // What a read scene file decides before its load: a streamed world's own instances get forms cut
 // for this session's projection and LOD, and **a tile set's ground is drawn from its tiles** (T110;

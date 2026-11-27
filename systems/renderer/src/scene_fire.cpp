@@ -284,6 +284,8 @@ u32 add_fire_lights(std::span<const FrameFire> fires, const WorldPos& eye,
   return added;
 }
 
+// `bench/lamps_bench.cpp`'s `fill` is a hand copy of this for counts past the frame's room: the two
+// move together.
 u32 add_lamp_lights(std::span<const FrameFire> lamps, const WorldPos& eye,
                     FrameLighting& out) noexcept {
   u32 added = 0;
@@ -391,7 +393,18 @@ void FireSet::place_at(const SceneInstance& instance, const FireDesc& desc, u32 
                       desc.direction.z * t.scale.z};
     const Vec3 axis = rotate(t.rotation, scaled);
     const f32 length = std::sqrt(dot(axis, axis));
-    if (length > 0.0f && std::isfinite(length)) p.direction = axis * (1.0f / length);
+    if (length > 1e-6f && std::isfinite(length)) {
+      p.direction = axis * (1.0f / length);
+    } else {
+      // A scale that zeroes the axis (or none finite): the rotation alone turns the declared axis,
+      // which `read_lamp` gave unit length, so the lamp stays a spot and never lights upward as a
+      // point lamp would.
+      const Vec3 turned_axis = rotate(t.rotation, desc.direction);
+      const f32 turned_length = std::sqrt(dot(turned_axis, turned_axis));
+      p.direction = desc.direction;
+      if (turned_length > 0.0f && std::isfinite(turned_length))
+        p.direction = turned_axis * (1.0f / turned_length);
+    }
   }
   out.push_back(p);
 }

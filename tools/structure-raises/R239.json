@@ -1,14 +1,14 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R239",
-  "reason": "R239: a scene's lamp may be a spot (renderer.md's 'A lamp that throws its light one way' with its grounding, what reads a lamp, a photometric file's needs, the verdicts, and 'More lamps than the frame's room'; Exposure's order of the fixed values), and --no-lights puts out the scene's fires' lights and lamps (record_frame's one scene_lights test, engine-view's flag and usage line, apps.md's sentence)",
-  "date": "2026-11-26",
+  "reason": "R239: a scene's lamp may be a spot (renderer.md's 'A lamp that throws its light one way', its grounding, what reads a lamp, a photometric file's needs, the verdicts, 'More lamps than the frame's room'; Exposure's order of the fixed values and the night case that did not reproduce G-T25), --no-lights puts out the scene's lights (record_frame's one scene_lights test, engine-view's flag and usage lines), and --exposure-ev100 with no sky says so once (engine-view's look_overrides, apps.md)",
+  "date": "2026-11-27",
   "by": "Marc Micalizzi",
   "deltas": {
     "renderer.record_frame.lines": 1,
-    "engine_view.main_cpp.lines": 3,
+    "engine_view.main_cpp.lines": 13,
     "engine_view.run_view.lines": 1,
-    "page:docs/subsystems/renderer.md": 9564,
-    "page:docs/subsystems/apps.md": 304
+    "page:docs/subsystems/renderer.md": 10646,
+    "page:docs/subsystems/apps.md": 388
   }
 }

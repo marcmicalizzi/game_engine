@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstring>
 #include <span>
+#include <utility>
 #include <vector>
 
 using namespace engine;
@@ -64,7 +65,9 @@ Vector<FrameFire> street_lamps(u32 count, f32 reach_m) {
   return lamps;
 }
 
-// `add_lamp_lights`' arithmetic for one lamp, into an array of any size.
+// `add_lamp_lights`' arithmetic for one lamp, into an array of any size: a hand copy, because the
+// renderer's writes into the frame's `FrameLighting`, whose room (322) is smaller than the counts
+// measured here. **The two must move together** (fire.h / scene_fire.cpp, `add_lamp_lights`).
 void fill(std::span<const FrameFire> lamps, const WorldPos& eye, gfx::ResolveLight* out) noexcept {
   for (usize i = 0; i < lamps.size(); ++i) {
     const FrameFire& l = lamps[i];
@@ -123,7 +126,14 @@ void lamps_frame(bench::State& state, f32 reach) {
   const u32 count = static_cast<u32>(state.arg());
   Frame f(count, reach);
   f.run();
-  report_grid(f);
+  // The runner calls this for every calibration, warm-up and repeat: the grid's line once an
+  // argument of each reach.
+  static std::vector<std::pair<f32, u32>> reported;
+  if (std::find(reported.begin(), reported.end(), std::pair<f32, u32>{reach, count}) ==
+      reported.end()) {
+    reported.emplace_back(reach, count);
+    report_grid(f);
+  }
   while (state.keep_running())
     bench::keep(f.run());
   state.set_items(count);

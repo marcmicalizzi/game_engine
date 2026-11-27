@@ -463,4 +463,37 @@ TEST_CASE("engine-view: --no-lights and --exposure-ev100 rule over the scene fil
   REQUIRE(io::read_file(tmp.file("sky-15.png"), at15) == io::Status::Ok);
   REQUIRE(io::read_file(tmp.file("sky-13.png"), at13) == io::Status::Ok);
   CHECK(at15 != at13);
+
+  // The Toronto report as it was made (G-T25): a night, a lit lamp, a sky fixed at 7 and the run's
+  // 5. The summary says 5, and the lamp-lit picture is not the scene's (the renderer's sky case
+  // "rules at night over a lamp-lit ground" holds the two stops on the ground's light).
+  const std::string night = tmp.file("night.json");
+  REQUIRE(io::write_file(night, R"({"format":"engine.scene.v1","name":"night",)" + terrain +
+                                    R"(,"lamps":[{"name":"l","position":[0,6,0],"ground":true,)"
+                                    R"("intensity":3000,"reach_m":30}],)"
+                                    R"("sky":{"exposure":"Fixed","exposure_ev100":7}})") ==
+          io::Status::Ok);
+  const Run night_scene = shot(night, "night-7.png", false, {"--time-of-day", "0.5"});
+  REQUIRE_MESSAGE(night_scene.exit_code == 0, night_scene.output);
+  const Run night_run =
+      shot(night, "night-5.png", false, {"--time-of-day", "0.5", "--exposure-ev100", "5"});
+  REQUIRE_MESSAGE(night_run.exit_code == 0, night_run.output);
+  CHECK(ev100_of(night_scene) == 7.0);
+  CHECK(ev100_of(night_run) == 5.0);
+  std::string at7, at5;
+  REQUIRE(io::read_file(tmp.file("night-7.png"), at7) == io::Status::Ok);
+  REQUIRE(io::read_file(tmp.file("night-5.png"), at5) == io::Status::Ok);
+  CHECK(at7 != at5);
+
+  // With no sky the flag changes nothing, and says so once at start-up.
+  const std::string warning = "this scene has no sky, so they change nothing";
+  const Run no_sky = shot(bare, "bare-ev.png", true, {"--exposure-ev100", "5"});
+  REQUIRE_MESSAGE(no_sky.exit_code == 0, no_sky.output);
+  const usize said = no_sky.output.find(warning);
+  CHECK(said != std::string::npos);
+  CHECK(no_sky.output.find(warning, said + 1) == std::string::npos);
+  std::string bare_ev;
+  REQUIRE(io::read_file(tmp.file("bare-ev.png"), bare_ev) == io::Status::Ok);
+  CHECK(bare_ev == bare_off);
+  CHECK(night_scene.output.find(warning) == std::string::npos);
 }

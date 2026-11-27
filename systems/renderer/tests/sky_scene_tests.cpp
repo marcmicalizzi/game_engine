@@ -867,6 +867,90 @@ TEST_CASE("sky scene: the run's fixed exposure rules over a sky that says Fixed"
   CHECK(std::memcmp(b.color.data(), c.color.data(), b.color.size()) != 0);
 }
 
+// **The Toronto report itself** (R239's mend; G-T25): a night, a lit lamp over the ground, a sky
+// that says `Fixed` at 7 and the run's `--exposure-ev100 5`. The sky meters 7 and the run 5, and
+// the lamp-lit ground is two stops brighter under the run's: below the display's shoulder its
+// light, decoded from the bytes, is four times the scene's, pixel for pixel to the bytes' rounding.
+TEST_CASE("sky scene: the run's fixed exposure rules at night over a lamp-lit ground") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  scene::Sky entry = erg_sky();
+  entry.exposure = scene::SkyExposure::Fixed;
+  entry.exposure_ev100 = 7.0f;
+  constexpr f64 k_hour = 0.5;  // half past midnight
+  const scene_gen::SkyProvider provider = make_earth(entry);
+  scene_gen::SkyState state;
+  provider.state(k_hour * 3600.0, state);
+  REQUIRE(state.sun.y < 0.0f);  // a night
+  SceneDesc desc = hills(entry);
+  FireDesc lamp;
+  lamp.lamp = true;
+  lamp.name = "street";
+  lamp.position = WorldPos{0.0, 6.0, 0.0};
+  lamp.intensity = 3000.0f;  // candela: a street light's order
+  lamp.flicker = 0.0f;
+  desc.lamps.push_back(lamp);
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  settings.dither = false;
+  settings.lights = false;
+  constexpr u32 k_width = 96;
+  constexpr u32 k_height = 54;
+  Rig scene_ev;
+  REQUIRE_MESSAGE(scene_ev.build(gpu.device, desc, settings, k_width, k_height, false),
+                  scene_ev.error);
+  settings.exposure_ev100 = 5.0f;
+  Rig run_ev;
+  REQUIRE_MESSAGE(run_ev.build(gpu.device, desc, settings, k_width, k_height, false), run_ev.error);
+  FrameDesc frame;
+  frame.camera = aimed(Vec3{0.0f, 9.0f, 9.0f}, normalize(Vec3{0.0f, -1.0f, -1.0f}), 60.0f);
+  frame.sky_time_s = k_hour * 3600.0;
+  CaptureChannels channels;
+  channels.depth = true;  // the ground's pixels
+  CapturedFrame a, b;
+  REQUIRE_MESSAGE(scene_ev.renderer.capture(frame, channels, a, &scene_ev.error), scene_ev.error);
+  const f32 ev_scene = scene_ev.renderer.stats().sky.ev100;
+  CHECK(scene_ev.renderer.stats().lamp_lights == 1);
+  REQUIRE_MESSAGE(run_ev.renderer.capture(frame, channels, b, &run_ev.error), run_ev.error);
+  CHECK(run_ev.renderer.stats().lamp_lights == 1);
+  const f32 ev_run = run_ev.renderer.stats().sky.ev100;
+  MESSAGE("EV100 at night: the scene's " << ev_scene << ", the run's " << ev_run);
+  CHECK(ev_scene == 7.0f);
+  CHECK(ev_run == 5.0f);
+  REQUIRE(a.color.size() == b.color.size());
+  // The lamp-lit ground: covered pixels whose green is a readable byte at 7 and still below the
+  // shoulder's knee at 5 (the display is linear below it: sky_reference.h, `tone`).
+  const auto linear = [](u8 v) { return std::pow(static_cast<f64>(v) / 255.0, 2.2); };
+  u32 lit = 0;
+  f64 sum_scene = 0.0, sum_run = 0.0;
+  f64 worst = 0.0;
+  u32 covered = 0, brightest_scene = 0, brightest_run = 0;
+  for (u32 p = 0; p < a.depth.size(); ++p) {
+    if (a.depth[p] <= 0.0f) continue;
+    const u8 ga = a.color[4 * p + 1];
+    const u8 gb = b.color[4 * p + 1];
+    ++covered;
+    brightest_scene = std::max<u32>(brightest_scene, ga);
+    brightest_run = std::max<u32>(brightest_run, gb);
+    if (ga < 24 || linear(gb) > 0.5) continue;
+    ++lit;
+    sum_scene += linear(ga);
+    sum_run += linear(gb);
+    worst = std::max(worst, std::fabs(linear(gb) / linear(ga) - 4.0));
+  }
+  const f64 ratio = sum_run / std::max(sum_scene, 1e-12);
+  MESSAGE(covered << " covered pixels; the brightest green " << brightest_scene << " at 7, "
+                  << brightest_run << " at 5");
+  MESSAGE(lit << " lamp-lit ground pixels; the run's light over the scene's " << ratio
+              << " (two stops: 4), worst pixel off by " << worst);
+  CHECK(lit > 50);
+  CHECK(ratio > 3.7);
+  CHECK(ratio < 4.3);
+}
+
 #if defined(ENGINE_SKY_TESTS_TERRAIN)
 TEST_CASE("sky scene: the sky stands at the ground's time plus the frame's offset") {
   Gpu gpu;

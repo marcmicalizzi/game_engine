@@ -383,17 +383,22 @@ TEST_CASE("lamp: a spot reaches the array as the resolve's spot, a point lamp as
   scene.props.push_back(prop);
   FireSet set;
   set.reset(scene);
-  SceneInstance tail[2];
+  SceneInstance tail[3];
   tail[0].mesh = 1;
   tail[0].transform.rotation = quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, 0.5f * k_pi);
   tail[0].transform.scale = Vec3{2.0f, 2.0f, 2.0f};
   tail[1].mesh = 1;  // stretched along y, then turned an eighth about -x
   tail[1].transform.rotation = quat_from_axis_angle(Vec3{1.0f, 0.0f, 0.0f}, -0.25f * k_pi);
   tail[1].transform.scale = Vec3{1.0f, 3.0f, 1.0f};
-  set.place(std::span<const SceneInstance>(tail, 2));
+  // A scale that zeroes the axis (y and z flat): the rotation alone turns the declared axis, so
+  // the lamp stays a spot pointed where the prop points it and never becomes a point lamp.
+  tail[2].mesh = 1;
+  tail[2].transform.rotation = tail[0].transform.rotation;
+  tail[2].transform.scale = Vec3{1.0f, 0.0f, 0.0f};
+  set.place(std::span<const SceneInstance>(tail, 3));
   Vector<FrameFire> out;
   set.burn_lamps(1.0f, out);
-  REQUIRE(out.size() == 2);
+  REQUIRE(out.size() == 3);
   CHECK(out[0].direction.x == doctest::Approx(0.8).epsilon(1e-5));  // z turned to x
   CHECK(out[0].direction.y == doctest::Approx(0.6).epsilon(1e-5));
   CHECK(std::fabs(out[0].direction.z) < 1e-6f);
@@ -406,6 +411,11 @@ TEST_CASE("lamp: a spot reaches the array as the resolve's spot, a point lamp as
   CHECK(out[1].direction.y == doctest::Approx(turned.y).epsilon(1e-5));
   CHECK(out[1].direction.z == doctest::Approx(turned.z).epsilon(1e-5));
   CHECK(dot(out[1].direction, out[1].direction) == doctest::Approx(1.0).epsilon(1e-6));
+  CHECK(out[2].direction.x == doctest::Approx(0.8).epsilon(1e-5));  // as tail[0], unscaled
+  CHECK(out[2].direction.y == doctest::Approx(0.6).epsilon(1e-5));
+  CHECK(std::fabs(out[2].direction.z) < 1e-6f);
+  REQUIRE(add_lamp_lights(std::span<const FrameFire>(&out[2], 1), eye, lighting) == 1);
+  CHECK(lighting.lights[2].direction_type.w == gfx::k_light_spot);
 }
 
 // ---- on a GPU
@@ -1362,7 +1372,10 @@ void spot_on_the_floor(ShadowMode shadows, const char* name) {
   REQUIRE_MESSAGE(off.renderer.capture(frame, channels, none, &off.error), off.error);
   CHECK(off.renderer.stats().lamp_lights == 0);
   CHECK(off.renderer.stats().fire_lights == 0);
-  CHECK(off.renderer.stats().fires == 1);  // it still burns, for the medium
+  // It still burns, for the medium: `Stats::fires` is the size of the list the frame passes are
+  // handed (`FramePassContext::fires`). That the flame's pixels are the same bytes with the switch
+  // off is volumetrics' to show: this module's tests link no medium (renderer.md, "Lamps").
+  CHECK(off.renderer.stats().fires == 1);
   u32 moved = 0;
   for (u32 i = 0; i < none.light.size(); ++i)
     moved += none.light[i] != b.light[i];
