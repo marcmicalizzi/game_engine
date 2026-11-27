@@ -2105,7 +2105,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       indirect *= sample_occlusion(material, uv, duv_dx, duv_dy);
     }
 #ifdef RESOLVE_RAY_SHADOWS
-    if (traced) indirect += traced_specular;  // R71: after the occlusion map
+    // R71: after the occlusion map. The constant first, so a pipeline without it drops the line and
+    // the variable at the driver's first fold rather than after its value is propagated.
+    if (k_scene_reflect && traced) indirect += traced_specular;
 #endif
     // **A light too faint to test** (renderer.md; R115, after Ward, "Adaptive Shadow Testing for
     // Ray Tracing", 1991): with the lights' shadows traced, a light whose unshadowed contribution

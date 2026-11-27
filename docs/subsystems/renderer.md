@@ -2333,14 +2333,18 @@ primaries the owner judges by.
 
   | run | variant | rays a frame | resolve median, main / here (ms) | GPU frame median, main / here (ms) |
   |---|---|---|---|---|
-  | `static-1080p-rt` (three a side) | **yes** (the Lantern's and the FlightHelmet's maps) | 0 in 1,431 of 1,441 frames, at most 4 | 0.176, 0.176, 0.176 / **0.200, 0.200, 0.199** | 0.526, 0.517, 0.509 / 0.524, 0.525, 0.523 |
+  | `static-1080p-rt`, both sides without the cache (two a side) | **yes** (the Lantern's and the FlightHelmet's maps) | 0 on most frames, at most 11 | 0.176, 0.176 / **0.204, 0.204** | 0.495, 0.510 / 0.552, 0.550 |
+  | `static-1080p-rt`, main without the cache, here with it (three a side) | **yes** | 0 in 1,431 of 1,441 frames, at most 4 | 0.176, 0.176, 0.176 / 0.200, 0.200, 0.199 | 0.526, 0.517, 0.509 / 0.524, 0.525, 0.523 |
   | `overlook-1080p` (`--shadows off`) | no (no traced resolve) | 0 | 0.091 / 0.089 | 0.152 / 0.147 |
   | `erg-walk-1080p-rt` | no | 0 | 0.227 / 0.227 | 0.697 / 0.696 |
   | `endless-1080p-csm` | no (cascaded maps) | 0 | 0.499 / 0.504 | 2.103 / 2.110 |
-  | `erg-walk-surround3-rt` | no | 0 | 2.610 / 2.635 | 3.752 / 3.789 |
-  | `endless-surround3-rt` | no | 0 | 2.226 / 2.251 | 4.347 / 4.467 |
+  | `erg-walk-surround3-rt`, both sides without the cache | no | 0 | 2.615 / 2.618 | 3.821 / 3.757 |
+  | `erg-walk-surround3-rt`, main without the cache (three a side) | no | 0 | 2.610, 2.620, 2.621 / 2.635, 2.635, 2.637 | 3.752, 3.779, 3.784 / 3.789, 3.841, 3.792 |
+  | `endless-surround3-rt`, main without the cache (three a side) | no | 0 | 2.226, 2.206, 2.209 / 2.251, 2.227, 2.242 | 4.347, 4.291, 4.311 / 4.467, 4.292, 4.337 |
 
-  **The static world now compiles the reflecting resolve**, since its two Khronos samples carry metallic-roughness maps whose least at the 32 × 32 level is under the end under a factor of 1, and it pays **+0.024 ms of resolve (14 %) for at most four rays** — the variant's fixed cost where almost nothing traces — and the eye's shell (79 casters to 94, the chain 0.147 to 0.151 ms). That is the feature applying to a scene that now has a smooth material, not a regression; the budget is the owner's to re-baseline or not. A shape whose cost follows the rays (the trace out of the resolve's line, over a list of the pixels that trace) is a later row's.
+  **A pair through `frame-budget.ps1` with a copied-out binary is two data paths, not one**: the copied-out engine-view finds no derived-data root above its executable and loads every texture decoded (the static world's 24 at 283 MB) and builds its clusters in process, where a tree's own binary finds `<repo>/ddc` and uploads them built (24 at 109 MB, BC-compressed, mipmapped). The surround runs' +0.02 to +0.03 ms of resolve in the rows marked "main without the cache" is that difference and not this change: with both sides copied out the erg's surround resolve is 2.615 against 2.618, and the first author's binary, copied out the same way, stood 2.621 and 2.614 against this tree's own 2.643 and 2.662 for the same reason. The fixture's pair above has the same asymmetry and no texture to show it. Every run is within its budget on both sides; `erg-walk-surround3-rt` was once inconclusive on its CPU p99 (1.94 ms, a busy machine), which no GPU figure follows.
+
+  **The static world now compiles the reflecting resolve**, since its two Khronos samples carry metallic-roughness maps whose least at the 32 × 32 level is under the end under a factor of 1, and it pays **+0.028 ms of resolve (16 %) with both sides on one data path, for at most eleven rays** — the variant's fixed cost where almost nothing traces — and the eye's shell (76 casters to 91 without the cache, 79 to 94 with it; the chain 0.147 to 0.151 ms). That is the feature applying to a scene that now has a smooth material, not a regression; the budget is the owner's to re-baseline or not. A shape whose cost follows the rays (the trace out of the resolve's line, over a list of the pixels that trace) is a later row's.
 
 **What it does not do, and the glossy stage.** One ray, so a surface rougher than 0.1 shows a
 mirror image mixed with the ambient rather than a blurred one; the band is narrow (2.9° of lobe at
