@@ -1,15 +1,17 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R71",
-  "reason": "R71: a smooth surface reflects the scene - record_frame takes the reflection's bits and the eye's shell beside the cache's, GpuScene the load's smooth-material flag, renderer.md the section that designs and measures it",
+  "reason": "R71 and its mend: a smooth surface reflects the scene, decided by the least its roughness map gives (the flag at upload, the least found from the built chain, the reflection section's design, cases and numbers, the frame budgets after the mend)",
   "date": "2026-11-27",
   "by": "Marc Micalizzi",
   "deltas": {
     "renderer.record_frame.lines": 22,
-    "renderer.gpu_scene_cpp.lines": 2,
-    "renderer.gpu_scene_h.lines": 4,
-    "page:docs/subsystems/renderer.md": 15397,
+    "renderer.gpu_scene_cpp.lines": 25,
+    "renderer.gpu_scene_h.lines": 8,
+    "page:docs/subsystems/renderer.md": 22740,
     "page:docs/subsystems/apps.md": 389,
-    "page:docs/subsystems/gfx.md": 431
+    "page:docs/subsystems/gfx.md": 811,
+    "page:docs/subsystems/texture.md": 579,
+    "page:docs/ci/what-to-run.md": 206
   }
 }
