@@ -1,6 +1,7 @@
 // What G2 reads beyond the metallic-roughness core (docs/subsystems/assets.md, "Tangents, a second
 // UV set and vertex colours", "Material extensions", "Lights and cameras", "The influences"):
 // small glTF files written here, as data URIs, so every number the assertions name is in this file.
+#include <core/log/log.h>
 #include <domain/assets/gltf.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
@@ -517,10 +518,36 @@ TEST_CASE("gltf G2: a Draco-compressed primitive is refused by name") {
   CHECK(mesh.positions.empty());
 }
 
+namespace {
+
+// The import's lines about an `extras.sampling` it ignored (T150), counted by message.
+struct SamplingLines final : log::Sink {
+  u32 unknown = 0;
+  u32 foreign = 0;
+  std::string last_value;
+  std::string last_material;
+  void write(const log::Record& record) override {
+    const bool is_unknown =
+        record.message.find("neither stochastic nor tiled") != std::string_view::npos;
+    const bool is_foreign =
+        record.message.find("extras.sampling is not a string") != std::string_view::npos;
+    if (!is_unknown && !is_foreign) return;
+    (is_unknown ? unknown : foreign) += 1;
+    for (const log::Field& field : record.fields) {
+      const std::string text =
+          field.kind == log::Field::Kind::String ? std::string(field.string()) : std::string();
+      if (field.key == "value") last_value = text;
+      if (field.key == "material") last_material = text;
+    }
+  }
+};
+
+}  // namespace
+
 // T150 (assets.md, "Stochastic sampling an imported material asks for"): a material's
 // `extras.sampling` in a pack role's words. Absent and "tiled" read as tiled, "stochastic" as
-// stochastic and into its container record's flags; any other value, or a value that is not a
-// string, refuses the file by name. Extras of other keys leave the material as it was.
+// stochastic and into its container record's flags, in any case; any other value is ignored with a
+// line and the file loads tiled. Extras of other keys leave the material as it was.
 TEST_CASE("gltf T150: a material's extras.sampling asks for stochastic sampling") {
   const auto with_materials = [](const std::string& materials) {
     std::string json = quad_with_extras(false);
@@ -573,12 +600,48 @@ TEST_CASE("gltf T150: a material's extras.sampling asks for stochastic sampling"
   CHECK(key_is_bytes("plain", "{}"));
   CHECK(key_is_bytes("tiled", "{\"extras\":{\"sampling\":\"tiled\"}}"));
   CHECK_FALSE(key_is_bytes("asked", "{\"extras\":{\"sampling\":\"stochastic\"}}"));
-  for (const char* bad : {"{\"extras\":{\"sampling\":\"Stochastic\"}}",
-                          "{\"extras\":{\"sampling\":\"hex\"}}", "{\"extras\":{\"sampling\":1}}"}) {
-    INFO(bad);
-    MeshData refused;
+  CHECK_FALSE(key_is_bytes("cased", "{\"extras\":{\"sampling\":\"Stochastic\"}}"));
+
+  // **Nothing in `extras` refuses the file** (the coordinator's ruling on T150's review, finding
+  // 2): `extras` is every tool's namespace. The scene enum's spelling `Stochastic`, in any case,
+  // asks; a string the engine does not know draws tiled with one warning; a value that is not a
+  // string (a Blender custom property of that name) is another tool's and draws tiled with one
+  // line at info. Each line is counted here, by message, through a sink of the test's own.
+  SamplingLines lines;
+  log::add_sink(&lines);
+  struct Case {
+    const char* materials;
+    bool stochastic;
+    u32 unknown;
+    u32 foreign;
+    const char* value;
+  };
+  const Case cases[] = {
+      {"{\"name\":\"w\",\"extras\":{\"sampling\":\"Stochastic\"}}", true, 0, 0, ""},
+      {"{\"name\":\"w\",\"extras\":{\"sampling\":\"TILED\"}}", false, 0, 0, ""},
+      {"{\"name\":\"w\",\"extras\":{\"sampling\":\"hex\"}}", false, 1, 0, "hex"},
+      {"{\"name\":\"w\",\"extras\":{\"sampling\":1}}", false, 0, 1, "1"},
+      {"{\"name\":\"w\",\"extras\":{\"sampling\":null}}", false, 0, 1, "null"},
+      {"{\"name\":\"w\",\"extras\":{\"sampling\":{\"mode\":\"hex\"}}}", false, 0, 1, "mode"},
+  };
+  for (const Case& c : cases) {
+    INFO(c.materials);
+    lines.unknown = 0;
+    lines.foreign = 0;
+    lines.last_value.clear();
+    lines.last_material.clear();
+    MeshData loaded;
     std::string why;
-    CHECK_FALSE(load(with_materials(bad), refused, why));
-    CHECK(why.find("extras.sampling") != std::string::npos);
+    CHECK_MESSAGE(load(with_materials(c.materials), loaded, why), why);
+    log::flush();
+    REQUIRE(loaded.materials.size() == 1);
+    CHECK(loaded.materials[0].stochastic == c.stochastic);
+    CHECK(lines.unknown == c.unknown);
+    CHECK(lines.foreign == c.foreign);
+    if (c.unknown + c.foreign != 0) {
+      CHECK_MESSAGE(lines.last_value.find(c.value) != std::string::npos, lines.last_value);
+      CHECK_MESSAGE(lines.last_material.find("w") != std::string::npos, lines.last_material);
+    }
   }
+  log::remove_sink(&lines);
 }

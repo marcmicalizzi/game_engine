@@ -61,21 +61,48 @@ bool fail(std::string* error, std::string message) {
 }
 
 // **What a material's `extras.sampling` says** (T150; gltf.h, `Material::stochastic`): nothing (no
-// extras, extras that are not an object, or no such key), "tiled", "stochastic", or something the
-// engine does not know, which the import refuses.
-enum class SamplingWord : u8 { None, Tiled, Stochastic, Unknown };
+// extras, extras that are not an object, or no such key), "tiled" or "stochastic" in any case, a
+// value that is not a string (`Foreign`: another tool's property of that name), or a string the
+// engine does not know. glTF's `extras` is a namespace every tool writes into, so the last two are
+// ignored with a line (`log_import`), never refused; `seen` is the value, for that line.
+enum class SamplingWord : u8 { None, Tiled, Stochastic, Foreign, Unknown };
 
-SamplingWord sampling_word(const cgltf_material& material) {
-  if (material.extras.data == nullptr) return SamplingWord::None;
+struct SamplingRead {
+  SamplingWord word = SamplingWord::None;
+  std::string seen;
+};
+
+bool equal_ignoring_case(std::string_view a, std::string_view b) noexcept {
+  if (a.size() != b.size()) return false;
+  for (usize i = 0; i < a.size(); ++i) {
+    const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c + 32) : c; };
+    if (lower(a[i]) != lower(b[i])) return false;
+  }
+  return true;
+}
+
+SamplingRead sampling_word(const cgltf_material& material) {
+  SamplingRead read;
+  if (material.extras.data == nullptr) return read;
   JsonValue extras;
-  if (!parse_json(material.extras.data, extras).ok || !extras.is_object())
-    return SamplingWord::None;
+  if (!parse_json(material.extras.data, extras).ok || !extras.is_object()) return read;
   const JsonValue* sampling = extras.find("sampling");
-  if (sampling == nullptr) return SamplingWord::None;
-  if (!sampling->is_string()) return SamplingWord::Unknown;
-  if (sampling->as_string() == "stochastic") return SamplingWord::Stochastic;
-  if (sampling->as_string() == "tiled") return SamplingWord::Tiled;
-  return SamplingWord::Unknown;
+  if (sampling == nullptr) return read;
+  if (!sampling->is_string()) {
+    read.word = SamplingWord::Foreign;
+    read.seen = write_json(*sampling);
+    return read;
+  }
+  const std::string_view word = sampling->as_string();
+  if (equal_ignoring_case(word, "stochastic")) {
+    read.word = SamplingWord::Stochastic;
+  } else if (equal_ignoring_case(word, "tiled")) {
+    read.word = SamplingWord::Tiled;
+  } else {
+    read.word = SamplingWord::Unknown;
+    read.seen = std::string(word);
+  }
+  return read;
 }
 
 const char* result_text(cgltf_result result) noexcept {
@@ -1171,14 +1198,9 @@ bool collect_materials(const cgltf_data& data, MeshData& out, std::string* error
     }
     read_material_extensions(data, source, entry);
     // T150: `extras.sampling` asks for stochastic sampling, in a pack role's words (gltf.h,
-    // `Material::stochastic`). A value the engine does not know refuses the file rather than
-    // drawing a large surface tiled that its author asked not to be.
-    const SamplingWord sampling = sampling_word(source);
-    if (sampling == SamplingWord::Unknown) {
-      return fail(error, "glTF: material " + std::to_string(i) +
-                             ": extras.sampling must be \"stochastic\" or \"tiled\"");
-    }
-    entry.stochastic = sampling == SamplingWord::Stochastic;
+    // `Material::stochastic`). Any other value is ignored with a line (`log_import`): `extras`
+    // is every tool's, so nothing in it refuses the file.
+    entry.stochastic = sampling_word(source).word == SamplingWord::Stochastic;
     out.materials.push_back(std::move(entry));
   }
   return true;
@@ -1466,6 +1488,24 @@ void log_import(const cgltf_data& data, std::string_view name) {
                     log::field("file", name), log::field("read_as_mask", masked),
                     log::field("drawn_opaque", opaque));
   }
+  // A material's `extras.sampling` the engine does not read (T150; assets.md, "Stochastic sampling
+  // an imported material asks for"): drawn tiled, and said once a material. A value that is not a
+  // string is another tool's property and says so quietly; a string is meant for the engine, and a
+  // word it does not know is a warning.
+  for (cgltf_size i = 0; i < data.materials_count; ++i) {
+    const SamplingRead read = sampling_word(data.materials[i]);
+    const char* material = data.materials[i].name != nullptr ? data.materials[i].name : "";
+    if (read.word == SamplingWord::Foreign) {
+      ENGINE_LOG_INFO(log_assets, "glTF material extras.sampling is not a string; drawn tiled",
+                      log::field("file", name), log::field("material", material),
+                      log::field("index", static_cast<u32>(i)), log::field("value", read.seen));
+    } else if (read.word == SamplingWord::Unknown) {
+      ENGINE_LOG_WARN(log_assets,
+                      "glTF material extras.sampling is neither stochastic nor tiled; drawn tiled",
+                      log::field("file", name), log::field("material", material),
+                      log::field("index", static_cast<u32>(i)), log::field("value", read.seen));
+    }
+  }
   const cgltf_scene* scene = data.scene;
   if (scene == nullptr && data.scenes_count > 0) scene = &data.scenes[0];
   if (scene == nullptr) return;
@@ -1748,9 +1788,11 @@ bool source_bytes_hash(std::string_view path, u64& out, std::string* error) {
   return source_mesh_hash(path, key, out, error);
 }
 
-bool source_mesh_hash(std::string_view path, u64& out, u64& bytes_out, std::string* error) {
+bool source_mesh_hash(std::string_view path, u64& out, u64& bytes_out, std::string* error,
+                      u32* materials) {
   out = 0;
   bytes_out = 0;
+  if (materials != nullptr) *materials = 0;
   std::string contents;
   const io::Status status = io::read_file(path, contents);
   if (status != io::Status::Ok)
@@ -1768,6 +1810,7 @@ bool source_mesh_hash(std::string_view path, u64& out, u64& bytes_out, std::stri
       cgltf_parse(&options, contents.data(), contents.size(), &document.data);
   if (result != cgltf_result_success)
     return fail(error, std::string("glTF: parsing failed (") + result_text(result) + ")");
+  if (materials != nullptr) *materials = static_cast<u32>(document.data->materials_count);
 
   const std::string base_dir(io::parent_path(path));
   for (cgltf_size i = 0; i < document.data->buffers_count; ++i) {
@@ -1815,7 +1858,7 @@ bool source_mesh_hash(std::string_view path, u64& out, u64& bytes_out, std::stri
   // And for a material whose `extras.sampling` asks for stochastic sampling (T150): its container's
   // section 33 now carries the flag, so an entry built from the same bytes before is rebuilt.
   for (cgltf_size i = 0; i < document.data->materials_count; ++i) {
-    if (sampling_word(document.data->materials[i]) == SamplingWord::Stochastic) {
+    if (sampling_word(document.data->materials[i]).word == SamplingWord::Stochastic) {
       hash = hash_combine(hash, u64{0x5431353053414d50ull});  // "T150SAMP"
       break;
     }

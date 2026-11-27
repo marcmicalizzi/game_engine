@@ -1561,7 +1561,8 @@ every frame, view, cut and eye cell reads the same tiles.
 - **What refuses it.** `uv_offset.z` is an alpha-tested material's cutoff, a water material's and a
   terrain root's word, so `set_stochastic` refuses all three (and `set_alpha_mask` clears the flag,
   in either order), the shader reads a row carrying both as plain, and the upload draws plain —
-  with a warning naming the mesh and the material — a material whose textures are decoded rather
+  with one warning for the load, the count and the first mesh and material (T150: a scene's `-1`
+  over a mesh of untextured parts asks for each) — a material whose textures are decoded rather
   than built (no small mips to take the means from, no gradients for the tiles) or that belongs to
   the terrain mesh, whose layers have their own stochastic path.
 - **Where it comes from.** A material set's `sampling` key (a pack role's `"sampling":
@@ -1569,7 +1570,7 @@ every frame, view, cut and eye cell reads the same tiles.
   `geometry::k_material_sampling_stochastic` in the container's material sampling record (section
   33's `flags` word, what was its `pad`, so every older container reads plain), which
   `adopt_container` keeps in `SourceMesh::material_sampling_flags` and the upload turns into the
-  bit. **An imported material asks for it** (T150) with the glTF material's `"extras": {"sampling": "stochastic"}`, which both builders of a container write into section 33 ([assets](assets.md#stochastic-sampling-an-imported-material-asks-for)); **a scene's `Mesh.sampling`** (schema `Mesh` 4) says it for a file that cannot — entries of a material index (`-1`, every material) and `Stochastic` or `Tiled`, applied in order over the file's word at load, an index past the file's materials refusing the load. **The scene's word wins**: the scene is where an asset is laid over a surface many times its texture, and a bought file is not its user's to edit. The early resolve's prediction reads `Mesh.sampling`, not a glTF's extras (a wrong guess is one compile). The upload logs `stochastic materials` with the count when any are drawn.
+  bit. **An imported material asks for it** (T150) with the glTF material's `"extras": {"sampling": "stochastic"}`, which both builders of a container write into section 33 ([assets](assets.md#stochastic-sampling-an-imported-material-asks-for)); **a scene's `Mesh.sampling`** (schema `Mesh` 4) says it for a file that cannot — entries of a material index (`-1`, every material) and `Stochastic` or `Tiled`, applied in order over the file's word at load by one function (`apply_mesh_sampling`), an index below -1 or past **the file's own materials** refusing the load — on a cache hit as on its miss, so never the default a build appended (`SourceMesh::file_materials`). **The scene's word wins**: the scene is where an asset is laid over a surface many times its texture, and a bought file is not its user's to edit. The early resolve's prediction applies the same function: over a `.clusters` mesh's own section 33, peeked (its header, table and that section; no decode), and over a glTF as plain materials, since a glTF's `extras` are its import's to read. It does not know which meshes the content policy admits, so a refused mesh's request still predicts. **A wrong guess costs a whole compile on a cold pipeline cache**: the predicted module compiles to its end beside the one the scene draws with. The upload logs `stochastic materials` with the count when any are drawn.
 - **The reference path tracer** reads materials through the same `sample_material` and
   `apply_normal_map`, which dispatch on the flag, so a stochastic material reads the same three tiles
   there, at level 0 as every material does in it.

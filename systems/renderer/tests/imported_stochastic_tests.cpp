@@ -13,6 +13,7 @@
 #include <domain/gfx/visibility_resolve.h>
 #include <foundation/image/png.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/early_pipelines.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/scene_renderer.h>
@@ -67,8 +68,10 @@ u8 noise(u32 x, u32 y, u32 c) {
 
 // A plane of half-width 1 in the XY plane facing +z, its UVs running 0 to `k_repeats`, one material
 // whose base colour is `image.png` beside it (repeat, linear: no sampler) and whose `extras` are
-// `extras` (empty: none).
-bool write_plane(const std::filesystem::path& dir, const std::string& extras) {
+// `extras` (empty: none). `material` false: a file with no materials at all, whose primitive the
+// builders give the default they append.
+bool write_plane(const std::filesystem::path& dir, const std::string& extras,
+                 bool material = true) {
   std::filesystem::create_directories(dir);
   std::vector<u8> bin;
   constexpr f32 r = static_cast<f32>(k_repeats);
@@ -101,16 +104,19 @@ bool write_plane(const std::filesystem::path& dir, const std::string& extras) {
                          png))
     return false;
   if (!write_file((dir / "image.png").string(), png.data(), png.size())) return false;
+  const std::string materials =
+      material ? "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0},"
+                 "\"metallicFactor\":0,\"roughnessFactor\":1}" +
+                     (extras.empty() ? std::string() : ",\"extras\":" + extras) +
+                     "}],"
+                     "\"textures\":[{\"source\":0}],\"images\":[{\"uri\":\"image.png\"}],"
+               : std::string();
   const std::string json =
       "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
       "\"nodes\":[{\"mesh\":0}],"
       "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,"
-      "\"TEXCOORD_0\":2},\"indices\":3,\"material\":0}]}],"
-      "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0},"
-      "\"metallicFactor\":0,\"roughnessFactor\":1}" +
-      (extras.empty() ? std::string() : ",\"extras\":" + extras) +
-      "}],"
-      "\"textures\":[{\"source\":0}],\"images\":[{\"uri\":\"image.png\"}],"
+      "\"TEXCOORD_0\":2},\"indices\":3" +
+      std::string(material ? ",\"material\":0" : "") + "}]}]," + materials +
       "\"accessors\":["
       "{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\","
       "\"min\":[-1,-1,0],\"max\":[1,1,0]},"
@@ -271,11 +277,13 @@ TEST_CASE("renderer: an imported material that asks for stochastic sampling lose
     MESSAGE("device unavailable: " << error);
     return;
   }
+  std::string last_cache;  // the derived-data cache's word on the last draw's mesh
   const auto draw = [&](const std::string& path,
                         const Vector<SceneMeshInfo::MaterialSampling>& sampling, bool& stochastic) {
     PlaneRig rig;
     rig.build(device, path, ddc, sampling);
     stochastic = rig.scene.has_stochastic_materials();
+    last_cache = rig.data.sources.empty() ? std::string() : rig.data.sources[0].cache;
     return rig.shot();
   };
   bool plain_module = true;
@@ -287,7 +295,9 @@ TEST_CASE("renderer: an imported material that asks for stochastic sampling lose
   const CapturedFrame plain = draw(mesh("plain"), {}, plain_module);
   const CapturedFrame tiled = draw(mesh("tiled"), {}, tiled_module);
   const CapturedFrame asked = draw(mesh("asked"), {}, asked_module);
+  CHECK(last_cache == "miss");  // the first load builds the entry
   const CapturedFrame asked_again = draw(mesh("asked"), {}, asked_again_module);
+  CHECK(last_cache == "hit");  // and the second reads it back
   const CapturedFrame by_scene = draw(mesh("plain"), {{-1, true}}, scene_module);
   const CapturedFrame scene_tiled = draw(mesh("asked"), {{0, false}}, scene_tiled_module);
 
@@ -321,29 +331,70 @@ TEST_CASE("renderer: an imported material that asks for stochastic sampling lose
 
 // **The scene file's word, read**: `Mesh.sampling` through `read_scene_file` and `load_scene`, with
 // no device — the entries in order, a later one over an earlier, an index past the file's
-// materials refused by name, and a load that names none keeping what the file says.
+// materials refused by name, and a load that names none keeping what the file says. **Every leg
+// three ways** (T150's review, finding 1): with the cache off, through a fresh derived-data root
+// (a miss, which writes the entry) and through it again (a hit, which reads it back), and the
+// three give one answer: the file's own materials are the bound and what -1 reaches, never the
+// default a build appends for a primitive with none. The material's `stochastic` says what its
+// flag says after every load (finding 5).
 TEST_CASE("renderer: a scene's Mesh.sampling sets its materials' sampling over the file's") {
   const test::TempDir tmp("engine_renderer_scene_sampling");
   const std::filesystem::path root = tmp.native();
   REQUIRE(write_plane(root / "plain", ""));
   REQUIRE(write_plane(root / "asked", "{\"sampling\":\"stochastic\"}"));
-  const auto flags_of = [&](const std::string& meshes, std::string& error) {
+  REQUIRE(write_plane(root / "bare", "", false));
+  const u32 k_on = geometry::k_material_sampling_stochastic;
+  u32 roots = 0;
+  // One load: the flags of every mesh's own materials, or empty with `error`.
+  const auto load_once = [&](const std::string& meshes, const std::string& ddc,
+                             const char* expect_cache, std::string& error) {
     const std::string scene_path = (root / "scene.json").string();
     const std::string json = "{\"meshes\":[" + meshes + "]}";
     REQUIRE(write_file(scene_path, json.data(), json.size()));
     SceneDesc desc;
     REQUIRE_MESSAGE(read_scene_file(scene_path, desc, error), error);
-    desc.cache = false;
+    desc.cache = !ddc.empty();
+    desc.ddc = ddc;
     SceneData data;
     Vector<u32> flags;
     if (!load_scene(desc, data, error)) return flags;
-    for (const SourceMesh& source : data.sources)
-      for (const u32 f : source.material_sampling_flags)
-        flags.push_back(f);
+    for (const SourceMesh& source : data.sources) {
+      CHECK(std::string(source.cache) == expect_cache);
+      const u32 own = std::min<u32>(source.file_materials, source.data.materials.size());
+      for (u32 k = 0; k < source.data.materials.size(); ++k) {
+        const u32 f =
+            k < source.material_sampling_flags.size() ? source.material_sampling_flags[k] : 0u;
+        CHECK(source.data.materials[k].stochastic == ((f & k_on) != 0));
+        if (k < own) {
+          flags.push_back(f);
+        } else {
+          CHECK(f == 0u);  // the appended default: no entry reaches it
+        }
+      }
+    }
     return flags;
   };
+  // The same leg three ways; the answer and the error (empty when it loads) must agree.
+  const auto flags_of = [&](const std::string& meshes, std::string& error) {
+    std::string off_error;
+    std::string miss_error;
+    std::string hit_error;
+    const Vector<u32> off = load_once(meshes, "", "none", off_error);
+    const std::string ddc = (root / ("ddc" + std::to_string(roots++))).string();
+    const Vector<u32> miss = load_once(meshes, ddc, "miss", miss_error);
+    const Vector<u32> hit = load_once(meshes, ddc, "hit", hit_error);
+    CHECK(miss_error == off_error);
+    CHECK(hit_error == off_error);
+    REQUIRE(miss.size() == off.size());
+    REQUIRE(hit.size() == off.size());
+    for (u32 k = 0; k < off.size(); ++k) {
+      CHECK(miss[k] == off[k]);
+      CHECK(hit[k] == off[k]);
+    }
+    error = off_error;
+    return off;
+  };
   std::string error;
-  const u32 k_on = geometry::k_material_sampling_stochastic;
   Vector<u32> f = flags_of(
       "{\"name\":\"a\",\"path\":\"plain/plane.gltf\"},"
       "{\"name\":\"b\",\"path\":\"asked/plane.gltf\"}",
@@ -370,4 +421,70 @@ TEST_CASE("renderer: a scene's Mesh.sampling sets its materials' sampling over t
                error);
   CHECK(f.empty());
   CHECK(error.find("sampling names material 1 of 1") != std::string::npos);
+  // A file with no materials: material 0 is refused on every route (the hit's container holds the
+  // default, which is not the file's), and -1 asks for nothing there is.
+  error.clear();
+  f = flags_of("{\"name\":\"a\",\"path\":\"bare/plane.gltf\",\"sampling\":[{\"material\":0}]}",
+               error);
+  CHECK(f.empty());
+  CHECK(error.find("sampling names material 0 of 0") != std::string::npos);
+  error.clear();
+  f = flags_of("{\"name\":\"a\",\"path\":\"bare/plane.gltf\",\"sampling\":[{}]}", error);
+  CHECK(error.empty());
+  CHECK(f.empty());
+
+  // **Validated where the bound is** (finding 4): a `SceneDesc` built in code, which no scene
+  // file's reader checked, is refused for an index below -1.
+  {
+    SceneDesc desc;
+    desc.meshes.push_back((root / "plain" / "plane.gltf").string());
+    desc.cache = false;  // nothing written outside the test's scratch directory
+    SceneMeshInfo info;
+    info.name = "coded";
+    info.sampling.push_back({-2, true});
+    desc.mesh_info.push_back(std::move(info));
+    SceneData data;
+    std::string why;
+    CHECK_FALSE(load_scene(desc, data, why));
+    CHECK_MESSAGE(why.find("coded: sampling names material -2") != std::string::npos, why);
+  }
+
+  // **The early resolve's prediction reads a container's own word** (finding 3): the entries the
+  // two loads above wrote are `.clusters` files, peeked without a decode — the asked plane's flag
+  // predicts the stochastic module, the plain one's does not, and the scene's word over the
+  // container's is read in order as the load reads it.
+  {
+    SceneDesc built;
+    built.meshes.push_back((root / "asked" / "plane.gltf").string());
+    built.cache = true;
+    built.ddc = (root / "ddc-predict").string();
+    SceneData data;
+    std::string why;
+    REQUIRE_MESSAGE(load_scene(built, data, why), why);
+    REQUIRE(data.sources.size() == 1);
+    const std::string asked_container = data.sources[0].container;
+    REQUIRE_FALSE(asked_container.empty());
+    built.meshes[0] = (root / "plain" / "plane.gltf").string();
+    SceneData plain_data;
+    REQUIRE_MESSAGE(load_scene(built, plain_data, why), why);
+    const std::string plain_container = plain_data.sources[0].container;
+    REQUIRE_FALSE(plain_container.empty());
+    ResolvedSettings resolved;
+    const auto predicts = [&](const std::string& path,
+                              const Vector<SceneMeshInfo::MaterialSampling>& sampling) {
+      SceneDesc desc;
+      desc.meshes.push_back(path);
+      desc.materials = (root / "no-pack").string();
+      SceneMeshInfo info;
+      info.sampling = sampling;
+      desc.mesh_info.push_back(std::move(info));
+      return predict_resolve_variant(desc, resolved, gfx::Format::R8G8B8A8Unorm).stochastic;
+    };
+    CHECK(predicts(asked_container, {}));
+    CHECK_FALSE(predicts(plain_container, {}));
+    CHECK_FALSE(predicts(asked_container, {{0, false}}));
+    CHECK(predicts(plain_container, {{0, true}}));
+    CHECK_FALSE(predicts(plain_container, {{-1, true}, {0, false}}));
+    CHECK_FALSE(predicts(plain_container, {{1, true}}));  // refused by the load: past its one
+  }
 }

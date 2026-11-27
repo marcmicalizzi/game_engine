@@ -1,10 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "T150",
-  "reason": "T150 documents how an imported material and a scene's Mesh.sampling reach the stochastic mesh materials, in their own section: the rule and which word wins belong where the sampling is described",
-  "date": "2026-11-26",
+  "reason": "T150 documents how an imported material and a scene's Mesh.sampling reach the stochastic mesh materials, and its review mend makes the upload's stochastic refusals one line with a count (a scene's -1 over untextured parts asks for each): the rule and the line belong where the sampling is described and uploaded",
+  "date": "2026-11-27",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/renderer.md": 979
+    "renderer.gpu_scene_cpp.lines": 7,
+    "page:docs/subsystems/renderer.md": 1620
   }
 }

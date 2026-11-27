@@ -6,6 +6,8 @@
 #include <core/json/json.h>
 #include <core/platform/process.h>
 #include <core/time/time.h>
+#include <domain/geometry/cluster_file.h>
+#include <domain/geometry/material_sampling.h>
 #include <domain/gfx/display.h>
 #include <domain/gfx/pipeline.h>
 #include <domain/materials/materials.h>
@@ -76,6 +78,32 @@ std::string resolve_manifest_path(const std::string& named) {
 
 namespace {
 
+// A container's own word on its materials (T150): its material count and section 33's flags,
+// read from its header, its section table and that one section (`geometry::ClusterFileReader`),
+// with nothing decoded; a container without the section is all plain. False when the file cannot
+// be opened as a container, which the load reports.
+bool peek_material_flags(const std::string& path, Vector<u32>& flags) {
+  geometry::ClusterFileReader reader;
+  if (!reader.open(path)) return false;
+  const u64 materials = reader.element_count(geometry::ClusterSection::Materials);
+  flags.resize(static_cast<u32>(materials), 0u);
+  u64 offset = 0;
+  u64 bytes = 0;
+  if (materials == 0 ||
+      !reader.range(geometry::ClusterSection::MaterialSampling,
+                    static_cast<u32>(sizeof(geometry::ClusterFileMaterialSampling)), 0, materials,
+                    offset, bytes))
+    return true;
+  Vector<geometry::ClusterFileMaterialSampling> records;
+  records.resize(static_cast<u32>(materials));
+  u64 read = 0;
+  if (reader.file().read_at(offset, records.data(), bytes, read) != io::Status::Ok || read != bytes)
+    return true;
+  for (u32 k = 0; k < records.size(); ++k)
+    flags[k] = records[k].flags;
+  return true;
+}
+
 bool foliage_optics(const materials::MaterialSet& set) noexcept {
   return set.transmission > 0.0f || set.normal_spread > 0.0f;
 }
@@ -114,10 +142,30 @@ ResolveVariant predict_resolve_variant(const SceneDesc& desc, const ResolvedSett
   v.color_format = color_format;
   for (const SceneMeshInfo& info : desc.mesh_info) {
     if (info.water.has_value()) v.water = true;
-    // A mesh the scene asks to sample stochastically (T150, `Mesh.sampling`). A glTF's own
-    // `extras.sampling` is the load's to read: the file is not opened here.
-    for (const SceneMeshInfo::MaterialSampling& entry : info.sampling)
-      if (entry.stochastic) v.stochastic = true;
+  }
+  // **A mesh's materials as the load will find them** (T150; renderer.md, "Stochastic mesh
+  // materials"): a container's own section 33, peeked, and then the scene's `Mesh.sampling` by the
+  // load's one rule, in order. A glTF's `extras.sampling` is not read here (that is its import),
+  // so a glTF stands as plain materials as many as its entries name plus one no entry names.
+  for (u32 m = 0; m < desc.meshes.size(); ++m) {
+    const Vector<SceneMeshInfo::MaterialSampling>* asked =
+        m < desc.mesh_info.size() && !desc.mesh_info[m].sampling.empty()
+            ? &desc.mesh_info[m].sampling
+            : nullptr;
+    Vector<u32> flags;
+    const bool container = io::extension(desc.meshes[m]) == ".clusters";
+    if (container) {
+      if (!peek_material_flags(desc.meshes[m], flags)) continue;  // the load will say why
+    } else if (asked != nullptr) {
+      i32 highest = -1;
+      for (const SceneMeshInfo::MaterialSampling& entry : *asked)
+        highest = entry.material > highest ? entry.material : highest;
+      flags.resize(static_cast<u32>(highest + 2), 0u);
+    }
+    std::string ignored;
+    if (asked != nullptr && !apply_mesh_sampling(*asked, flags, ignored)) continue;  // refused
+    for (const u32 f : flags)
+      if ((f & geometry::k_material_sampling_stochastic) != 0) v.stochastic = true;
   }
   v.terrain = desc.terrain.enabled && desc.terrain.materials.has_value();
   // The mesh room keeps the foliage lines whatever was declared (gpu_scene.cpp, R177's review

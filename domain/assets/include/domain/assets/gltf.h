@@ -130,9 +130,10 @@ struct Material {
   bool double_sided = false;
   // **How it places its texels** (T150; renderer.md, "Stochastic mesh materials"): the material's
   // `extras.sampling`, `"stochastic"` or `"tiled"` (the default, and what a material without the
-  // key reads as) — the word a pack role's `sampling` key uses. Any other value, or one that is not
-  // a string, refuses the file. Written as `geometry::k_material_sampling_stochastic` in the
-  // container's sampling record (`cluster_file_material_sampling`).
+  // key reads as) — the word a pack role's `sampling` key uses, in any case. Any other value is
+  // ignored with a log line (`extras` is every tool's namespace, so nothing in it refuses a file).
+  // Written as `geometry::k_material_sampling_stochastic` in the container's sampling record
+  // (`cluster_file_material_sampling`); a container read back sets it from that flag.
   bool stochastic = false;  // in the padding after double_sided: the record keeps its size
   // **Foliage optics** (R164; renderer.md, "Foliage lit from both sides"), read on a double-sided
   // material only: the diffuse transmittance as a share of the reflectance, from
@@ -355,10 +356,12 @@ bool load_gltf_memory(std::span<const u8> bytes, std::string_view base_dir, Mesh
 // streams), so an entry built before the change is rebuilt and every other file keeps its key.
 // What a scene pins (`renderer::SceneMesh::hash`) is the bytes and nothing else, so a file whose
 // bytes did not move still matches its pin after an importer change: that is `source_bytes_hash`,
-// the same value before any tag. The four-argument form gives both from one read.
+// the same value before any tag. The four-argument form gives both from one read, and, when
+// `materials` is given, the file's own material count from the same parse (T150: what a scene's
+// `Mesh.sampling` is bounded by on a cache hit, whose container may hold one default more).
 bool source_mesh_hash(std::string_view path, u64& out, std::string* error = nullptr);
-bool source_mesh_hash(std::string_view path, u64& out, u64& bytes_out,
-                      std::string* error = nullptr);
+bool source_mesh_hash(std::string_view path, u64& out, u64& bytes_out, std::string* error = nullptr,
+                      u32* materials = nullptr);
 bool source_bytes_hash(std::string_view path, u64& out, std::string* error = nullptr);
 
 // Spans over the mesh's normals, UVs, skin bindings, morph channels and canonical vertex ids for

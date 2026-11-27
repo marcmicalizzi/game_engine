@@ -370,6 +370,15 @@ struct SceneMeshInfo {
   std::optional<SceneWater> water{};
 };
 
+// **The scene's word over a mesh's materials, the one rule** (T150; `SceneMeshInfo::sampling`):
+// `asked` applied in order over `flags`, one word a material of the file's own with the file's
+// `k_material_sampling_stochastic` in, the answer out — a later entry over an earlier one for the
+// same material, -1 every material. The load and the early resolve's prediction both call it.
+// False, with `error`, and `flags` untouched, for an entry naming a material below -1 or at or past
+// `flags.size()`.
+bool apply_mesh_sampling(const Vector<SceneMeshInfo::MaterialSampling>& asked, Vector<u32>& flags,
+                         std::string& error);
+
 // A scene streamed tile by tile (schema `engine.scene.WorldRings`), **carried and never
 // interpreted**, like `SceneAnimation`: the tile ring is the world capability's
 // (docs/subsystems/world.md), which the renderer must not depend on, and the scene file is one file
@@ -846,9 +855,15 @@ struct SourceMesh {
   Vector<i32> part_material;  // the material of every part, -1 for none
   // Parallel to `data.materials`, or empty (every material plain): the container's
   // `ClusterFileMaterialSampling::flags` (`k_material_sampling_stochastic`, R131), which the upload
-  // turns into `gfx::k_material_stochastic` (renderer.md, "Stochastic mesh materials"). A glTF has
-  // no way to say it.
+  // turns into `gfx::k_material_stochastic` (renderer.md, "Stochastic mesh materials"): a glTF's
+  // `extras.sampling` and then the scene's `Mesh.sampling`. **These flags are the authority**;
+  // `data.materials[k].stochastic` is kept equal to them (T150).
   Vector<u32> material_sampling_flags;
+  // How many of `data.materials` are the file's own (T150): a glTF's `materials`, which a cache
+  // hit's container follows with the default the builders append for a primitive with none, so the
+  // scene's `Mesh.sampling` is bounded by, and its -1 reaches, these and never that default. A
+  // container named outright, or a generated one, owns all of its. `~0u`: all of them.
+  u32 file_materials = ~0u;
   std::string image_dir;  // what the relative image paths are relative to
   std::string path;       // the mesh as the scene named it (a form: its source's); for sentences
   u32 primitives = 0;     // glTF primitives merged into it; 0 from a container

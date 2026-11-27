@@ -4511,6 +4511,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     u32 mesh = 0;
   };
   Vector<WaterOpticsEntry> water_optics;
+  // Stochastic requests refused (T150): one line for the load, the count and the first of them.
+  u32 stochastic_refused = 0, refused_mesh = 0, refused_material = 0;
+  const char* refused_reason = nullptr;
   // A water body's depth map (scene.h, `SceneWaterDepth`; water.md, "The depth map") as the image
   // the water branch samples: R8G8B8A8 UNORM, red the 16-bit depth's high byte and green its low
   // (the RHI's formats have no 16-bit UNORM single channel, and a 32-bit float is not filterable
@@ -4889,10 +4892,10 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           const char* refused = use_built && m == data_->terrain_mesh
                                     ? "a terrain material is sampled by its own layers"
                                     : fill_stochastic(material, source, use_built, tex);
-          if (refused != nullptr) {
-            ENGINE_LOG_WARN(log_renderer, "stochastic sampling refused; the material draws plain",
-                            log::field("mesh", m), log::field("material", source_material_index),
-                            log::field("reason", refused));
+          if (refused != nullptr && stochastic_refused++ == 0) {
+            refused_mesh = m;
+            refused_material = source_material_index;
+            refused_reason = refused;
           }
         }
         // An open sea's waves from the spectrum (water.md, "The spectrum"): the table in the five
@@ -5140,6 +5143,10 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     free_mesh_materials_.clear();
     free_mesh_materials_.push_back(Range{mesh_material_base_arena_, mesh_room_.materials});
   }
+  if (stochastic_refused != 0)
+    ENGINE_LOG_WARN(log_renderer, "stochastic sampling refused; they draw plain",
+                    log::field("materials", stochastic_refused), log::field("mesh", refused_mesh),
+                    log::field("material", refused_material), log::field("reason", refused_reason));
   material_count_ = material_table.size();
   has_water_ = false;
   has_terrain_materials_ = false;

@@ -284,4 +284,16 @@ TEST_CASE("renderer: the resolve's prediction reads the file by the renderer's o
   CHECK_FALSE(predict(asked).stochastic);
   asked.mesh_info[0].sampling.push_back({0, true});
   CHECK(predict(asked).stochastic);
+  // In order, by the load's own rule (`apply_mesh_sampling`), not as a set: `[{}, {"sampling":
+  // "Tiled"}]` asks and then takes it back, and loads plain, so it predicts plain.
+  asked.mesh_info[0].sampling.clear();
+  asked.mesh_info[0].sampling.push_back({-1, true});
+  asked.mesh_info[0].sampling.push_back({-1, false});
+  CHECK_FALSE(predict(asked).stochastic);
+  asked.mesh_info[0].sampling.push_back({0, true});  // and one material asked again
+  CHECK(predict(asked).stochastic);
+  // An entry the load refuses predicts nothing.
+  asked.mesh_info[0].sampling.clear();
+  asked.mesh_info[0].sampling.push_back({-2, true});
+  CHECK_FALSE(predict(asked).stochastic);
 }

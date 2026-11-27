@@ -681,12 +681,16 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
     material.emissive = source.emissive;
     material.normal_scale = source.normal_scale;
     assets::set_alpha_word(material, source.alpha);  // R164's foliage optics with it (R207-M1)
+    // How it places its texels (R131): stochastic or plain, which the upload reads; the material
+    // says the same (T150), as the import's did on the miss.
+    const u32 sampling_flags = geometry::cluster_material_sampling(container_data, m).flags;
+    material.stochastic = (sampling_flags & geometry::k_material_sampling_stochastic) != 0;
     out.data.materials.push_back(std::move(material));
     out.part_material.push_back(static_cast<i32>(out.part_material.size()));
-    // How it places its texels (R131): stochastic or plain, which the upload reads.
-    out.material_sampling_flags.push_back(
-        geometry::cluster_material_sampling(container_data, m).flags);
+    out.material_sampling_flags.push_back(sampling_flags);
   }
+  // Every material is the container's own; a glTF's cache hit narrows it to the file's (T150).
+  out.file_materials = container_data.materials.size();
   // The images: a path names a file beside the source mesh, and an image the source embedded
   // travels inside the container, so everything below is the same code for both and a container
   // draws what its source draws. A container written before the bytes were carried has the
@@ -1056,13 +1060,15 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   std::string cache_path;
   u64 source_hash = 0;  // what a cache entry written below records it was built from (T78)
   u64 cache_key = 0;
+  u32 gltf_materials = 0;  // the glTF's own, from the hash's parse (T150, `file_materials`)
   if (io::extension(path) == ".clusters") {
     container = path;
     out.cache = "file";
   } else if (desc.cache || expected_hash != 0) {
     profiling::TraceStage hash_stage("source hash");
     u64 bytes_hash = 0;  // what a pin names; `source_hash` is the cache's key, importer tags in
-    if (!assets::source_mesh_hash(path, source_hash, bytes_hash, &error)) return false;
+    if (!assets::source_mesh_hash(path, source_hash, bytes_hash, &error, &gltf_materials))
+      return false;
     hash_stage.end();
     out.source_hash = source_hash;
     // A scene that names a mesh by its bytes gets those bytes or nothing: a number measured on a
@@ -1119,6 +1125,10 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     // were built (an older engine-view, a cache that lost them, `engine-content build` without
     // `--cache`): the load's texture pass builds whatever of them is missing and trusts the rest.
     adopt_container(container_data, container, desc, out, lod, pages);
+    // A glTF's cache entry: its own materials are the file's, and a default the build appended
+    // after them is not one a scene's `Mesh.sampling` names (T150), as on the miss.
+    if (!cache_path.empty())
+      out.file_materials = std::min<u32>(gltf_materials, out.data.materials.size());
     return true;
   }
   ENGINE_STARTUP_STAGE("mesh build");  // a miss: the import, the repairs, the DAG, the write
@@ -1233,7 +1243,9 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   // a later load reads back, after the build and the write have read the import's own floats.
   for (assets::Material& material : out.data.materials)
     assets::round_trip_alpha_word(material);
-  // And how each places its texels (T150), as a container's section 33 hands it to a hit.
+  // And how each places its texels (T150), as a container's section 33 hands it to a hit; all of
+  // these materials are the file's (the default a part with none draws is the upload's).
+  out.file_materials = out.data.materials.size();
   out.material_sampling_flags.reserve(out.data.materials.size());
   for (const assets::Material& material : out.data.materials)
     out.material_sampling_flags.push_back(assets::cluster_file_material_sampling(material).flags);
@@ -3455,6 +3467,26 @@ bool world_is_dynamic(const WorldDesc& world, bool streams_placements) noexcept 
   return world.enabled && !(world.ground && !streams_placements);
 }
 
+bool apply_mesh_sampling(const Vector<SceneMeshInfo::MaterialSampling>& asked, Vector<u32>& flags,
+                         std::string& error) {
+  const u32 materials = flags.size();
+  for (const SceneMeshInfo::MaterialSampling& entry : asked) {
+    if (entry.material < -1 || entry.material >= static_cast<i64>(materials)) {
+      error = "sampling names material " + std::to_string(entry.material) + " of " +
+              std::to_string(materials) + " (-1 is every material)";
+      return false;
+    }
+  }
+  for (const SceneMeshInfo::MaterialSampling& entry : asked) {
+    for (u32 k = 0; k < materials; ++k) {
+      if (entry.material >= 0 && static_cast<u32>(entry.material) != k) continue;
+      flags[k] = entry.stochastic ? (flags[k] | geometry::k_material_sampling_stochastic)
+                                  : (flags[k] & ~geometry::k_material_sampling_stochastic);
+    }
+  }
+  return true;
+}
+
 bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   if (desc.meshes.empty()) {
     error = "a scene needs at least one mesh";
@@ -3616,21 +3648,22 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     const Vector<SceneMeshInfo::MaterialSampling>& asked = resolved.mesh_info[m].sampling;
     if (asked.empty() || admission.load[m] == 0) continue;
     SourceMesh& source = out.sources[m];
-    const u32 materials = source.data.materials.size();
-    if (source.material_sampling_flags.size() < materials)
-      source.material_sampling_flags.resize(materials, 0u);
-    for (const SceneMeshInfo::MaterialSampling& entry : asked) {
-      if (entry.material >= static_cast<i32>(materials)) {
-        error = resolved.mesh_info[m].name + ": sampling names material " +
-                std::to_string(entry.material) + " of " + std::to_string(materials);
-        return false;
-      }
-      for (u32 k = 0; k < materials; ++k) {
-        if (entry.material >= 0 && static_cast<u32>(entry.material) != k) continue;
-        u32& flags = source.material_sampling_flags[k];
-        flags = entry.stochastic ? (flags | geometry::k_material_sampling_stochastic)
-                                 : (flags & ~geometry::k_material_sampling_stochastic);
-      }
+    // The file's own materials, on a cache hit as on its miss: never the default a build appended.
+    const u32 own = std::min<u32>(source.file_materials, source.data.materials.size());
+    Vector<u32> flags;
+    flags.resize(own, 0u);
+    for (u32 k = 0; k < own && k < source.material_sampling_flags.size(); ++k)
+      flags[k] = source.material_sampling_flags[k];
+    std::string why;
+    if (!apply_mesh_sampling(asked, flags, why)) {
+      error = resolved.mesh_info[m].name + ": " + why;
+      return false;
+    }
+    if (source.material_sampling_flags.size() < own) source.material_sampling_flags.resize(own, 0u);
+    for (u32 k = 0; k < own; ++k) {
+      source.material_sampling_flags[k] = flags[k];
+      source.data.materials[k].stochastic =
+          (flags[k] & geometry::k_material_sampling_stochastic) != 0;
     }
   }
   out.load.meshes_ms = static_cast<f64>(time::monotonic_ns() - meshes_start_ns) / 1.0e6;
