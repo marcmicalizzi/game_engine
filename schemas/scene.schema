@@ -51,11 +51,29 @@ struct MeshSound @version(1) {
   needle_mm: f32 = 0 @unit(mm)
 }
 
+/// How a mesh material places its texels (T150; docs/subsystems/renderer.md, "Stochastic mesh
+/// materials"): tiled, or at three tiles of a triangle lattice blended so no repeat shows.
+enum MeshSampling : u8 {
+  Tiled = 0
+  Stochastic = 1
+}
+
+/// The scene's word on how one of a mesh's materials samples (T150), for a file that cannot say
+/// it in its own `extras.sampling`. It wins over the file's: the scene is where the asset is laid
+/// over a surface many times its texture's size, and a bought file is not the author's to edit.
+struct MeshMaterialSampling @version(1) {
+  /// The material's index in the file's `materials`, which a `.clusters` file built from it keeps.
+  /// -1: every material of the mesh. An index past the file's materials refuses the load.
+  material: i32 = -1
+  sampling: MeshSampling = Stochastic
+}
+
 /// One mesh a scene draws.
 ///
 /// Version 2: `texel_density` (roadmap G14; docs/subsystems/texture.md, "Sized by the asset").
 /// Version 3: `sound` (roadmap S112).
-struct Mesh @version(3) @additive(3) {
+/// Version 4: `sampling` (roadmap T150).
+struct Mesh @version(4) @additive(3, 4) {
   /// What the README, the overlay and a run's summary call it.
   name: string
   /// A glTF, GLB or .clusters file, relative to the scene file.
@@ -80,6 +98,9 @@ struct Mesh @version(3) @additive(3) {
   texel_density: f32 = 0 @since(2)
   /// What its foliage sounds as (S112). Absent: a generated tree's species, else silent.
   sound: MeshSound? @since(3)
+  /// How its materials place their texels, in order, a later entry over an earlier one for the
+  /// same material (T150). Empty: as the file says.
+  sampling: MeshMaterialSampling[] @since(4)
 }
 
 /// A skinned instance's clip, carried for the host and never read by the renderer.

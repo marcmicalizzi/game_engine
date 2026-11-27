@@ -114,6 +114,10 @@ ResolveVariant predict_resolve_variant(const SceneDesc& desc, const ResolvedSett
   v.color_format = color_format;
   for (const SceneMeshInfo& info : desc.mesh_info) {
     if (info.water.has_value()) v.water = true;
+    // A mesh the scene asks to sample stochastically (T150, `Mesh.sampling`). A glTF's own
+    // `extras.sampling` is the load's to read: the file is not opened here.
+    for (const SceneMeshInfo::MaterialSampling& entry : info.sampling)
+      if (entry.stochastic) v.stochastic = true;
   }
   v.terrain = desc.terrain.enabled && desc.terrain.materials.has_value();
   // The mesh room keeps the foliage lines whatever was declared (gpu_scene.cpp, R177's review

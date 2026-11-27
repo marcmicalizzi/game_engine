@@ -1331,9 +1331,9 @@ bool build_one(const std::string& input, const std::string& output, const MeshOp
   for (const assets::Material& source : mesh.materials) {
     // The one conversion the renderer's glTF path calls too (G2), so the two write one record.
     data.materials.push_back(assets::cluster_file_material(source));
-    // How its slots sample their images (section 33), which the texture records below read too.
-    data.material_sampling.push_back(
-        geometry::encode_material_sampling(source.sampling, source.occlusion_strength));
+    // How its slots sample their images (section 33), which the texture records below read too,
+    // and whether it asked for stochastic sampling (T150).
+    data.material_sampling.push_back(assets::cluster_file_material_sampling(source));
   }
   // A primitive that names no material gets one appended default, shared by all of them.
   constexpr u32 k_no_default = ~u32{0};

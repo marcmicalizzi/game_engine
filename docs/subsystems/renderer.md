@@ -1569,8 +1569,22 @@ every frame, view, cut and eye cell reads the same tiles.
   `geometry::k_material_sampling_stochastic` in the container's material sampling record (section
   33's `flags` word, what was its `pad`, so every older container reads plain), which
   `adopt_container` keeps in `SourceMesh::material_sampling_flags` and the upload turns into the
-  bit. A glTF material has no way to say it, and no scene-level override exists yet. The upload logs
-  `stochastic materials` with the count when any are drawn.
+  bit. **An imported material asks for it** (T150, 2026-11-26) with `"extras": {"sampling":
+  "stochastic"}` on the glTF material — a pack role's words; `"tiled"` is the default, and any
+  other value refuses the file ([assets](assets.md#stochastic-sampling-an-imported-material-asks-for))
+  — which the import reads into `assets::Material::stochastic` and both builders of a container
+  write into section 33 (`assets::cluster_file_material_sampling`), so a `.clusters` file built
+  from it carries the request and the renderer's glTF miss draws what a later hit reads back. **A
+  scene's `Mesh.sampling`** (scene schema `Mesh` version 4, `MeshMaterialSampling`) says it for a
+  file that cannot: entries of a material index (`-1`, the default, every material) and
+  `Stochastic` (the default) or `Tiled`, applied in order over what the file says once the mesh is
+  loaded, a later entry over an earlier, and an index past the file's materials refuses the load
+  by name. **The scene's word wins**, because the scene is where an asset is laid over a surface
+  many times its texture's size and a bought file is not its user's to edit; `Tiled` turns off a
+  request a file makes. Both reach the same flag, so the same `_stochastic` module, chosen at load
+  as a role's is; the early resolve's prediction reads `Mesh.sampling` but not a glTF's extras,
+  which only the load opens (a wrong guess is one compile more, "The resolve compiles from the
+  scene file"). The upload logs `stochastic materials` with the count when any are drawn.
 - **The reference path tracer** reads materials through the same `sample_material` and
   `apply_normal_map`, which dispatch on the flag, so a stochastic material reads the same three tiles
   there, at level 0 as every material does in it.
@@ -1586,7 +1600,14 @@ every frame, view, cut and eye cell reads the same tiles.
   and stochastic: the stochastic albedo's mean within 1% of the plain picture's per channel, its
   deviation above 0.8 of the plain one's (contrast held), more than half the pixels different, two
   frames byte-identical, and an alpha-tested row carrying the bit drawn as the plain alpha-tested
-  row; the helper's refusals and the means' packing on the CPU.
+  row; the helper's refusals and the means' packing on the CPU. `renderer: an imported material
+  that asks for stochastic sampling loses its repeat` (`imported_stochastic_tests.cpp`, T150)
+  draws a 2 m glTF plane repeating a 64-texel noise texture eight times, straight on so a period
+  is 64 pixels, and counts the pixel pairs a period apart within 4 codes: nearly all of them plain,
+  under a fifth stochastic, with the mean colour kept to 3 %; a file asking nothing and one saying
+  `"tiled"` draw the same bytes through the plain module, the cache's hit draws its miss's bytes,
+  the scene's `Stochastic` draws the file's request's bytes and its `Tiled` the plain ones. Its
+  scene-file case reads `Mesh.sampling` through `read_scene_file` with no device.
 
 ### Ground materials by place
 

@@ -60,6 +60,24 @@ bool fail(std::string* error, std::string message) {
   return false;
 }
 
+// **What a material's `extras.sampling` says** (T150; gltf.h, `Material::stochastic`): nothing (no
+// extras, extras that are not an object, or no such key), "tiled", "stochastic", or something the
+// engine does not know, which the import refuses.
+enum class SamplingWord : u8 { None, Tiled, Stochastic, Unknown };
+
+SamplingWord sampling_word(const cgltf_material& material) {
+  if (material.extras.data == nullptr) return SamplingWord::None;
+  JsonValue extras;
+  if (!parse_json(material.extras.data, extras).ok || !extras.is_object())
+    return SamplingWord::None;
+  const JsonValue* sampling = extras.find("sampling");
+  if (sampling == nullptr) return SamplingWord::None;
+  if (!sampling->is_string()) return SamplingWord::Unknown;
+  if (sampling->as_string() == "stochastic") return SamplingWord::Stochastic;
+  if (sampling->as_string() == "tiled") return SamplingWord::Tiled;
+  return SamplingWord::Unknown;
+}
+
 const char* result_text(cgltf_result result) noexcept {
   switch (result) {
     case cgltf_result_success: return "success";
@@ -1152,6 +1170,15 @@ bool collect_materials(const cgltf_data& data, MeshData& out, std::string* error
       }
     }
     read_material_extensions(data, source, entry);
+    // T150: `extras.sampling` asks for stochastic sampling, in a pack role's words (gltf.h,
+    // `Material::stochastic`). A value the engine does not know refuses the file rather than
+    // drawing a large surface tiled that its author asked not to be.
+    const SamplingWord sampling = sampling_word(source);
+    if (sampling == SamplingWord::Unknown) {
+      return fail(error, "glTF: material " + std::to_string(i) +
+                             ": extras.sampling must be \"stochastic\" or \"tiled\"");
+    }
+    entry.stochastic = sampling == SamplingWord::Stochastic;
     out.materials.push_back(std::move(entry));
   }
   return true;
@@ -1785,6 +1812,14 @@ bool source_mesh_hash(std::string_view path, u64& out, u64& bytes_out, std::stri
   // none of it keeps its key, and the cache version does not move.
   if (states_g2_reading(*document.data))
     hash = hash_combine(hash, u64{0x4732494d504f5231ull});  // "G2IMPOR1"
+  // And for a material whose `extras.sampling` asks for stochastic sampling (T150): its container's
+  // section 33 now carries the flag, so an entry built from the same bytes before is rebuilt.
+  for (cgltf_size i = 0; i < document.data->materials_count; ++i) {
+    if (sampling_word(document.data->materials[i]) == SamplingWord::Stochastic) {
+      hash = hash_combine(hash, u64{0x5431353053414d50ull});  // "T150SAMP"
+      break;
+    }
+  }
   out = hash;
   return true;
 }
@@ -1921,6 +1956,14 @@ geometry::ClusterFileMaterial cluster_file_material(const Material& source) noex
   material.normal_scale = source.normal_scale;
   material.alpha = alpha_word(source);
   return material;
+}
+
+geometry::ClusterFileMaterialSampling cluster_file_material_sampling(
+    const Material& source) noexcept {
+  geometry::ClusterFileMaterialSampling record =
+      geometry::encode_material_sampling(source.sampling, source.occlusion_strength);
+  if (source.stochastic) record.flags |= geometry::k_material_sampling_stochastic;  // T150
+  return record;
 }
 
 u32 alpha_word(const Material& material) noexcept {

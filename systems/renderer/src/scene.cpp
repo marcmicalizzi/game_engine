@@ -574,8 +574,7 @@ bool write_cluster_cache(const std::string& path, const std::string& source,
   for (const assets::Material& source_material : mesh_data.materials) {
     // engine-content build's own conversion (G2), so the two write one record.
     data.materials.push_back(assets::cluster_file_material(source_material));
-    data.material_sampling.push_back(geometry::encode_material_sampling(
-        source_material.sampling, source_material.occlusion_strength));
+    data.material_sampling.push_back(assets::cluster_file_material_sampling(source_material));
   }
   constexpr u32 k_no_default = ~u32{0};
   u32 default_material = k_no_default;
@@ -1232,7 +1231,12 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   if (desc.stream) pages = std::move(built);
   // A miss draws what a hit draws (R207-M1): the materials take the container's alpha words, which
   // a later load reads back, after the build and the write have read the import's own floats.
-  for (assets::Material& material : out.data.materials) assets::round_trip_alpha_word(material);
+  for (assets::Material& material : out.data.materials)
+    assets::round_trip_alpha_word(material);
+  // And how each places its texels (T150), as a container's section 33 hands it to a hit.
+  out.material_sampling_flags.reserve(out.data.materials.size());
+  for (const assets::Material& material : out.data.materials)
+    out.material_sampling_flags.push_back(assets::cluster_file_material_sampling(material).flags);
   return true;
 }
 
@@ -2856,6 +2860,13 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       info.sound_canopy = static_cast<u8>(mesh.sound->canopy);
       info.sound_needle_mm = mesh.sound->needle_mm;
     }
+    for (const scene::MeshMaterialSampling& entry : mesh.sampling) {  // T150
+      if (entry.material < -1) {
+        error = where + ": sampling.material must be -1 (every material) or an index";
+        return false;
+      }
+      info.sampling.push_back({entry.material, entry.sampling == scene::MeshSampling::Stochastic});
+    }
     std::string resolved =
         io::is_absolute_path(mesh.path) || dir.empty() ? mesh.path : io::join_path(dir, mesh.path);
     if (!mesh.overlay.empty()) {
@@ -3596,6 +3607,30 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       if (described && !resolved.mesh_info[m].name.empty())
         error = resolved.mesh_info[m].name + ": " + error;
       return false;
+    }
+  }
+  // The scene's word on how a mesh's materials sample (T150; schema `Mesh.sampling`), over the
+  // file's: one flag a material, as a container's section 33 would carry it, which the upload
+  // reads.
+  for (u32 m = 0; described && m < resolved.meshes.size(); ++m) {
+    const Vector<SceneMeshInfo::MaterialSampling>& asked = resolved.mesh_info[m].sampling;
+    if (asked.empty() || admission.load[m] == 0) continue;
+    SourceMesh& source = out.sources[m];
+    const u32 materials = source.data.materials.size();
+    if (source.material_sampling_flags.size() < materials)
+      source.material_sampling_flags.resize(materials, 0u);
+    for (const SceneMeshInfo::MaterialSampling& entry : asked) {
+      if (entry.material >= static_cast<i32>(materials)) {
+        error = resolved.mesh_info[m].name + ": sampling names material " +
+                std::to_string(entry.material) + " of " + std::to_string(materials);
+        return false;
+      }
+      for (u32 k = 0; k < materials; ++k) {
+        if (entry.material >= 0 && static_cast<u32>(entry.material) != k) continue;
+        u32& flags = source.material_sampling_flags[k];
+        flags = entry.stochastic ? (flags | geometry::k_material_sampling_stochastic)
+                                 : (flags & ~geometry::k_material_sampling_stochastic);
+      }
     }
   }
   out.load.meshes_ms = static_cast<f64>(time::monotonic_ns() - meshes_start_ns) / 1.0e6;

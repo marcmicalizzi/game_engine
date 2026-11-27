@@ -128,6 +128,12 @@ struct Material {
   geometry::TextureSlotSampling sampling[geometry::k_material_slots];
   u8 alpha_mode = k_alpha_opaque;
   bool double_sided = false;
+  // **How it places its texels** (T150; renderer.md, "Stochastic mesh materials"): the material's
+  // `extras.sampling`, `"stochastic"` or `"tiled"` (the default, and what a material without the
+  // key reads as) — the word a pack role's `sampling` key uses. Any other value, or one that is not
+  // a string, refuses the file. Written as `geometry::k_material_sampling_stochastic` in the
+  // container's sampling record (`cluster_file_material_sampling`).
+  bool stochastic = false;  // in the padding after double_sided: the record keeps its size
   // **Foliage optics** (R164; renderer.md, "Foliage lit from both sides"), read on a double-sided
   // material only: the diffuse transmittance as a share of the reflectance, from
   // `KHR_materials_diffuse_transmission` (its factor t moves t of the diffuse into transmission:
@@ -414,6 +420,10 @@ u32 weld_vertices(MeshData& mesh);
 // material a caller appended included, and nothing when no material reads the second set), the
 // lights (51) and the cameras (52) — after the caller has filled `data.materials`.
 geometry::ClusterFileMaterial cluster_file_material(const Material& material) noexcept;
+// Its section 33 record: the slots' sampling, the occlusion strength, and in `flags` the request
+// for stochastic sampling (`Material::stochastic`, T150), zero when it asks for nothing.
+geometry::ClusterFileMaterialSampling cluster_file_material_sampling(
+    const Material& material) noexcept;
 void write_import_sections(const MeshData& mesh, geometry::ClusterFileData& data);
 
 // **The alpha word's five constants, one way** (R207-M1): the record's alpha word keeps the mode,

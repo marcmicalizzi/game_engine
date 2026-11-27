@@ -275,4 +275,13 @@ TEST_CASE("renderer: the resolve's prediction reads the file by the renderer's o
   CHECK_FALSE(predict(rock).stochastic);
   rock.recipes.back().bytes = R"({"parts": [{"material": {"sampling": "Stochastic"}}]})";
   CHECK(predict(rock).stochastic);
+
+  // A scene `Mesh.sampling` that asks (T150) is read; one that says `Tiled` is not a request.
+  SceneDesc asked = base;
+  asked.mesh_info.resize(asked.meshes.size());
+  REQUIRE_FALSE(asked.mesh_info.empty());
+  asked.mesh_info[0].sampling.push_back({-1, false});
+  CHECK_FALSE(predict(asked).stochastic);
+  asked.mesh_info[0].sampling.push_back({0, true});
+  CHECK(predict(asked).stochastic);
 }

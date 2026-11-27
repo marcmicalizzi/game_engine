@@ -358,6 +358,14 @@ struct SceneMeshInfo {
   static constexpr u8 k_sound_undeclared = 0xff;
   u8 sound_canopy = k_sound_undeclared;
   f32 sound_needle_mm = 0.0f;
+  // **How its materials place their texels, declared** (schema `Mesh.sampling`; T150): in order,
+  // each a material index (-1 for all) and whether it is stochastic, applied over what the file
+  // says once the mesh is loaded, so a later entry wins. Empty: as the file says.
+  struct MaterialSampling {
+    i32 material = -1;
+    bool stochastic = true;
+  };
+  Vector<MaterialSampling> sampling;
   // A water body's (`SceneWater`): set for a mesh the scene's `water` block made, and only then.
   std::optional<SceneWater> water{};
 };

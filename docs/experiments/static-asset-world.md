@@ -153,7 +153,9 @@ Proposed as open rows; the coordinator numbers them.
    ray down through its clusters, so `instances off the ground` checks a hand-placed world, a seat
    can be applied, and a water body over it finds its bottom.
 5. **Stochastic sampling an imported material can ask for.** A per-material flag a glTF can carry
-   (`extras`) or the scene's `Mesh` names, so a large imported surface stops tiling.
+   (`extras`) or the scene's `Mesh` names, so a large imported surface stops tiling. **Done** (T150,
+   2026-11-26): `extras.sampling` and `Mesh.sampling`, the scene's word winning
+   ([assets](../subsystems/assets.md#stochastic-sampling-an-imported-material-asks-for)).
 6. **The caster policy as data on the scene's `Mesh`**, for an imported species.
 
 ## Bought foliage
@@ -409,7 +411,7 @@ and is the better home once it is on main.
 | Coverage LOD, the cross-fade | **yes** for every `MASK` primitive since T147's second leg: coverage errors (section 39) on its island levels, so its leaves go by the foliage threshold and take the cross-fade as the forest's do; opaque twigs stay on the geometric threshold | T147 |
 | An impostor chain | nothing: what would bring a bought tree's wood down to a generated one's | T147 (section 38, not started) |
 | The off-ground check, seating, water depth over the mesh ground | nothing | T149 |
-| Stochastic sampling | nothing (the ground still tiles) | T150 |
+| Stochastic sampling | **asked for** since T150: a material's `extras.sampling` of `"stochastic"`, or the scene's `Mesh.sampling` for a file that cannot say it ([assets](../subsystems/assets.md#stochastic-sampling-an-imported-material-asks-for)); the static world's ground does not ask yet | T150 |
 | The caster policy | defaults | T151 |
 | One variant of a multi-variant file | nothing: the whole row is one mesh, now with a line at import | (a row: a scene `Mesh` naming a node) |
 

@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -514,4 +515,70 @@ TEST_CASE("gltf G2: a Draco-compressed primitive is refused by name") {
   CHECK_FALSE(load(json, mesh, error));
   CHECK(error.find("Draco") != std::string::npos);
   CHECK(mesh.positions.empty());
+}
+
+// T150 (assets.md, "Stochastic sampling an imported material asks for"): a material's
+// `extras.sampling` in a pack role's words. Absent and "tiled" read as tiled, "stochastic" as
+// stochastic and into its container record's flags; any other value, or a value that is not a
+// string, refuses the file by name. Extras of other keys leave the material as it was.
+TEST_CASE("gltf T150: a material's extras.sampling asks for stochastic sampling") {
+  const auto with_materials = [](const std::string& materials) {
+    std::string json = quad_with_extras(false);
+    const std::string at = "\"scene\":0,";
+    json.insert(json.find(at) + at.size(), "\"materials\":[" + materials + "],");
+    return json;
+  };
+  MeshData mesh;
+  std::string error;
+  REQUIRE_MESSAGE(
+      load(with_materials("{\"name\":\"plain\"},"
+                          "{\"name\":\"tiled\",\"extras\":{\"sampling\":\"tiled\"}},"
+                          "{\"name\":\"wall\",\"extras\":{\"sampling\":\"stochastic\"}},"
+                          "{\"name\":\"other\",\"extras\":{\"note\":\"stochastic\"}}"),
+           mesh, error),
+      error);
+  REQUIRE(mesh.materials.size() == 4);
+  CHECK_FALSE(mesh.materials[0].stochastic);
+  CHECK_FALSE(mesh.materials[1].stochastic);
+  CHECK(mesh.materials[2].stochastic);
+  CHECK_FALSE(mesh.materials[3].stochastic);
+  CHECK(cluster_file_material_sampling(mesh.materials[0]).flags == 0u);
+  CHECK(cluster_file_material_sampling(mesh.materials[1]).flags == 0u);
+  CHECK(cluster_file_material_sampling(mesh.materials[2]).flags ==
+        geometry::k_material_sampling_stochastic);
+  // The rest of the record is the plain material's, byte for byte.
+  geometry::ClusterFileMaterialSampling asked = cluster_file_material_sampling(mesh.materials[2]);
+  asked.flags = 0;
+  const geometry::ClusterFileMaterialSampling plain =
+      cluster_file_material_sampling(mesh.materials[0]);
+  CHECK(std::memcmp(&asked, &plain, sizeof(plain)) == 0);
+  // The cache key folds a tag in for a file that asks (an entry built from its bytes before the
+  // reading is rebuilt), and only then: the plain and the tiled file key as their bytes.
+  const test::TempDir tmp("assets_t150_sampling");
+  REQUIRE(tmp.ok());
+  const auto key_is_bytes = [&](const char* stem, const std::string& materials) {
+    const std::string path = tmp.file(std::string(stem) + ".gltf");
+    const std::string json = with_materials(materials);
+    {
+      std::ofstream f(path, std::ios::binary);
+      f.write(json.data(), static_cast<std::streamsize>(json.size()));
+      REQUIRE(f.good());
+    }
+    u64 key = 0;
+    u64 bytes = 0;
+    std::string why;
+    REQUIRE_MESSAGE(source_mesh_hash(path, key, bytes, &why), why);
+    return key == bytes;
+  };
+  CHECK(key_is_bytes("plain", "{}"));
+  CHECK(key_is_bytes("tiled", "{\"extras\":{\"sampling\":\"tiled\"}}"));
+  CHECK_FALSE(key_is_bytes("asked", "{\"extras\":{\"sampling\":\"stochastic\"}}"));
+  for (const char* bad : {"{\"extras\":{\"sampling\":\"Stochastic\"}}",
+                          "{\"extras\":{\"sampling\":\"hex\"}}", "{\"extras\":{\"sampling\":1}}"}) {
+    INFO(bad);
+    MeshData refused;
+    std::string why;
+    CHECK_FALSE(load(with_materials(bad), refused, why));
+    CHECK(why.find("extras.sampling") != std::string::npos);
+  }
 }

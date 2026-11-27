@@ -71,7 +71,8 @@ void put_u32(std::vector<u8>& out, u32 v) {
 
 // A flat n x n grid of quads as a .gltf and its .bin: positions, normals, UVs and 32-bit indices,
 // one material. Enough triangles at n = 16 (512) for several clusters and a coarser level.
-bool write_grid(const std::string& dir, const std::string& stem, u32 n, f32 height = 0.0f) {
+bool write_grid(const std::string& dir, const std::string& stem, u32 n, f32 height = 0.0f,
+                const std::string& material_extras = "") {
   std::vector<u8> bin;
   const u32 side = n + 1;
   for (u32 j = 0; j < side; ++j) {
@@ -129,7 +130,9 @@ bool write_grid(const std::string& dir, const std::string& stem, u32 n, f32 heig
       ",\"type\":\"VEC2\"},{\"bufferView\":3,\"componentType\":5125,\"count\":" +
       std::to_string(index_count) +
       ",\"type\":\"SCALAR\"}],\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[1,"
-      "1,1,1]}}],\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,"
+      "1,1,1]}" +
+      material_extras +
+      "}],\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,"
       "\"TEXCOORD_0\":2},\"indices\":3,\"material\":0}]}],\"nodes\":[{\"mesh\":0}],\"scenes\":[{"
       "\"nodes\":[0]}],\"scene\":0}";
   std::ofstream gltf(dir + "/" + stem + ".gltf", std::ios::binary);
@@ -437,6 +440,32 @@ TEST_CASE("content_build: an unclassified source builds yesterday's bytes under 
   std::string error;
   REQUIRE(geometry::read_cluster_file(tmp.file("flat.clusters"), read, &error));
   CHECK(read.content_classes.empty());  // no section 54
+}
+
+// T150 (renderer.md, "Stochastic mesh materials"): a glTF material's `extras.sampling` reaches the
+// container it builds as section 33's stochastic flag, which is what the renderer's upload reads;
+// one that asks for nothing, or for "tiled", writes the zero every container before it wrote.
+TEST_CASE("content_build: a material's extras.sampling reaches the container's sampling record") {
+  const test::TempDir tmp("content_build_sampling");
+  REQUIRE(tmp.ok());
+  const std::string ddc = tmp.file("ddc");
+  const auto built_flags = [&](const std::string& stem, const std::string& extras) {
+    REQUIRE(write_grid(tmp.path(), stem, 8, 0.0f, extras));
+    content_build::ManifestEntry entry;
+    entry.source = tmp.file(stem + ".gltf");
+    entry.output = tmp.file(stem + ".clusters");
+    const content_build::MeshTask task = run_entry(entry, ddc);
+    REQUIRE_MESSAGE(task.state == content_build::TaskState::Built, task.error.message);
+    geometry::ClusterFileData read;
+    std::string error;
+    REQUIRE_MESSAGE(geometry::read_cluster_file(entry.output, read, &error), error);
+    REQUIRE(read.material_sampling.size() == 1);
+    return read.material_sampling[0].flags;
+  };
+  CHECK(built_flags("plain", "") == 0u);
+  CHECK(built_flags("tiled", ",\"extras\":{\"sampling\":\"tiled\"}") == 0u);
+  CHECK(built_flags("asked", ",\"extras\":{\"sampling\":\"stochastic\"}") ==
+        geometry::k_material_sampling_stochastic);
 }
 
 TEST_CASE("content_build: a classified source gets its own key and section 54 with its ladder") {
