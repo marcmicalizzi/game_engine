@@ -211,6 +211,15 @@ class DeviceStep {
   /// FNV-1a over the state's float bytes (every plane); 0 on an error.
   u64 state_hash(std::string* error = nullptr);
 
+  /// Diagnosis (docs/subsystems/water_live.md, "Two cards"): the workgroups' records and the
+  /// ledger as the card holds them, copied without a flush, so the ledger's `dt` is the length the
+  /// last step's length pass chose. `out` holds group_count() records.
+  bool read_partials_bits(std::span<WaterPartial> out, std::string* error = nullptr);
+  bool read_ledger_bits(WaterLedger& out, std::string* error = nullptr);
+  /// Diagnosis: the step's length pass alone (the records to a length and the ledger's sums), with
+  /// no update after it; the state does not move, but the ledger does.
+  bool run_length_pass(f32 max_dt, std::string* error = nullptr);
+
  private:
   bool upload(const gfx::BufferResource& target, const void* data, u64 bytes, std::string* error);
   bool set_remaining(f32 remaining_s, std::string* error);

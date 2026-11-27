@@ -15,6 +15,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <vector>
@@ -538,6 +540,139 @@ TEST_CASE("water_live: the step is the same bytes twice, and a face's flux is on
     CHECK(hashes[0] != 0u);
     CHECK(hashes[0] == hashes[1]);
     CHECK(hashes[0] == hashes[2]);
+  }
+}
+
+namespace {
+
+// The ladder (W175, 2026-11-26): where two devices' states part. Every line has fixed columns so
+// two machines' logs can be diffed; a rung is the state after that many steps of the count's flow.
+std::string hex32(f32 v) {
+  u32 b = 0;
+  std::memcpy(&b, &v, sizeof b);
+  char text[16];
+  std::snprintf(text, sizeof text, "%08x", b);
+  return text;
+}
+
+u64 hash_bytes(const void* data, usize bytes) {
+  std::vector<f32> words(bytes / sizeof(f32));
+  std::memcpy(words.data(), data, words.size() * sizeof(f32));
+  return water_live::hash_floats({words.data(), words.size()});
+}
+
+constexpr const char* k_plane_names[water_live::k_state_planes] = {"h  ", "hu ", "hv ", "rem"};
+
+struct Rung {
+  std::vector<std::string> lines;  // the rung's summary, then each plane's row hashes
+};
+
+Rung ladder_rung(DeviceStep& step, const std::string& form, u32 steps, bool full) {
+  Rung r;
+  std::string error;
+  const u32 nx = step.config().nx;
+  const u32 ny = step.config().ny;
+  const u32 cells = step.cell_count();
+  std::vector<f32> planes(usize{water_live::k_state_planes} * cells);
+  REQUIRE_MESSAGE(step.read_state_bits({planes.data(), planes.size()}, &error), error);
+  std::vector<water_live::WaterPartial> partials(step.group_count());
+  REQUIRE_MESSAGE(step.read_partials_bits({partials.data(), partials.size()}, &error), error);
+  water_live::WaterLedger ledger;
+  REQUIRE_MESSAGE(step.read_ledger_bits(ledger, &error), error);
+  char head[512];
+  u64 plane_hash[water_live::k_state_planes] = {};
+  for (u32 p = 0; p < water_live::k_state_planes; ++p)
+    plane_hash[p] = water_live::hash_floats({planes.data() + usize{p} * cells, cells});
+  std::snprintf(head, sizeof head,
+                "ladder %-6s step %3u dt %s %.9e time %s+%s h %016llx hu %016llx hv %016llx "
+                "rem %016llx partials %016llx ledger %016llx",
+                form.c_str(), steps, hex32(ledger.dt).c_str(), static_cast<double>(ledger.dt),
+                hex32(ledger.time_hi).c_str(), hex32(ledger.time_lo).c_str(),
+                static_cast<unsigned long long>(plane_hash[0]),
+                static_cast<unsigned long long>(plane_hash[1]),
+                static_cast<unsigned long long>(plane_hash[2]),
+                static_cast<unsigned long long>(plane_hash[3]),
+                static_cast<unsigned long long>(hash_bytes(partials.data(), partials.size() * sizeof(partials[0]))),
+                static_cast<unsigned long long>(hash_bytes(&ledger, sizeof ledger)));
+  r.lines.emplace_back(head);
+  std::string records = "ladder " + form + " step " + std::to_string(steps) + " records";
+  for (const water_live::WaterPartial& w : partials)
+    records += " " + hex32(w.speed_x) + "/" + hex32(w.speed_y) + "/" + hex32(w.source_m3) + "/" +
+               hex32(w.open_m3) + "/" + hex32(w.roundoff_m3);
+  r.lines.push_back(records);
+  for (u32 p = 0; p < water_live::k_state_planes; ++p) {
+    std::string rows = "ladder " + form + " step " + std::to_string(steps) + " rows " +
+                       k_plane_names[p];
+    for (u32 y = 0; y < ny; ++y) {
+      const u64 h = water_live::hash_floats({planes.data() + usize{p} * cells + usize{y} * nx, nx});
+      char word[12];
+      std::snprintf(word, sizeof word, " %08x", static_cast<unsigned>(h & 0xffffffffu));
+      rows += word;
+    }
+    r.lines.push_back(rows);
+    if (!full) continue;
+    // Every cell's bits, a row a line, for the first rungs (`full`).
+    for (u32 y = 0; y < ny; ++y) {
+      std::string cellsline = "ladder " + form + " step " + std::to_string(steps) + " cells " +
+                              k_plane_names[p] + " y " + std::to_string(y) + ":";
+      for (u32 x = 0; x < nx; ++x)
+        cellsline += " " + hex32(planes[usize{p} * cells + usize{y} * nx + x]);
+      r.lines.push_back(cellsline);
+    }
+  }
+  return r;
+}
+
+std::vector<std::string> run_ladder(gfx::Device& device, const Slope& s, Ops ops) {
+  const std::string form = ops_name(ops);
+  StepOptions options;
+  options.ops = ops;
+  std::vector<std::string> out;
+  std::string error;
+  {
+    // The first step's length from the prime pass's records, the length pass alone.
+    DeviceStep probe;
+    load_slope(probe, device, s, options);
+    for (std::string& l : ladder_rung(probe, form, 0, true).lines)
+      out.push_back(std::move(l));
+    REQUIRE_MESSAGE(probe.run_length_pass(k_no_limit, &error), error);
+    water_live::WaterLedger ledger;
+    REQUIRE_MESSAGE(probe.read_ledger_bits(ledger, &error), error);
+    out.push_back("ladder " + form + " length pass alone, dt " + hex32(ledger.dt));
+  }
+  DeviceStep step;
+  load_slope(step, device, s, options);
+  u32 done = 0;
+  for (const u32 rung : {1u, 2u, 3u, 4u, 8u, 16u, 32u, 64u, 128u, 256u, 400u}) {
+    REQUIRE_MESSAGE(step.run_steps(rung - done, k_no_limit, &error), error);
+    done = rung;
+    for (std::string& l : ladder_rung(step, form, rung, rung <= 2u).lines)
+      out.push_back(std::move(l));
+  }
+  out.push_back("ladder " + form + " state hash after 400 " + std::to_string(step.state_hash(&error)));
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("water_live: a ladder of the count's flow, to find where two devices part") {
+  // A diagnosis, not a bound (W175, 2026-11-26; docs/subsystems/water_live.md, "Two cards"): the
+  // same-bytes case's 400 steps, read after steps 1 to 4, 8, ..., 256 and 400, each field's hash
+  // apart, the step's length as the card chose it, the workgroups' records, and every cell's bits
+  // before the first step and after the first two, printed so two machines' logs diff line by line. It asserts only what
+  // holds on every device: the same ladder twice on one device.
+  gfx::Device opened;
+  if (!open_device(opened)) return;
+  const Slope s = slope_case();
+  for (const Ops ops : {Ops::native, Ops::fixed}) {
+    CAPTURE(ops_name(ops));
+    const std::vector<std::string> first = run_ladder(opened, s, ops);
+    const std::vector<std::string> second = run_ladder(opened, s, ops);
+    std::string text;
+    for (const std::string& l : first)
+      text += "\n" + l;
+    MESSAGE(text);
+    CHECK(first == second);
   }
 }
 

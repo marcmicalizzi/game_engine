@@ -380,6 +380,62 @@ bool DeviceStep::read_ledger(Ledger& out, std::string* error) {
   return true;
 }
 
+bool DeviceStep::read_partials_bits(std::span<WaterPartial> out, std::string* error) {
+  if (!valid()) return fail(error, "water_live: no device");
+  if (out.size() != group_count()) return fail(error, "water_live: records of the wrong count");
+  const u64 bytes = u64{group_count()} * sizeof(WaterPartial);
+  const bool ok = run_graph(
+      *device_,
+      [&](gfx::RenderGraph& graph) {
+        const Imports im = import_all(graph, state_, bed_, manning_, source_, partials_, ledger_,
+                                      staging_, faces_x_buffer_, faces_y_buffer_);
+        add_copy(graph, im.partials, im.staging, bytes);
+      },
+      error);
+  if (!ok) return false;
+  std::memcpy(out.data(), staging_.mapped, static_cast<usize>(bytes));
+  return true;
+}
+
+bool DeviceStep::read_ledger_bits(WaterLedger& out, std::string* error) {
+  if (!valid()) return fail(error, "water_live: no device");
+  const bool ok = run_graph(
+      *device_,
+      [&](gfx::RenderGraph& graph) {
+        const Imports im = import_all(graph, state_, bed_, manning_, source_, partials_, ledger_,
+                                      staging_, faces_x_buffer_, faces_y_buffer_);
+        add_copy(graph, im.ledger, im.staging, sizeof(WaterLedger));
+      },
+      error);
+  if (!ok) return false;
+  std::memcpy(&out, staging_.mapped, sizeof out);
+  return true;
+}
+
+bool DeviceStep::run_length_pass(f32 max_dt, std::string* error) {
+  if (!valid()) return fail(error, "water_live: no device");
+  return run_graph(
+      *device_,
+      [&](gfx::RenderGraph& graph) {
+        const Imports im = import_all(graph, state_, bed_, manning_, source_, partials_, ledger_,
+                                      staging_, faces_x_buffer_, faces_y_buffer_);
+        StepParams p = params(current_);
+        p.max_dt = max_dt;
+        graph.add_pass(
+            "water.dt", gfx::PassKind::Compute,
+            [&](gfx::PassBuilder& b) {
+              b.write(im.partials, gfx::Access::ComputeReadWrite);
+              b.write(im.ledger, gfx::Access::ComputeReadWrite);
+            },
+            [this, p](gfx::CommandList commands, gfx::RenderGraph&) {
+              commands.bind_pipeline(gfx::BindPoint::Compute, dt_.pipeline);
+              commands.push_constants(dt_.layout, gfx::ShaderStage::Compute, 0, sizeof p, &p);
+              commands.dispatch(1, 1, 1);
+            });
+      },
+      error);
+}
+
 bool DeviceStep::set_bed(std::span<const f64> bed_m, f64 datum_m, std::string* error) {
   if (!valid()) return fail(error, "water_live: no device");
   if (bed_m.size() != cells_) return fail(error, "water_live: a bed that does not fit the grid");
