@@ -1,0 +1,14 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "glass-street held",
+  "description": "Held at a walker's height in the street, looking at the east panes 25 degrees up the street: the panes over about half of the frame, the red box behind the eye in their reflection and in no view. Nothing moves, so a benchmark along it measures the reflection alone.",
+  "fps": 60,
+  "interpolation": "Smooth",
+  "keys": [
+    {"time": 0, "fov_deg": 60, "position": [-1.5, 1.7, -14], "target": [7.56, 1.2, -9.77]},
+    {"time": 4, "fov_deg": 60, "position": [-1.5, 1.7, -14], "target": [7.56, 1.2, -9.77]}
+  ],
+  "markers": [
+    {"frame": 120, "name": "held"}
+  ]
+}

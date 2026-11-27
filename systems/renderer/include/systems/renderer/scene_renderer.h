@@ -289,6 +289,11 @@ struct FrameStats {
   // The pixels whose lights' shadow rays stopped at the cap with its bound unmet (R213;
   // `Stats::light_cap_pixels`, the record's `light_cap_pixels`).
   u32 light_cap_pixels = 0;
+  // A smooth surface reflects the scene (R71; surface_reflect.h): whether the frame traced, the views
+  // whose culls carried the eye's shell for it, and the rays its resolve traced (one frame late).
+  bool surface_reflect = false;
+  u32 surface_reflect_views = 0;
+  u32 surface_reflect_rays = 0;
   // What the accumulation took from its history this frame (R194 leg 2; `AccumulationPass::Census`,
   // the record's `history_*`): zero without it.
   u32 history_pixels = 0;
@@ -670,6 +675,13 @@ struct Stats {
   // lights still untraced whose irradiance was over `renderer.shadow.light_cap_share` of what the
   // traced ones delivered — the pixels whose error the cap does not bound by that share.
   u32 light_cap_pixels = 0;
+  // **A smooth surface reflects the scene** (R71; surface_reflect.h), the frame last recorded:
+  // whether its resolve traced smooth surfaces' reflections, how many views' culls carried the eye's
+  // shell for them (its casters are counted in `shadow_casters`), and the rays the resolve traced,
+  // one frame late like the visible counts.
+  bool surface_reflect = false;
+  u32 surface_reflect_views = 0;
+  u32 surface_reflect_rays = 0;
   f64 cpu_ns = 0.0;  // wall time inside submit_frame, summed
   // Sampled by sample_gpu_memory(), not by a frame: it is a driver query and the frame path
   // stays free of them.

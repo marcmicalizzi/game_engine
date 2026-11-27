@@ -533,6 +533,29 @@ inline constexpr u32 k_spec_scene_specular = 234u;
 // shipped shadow-mapped foliage takes its back light at the front's shadow term. Only where the
 // frame reads a cache; anywhere else the pixel traces as the top tier does. Clear: the top tier.
 inline constexpr u32 k_shadow_foliage_backlit_estimate = 1u << 22;
+// **A smooth surface reflects the scene** (R71; renderer.md, "Reflections on smooth surfaces";
+// surface_reflect.slang): set, a pixel of a material under `k_reflect_roughness_end` whose reflected
+// share is over `k_reflect_min_share` traces one ray along its mirror direction and takes what it
+// met in place of the ambient, wholly to `k_reflect_roughness_full` and faded linearly to the end.
+// `_diagnostic` (a measurement switch) draws each traced pixel's share red where its ray met
+// nothing and green where it met a surface, scaled past any exposure. Only the ray-traced modules
+// read them, and only in a pipeline whose `k_spec_scene_reflect` is 1.
+inline constexpr u32 k_shadow_surface_reflect = 1u << 23;
+inline constexpr u32 k_shadow_surface_reflect_diagnostic = 1u << 24;
+inline constexpr f32 k_reflect_roughness_full = 0.10f;
+inline constexpr f32 k_reflect_roughness_end = 0.20f;
+inline constexpr f32 k_reflect_min_share = 1.0f / 256.0f;
+// The specialization constant surface_reflect.slang's `k_scene_reflect` is: 1 only where the scene
+// has a material under `k_reflect_roughness_end` (`GpuScene::has_reflective_materials`), so every
+// other scene's resolve has none of its lines. Unset, it is 0.
+inline constexpr u32 k_spec_scene_reflect = 71u;
+// Whether a material row may trace a reflection: not water, not the ground's layers, not foliage,
+// and its roughness factor (which bounds what its map can give) under the end.
+inline bool material_reflects(const ResolveMaterial& material) noexcept {
+  return (material.flags & (k_material_water | k_material_terrain_layers)) == 0u &&
+         (material.flags & k_material_foliage_mask) == 0u &&
+         material.albedo.w < k_reflect_roughness_end;
+}
 // A share (0..1) as the four-bit code the byte holds: the nearest fifteenth; a NaN reads 0.
 inline u32 foliage_code(f32 share) noexcept {
   const f32 clamped = share > 0.0f ? (share < 1.0f ? share : 1.0f) : 0.0f;

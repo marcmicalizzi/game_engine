@@ -646,6 +646,9 @@ class GpuScene {
   // A material row's reflectance is not the stand-in's, or a generator said its tiles may hand one
   // (`tile_meshes_specular`; R234): the resolve's family keeps the declared lines.
   bool has_specular_materials() const noexcept { return has_specular_materials_; }
+  // A row a smooth surface's reflection may trace (gfx::material_reflects; R71): the resolve's family is
+  // made with its lines; without, they fold out. A tile's arriving later draws as before (logged).
+  bool has_reflective_materials() const noexcept { return has_reflective_materials_; }
   // The terrain's mask level as uploaded (renderer.md, "Ground materials by place"): its bytes on
   // the GPU (page table and tiles) and its resident tiles; zero for a terrain without masks.
   u64 terrain_mask_bytes() const noexcept { return terrain_mask_bytes_; }
@@ -2453,6 +2456,7 @@ class GpuScene {
   bool has_stochastic_materials_ = false;  // a row carries gfx::k_material_stochastic (R131)
   bool has_foliage_materials_ = false;     // R177: see has_foliage_materials()
   bool has_specular_materials_ = false;    // R234: see has_specular_materials()
+  bool has_reflective_materials_ = false;  // R71: see has_reflective_materials()
   u64 terrain_mask_bytes_ = 0;
   u32 terrain_mask_tiles_ = 0;
   bool has_water_ = false;                 // a material of the table carries gfx::k_material_water

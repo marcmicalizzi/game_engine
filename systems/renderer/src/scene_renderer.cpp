@@ -21,6 +21,7 @@
 #include <systems/renderer/gi_preroll.h>
 #include <systems/renderer/lighting.h>
 #include <systems/renderer/scene_renderer.h>
+#include <systems/renderer/surface_reflect.h>
 #include <systems/renderer/water_reflect.h>
 #include <systems/renderer/water_refract.h>
 
@@ -137,10 +138,12 @@ tunables::Bool graph_lifetimes{
 // Per shadow cascade, behind the chain's block: its indirect block's three words, then the
 // vertex path's indexed-draw cursor and fallback count for its region.
 constexpr u32 k_shadow_stat_words = 5;
-// Where the cascades' blocks start, in words.
-constexpr u64 shadow_stat_base(u32 views) noexcept {
+// The smooth surfaces' reflection rays (R71), one word behind the chain's block, in words.
+constexpr u64 reflect_stat_word(u32 views) noexcept {
   return u64{k_stat_words} * views + k_alloc_words + k_rt_words;
 }
+// Where the cascades' blocks start, in words.
+constexpr u64 shadow_stat_base(u32 views) noexcept { return reflect_stat_word(views) + 1; }
 // Where the sky's sums start, in bytes: behind every cascade's block, on a 16-byte boundary.
 constexpr u64 sky_stat_offset(u32 views, u32 cascades) noexcept {
   return (sizeof(u32) * (shadow_stat_base(views) + u64{k_shadow_stat_words} * cascades) + 15) &
@@ -361,11 +364,13 @@ const char* resolve_module_name(bool shadows, bool water, bool terrain, bool sto
 }
 
 // R177: one SPIR-V, the foliage lines folded out by the driver where the scene has none.
-gfx::Specialization resolve_specialization(bool foliage, bool light_cap, bool specular) noexcept {
+gfx::Specialization resolve_specialization(bool foliage, bool light_cap, bool specular,
+                                           bool reflect) noexcept {
   gfx::Specialization spec;
   if (!foliage) spec.set(gfx::k_spec_scene_foliage, 0u);
   if (!light_cap) spec.set(gfx::k_spec_scene_light_cap, 0u);  // R213
   if (!specular) spec.set(gfx::k_spec_scene_specular, 0u);    // R234
+  if (reflect) spec.set(gfx::k_spec_scene_reflect, 1u);        // R71
   return spec;
 }
 bool scene_light_cap(std::span<const FireDesc> fires, std::span<const FireDesc> lamps,
@@ -1099,8 +1104,9 @@ bool SceneRenderer::create_frame_pass_pipelines(std::string* error) {
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
   resolve_desc.color_format = k_frame_pass_format;
-  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials(), light_cap_,
-                                                       scene_->has_specular_materials());
+  resolve_desc.specialization =
+      resolve_specialization(scene_->has_foliage_materials(), light_cap_,
+                             scene_->has_specular_materials(), scene_->has_reflective_materials());
   gfx::GraphicsPipelineDesc encode_desc;
   encode_desc.vertex = encode->module;
   encode_desc.vertex_entry = "vs_encode";
@@ -1769,8 +1775,9 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
   resolve_desc.color_format = desc_.color_format;
-  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials(), light_cap_,
-                                                       scene_->has_specular_materials());
+  resolve_desc.specialization =
+      resolve_specialization(scene_->has_foliage_materials(), light_cap_,
+                             scene_->has_specular_materials(), scene_->has_reflective_materials());
   // The one draw's pipeline, unless the renderer is made to draw by class (R151): the same module
   // twice in one batch is the driver compiling it twice. Started on a worker when the scene file
   // was read (early_pipelines.h; R205): taken after the batch, so the rest compiles beside it.
@@ -1780,7 +1787,7 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   const ResolveKey key{resolve->name,      resolve->hash,
                        desc_.color_format, scene_->has_foliage_materials(),
                        light_cap_,         scene_->has_specular_materials(),
-                       bindless.capacity()};
+                       bindless.capacity(), scene_->has_reflective_materials()};
   const bool early = one_draw && desc_.early != nullptr && desc_.early->has(key);
   // Asked only where a compile was started and not taken: another key is then a wrong guess, and
   // is counted as one (a re-create after the take, or nothing started, is not).
@@ -2336,6 +2343,7 @@ void SceneRenderer::fold_visible(u32 slot) {
   stats_.run_drops = stats[k_run_drop_word];
   stats_.cascade_run_drops = stats[k_run_drop_word + 1];
   stats_.light_cap_pixels = stats[k_light_cap_word];  // R213
+  stats_.surface_reflect_rays = stats[reflect_stat_word(view_count())];  // R71
   const u32 dropped = stats_.run_drops + stats_.cascade_run_drops;
   // Each submitted frame once, as the chain's sums (G133): a waited frame is folded when it finishes
   // and again when its slot comes round, which counted a redrawn attempt twice (W156-2).
@@ -2571,6 +2579,9 @@ void SceneRenderer::collect_slot(u32 slot) {
   }
   last.resolve_stop = resolve_stop_tunable(last.frame);
   last.light_cap_pixels = stats_.light_cap_pixels;  // R213
+  last.surface_reflect = stats_.surface_reflect;  // R71
+  last.surface_reflect_views = stats_.surface_reflect_views;
+  last.surface_reflect_rays = stats_.surface_reflect_rays;
   last.sun_ray_rule = shadow_ray_rule(last.frame, resolved_.shadow_opaque_coverage).index;
   last.rt_cache_evicted = static_cast<u32>(stats_.rt.cache_evictions - rt_evictions_folded_);
   rt_evictions_folded_ = stats_.rt.cache_evictions;
@@ -3884,6 +3895,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   stats_.water_reflect = water_reflect;
   stats_.water_reflect_views = 0;
   stats_.water_reflect_level_m = water_mirror ? water_level : 0.0f;
+  // ---- a smooth surface reflects the scene (R71; surface_reflect.h, renderer.md) ---------------
+  //
+  // Where the resolve traces and the scene has a material under the reflection's roughness: the
+  // bits its pixels read, and, where the frame keeps casters, the eye's shell for their rays.
+  const u32 surface_reflect_bits =
+      shadows && scene.has_reflective_materials() ? surface_reflect_flags(frame.frame_index) : 0u;
+  const f32 surface_shell_m =
+      surface_reflect_bits != 0u && casters ? surface_reflect_shell_m() : 0.0f;
+  stats_.surface_reflect = surface_reflect_bits != 0u;
+  stats_.surface_reflect_views = 0;
   // ---- what is under the water (S86; water_refract.h, water.md "What is under the water") ------
   //
   // The same frames, at the volume tier: the water's pixels trace their refracted view to the
@@ -4212,11 +4233,15 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       // the frame's cut holds, since a missing shadow is worse than a slower fill. Wherever the
       // cache is made, so in the resolve's debug modes too (which is how its test holds the direct
       // picture the same).
-      if (gi_cache_.buffer.valid() && resolved_.gi_shell_m > 0.0f &&
-          count < gfx::k_max_caster_volumes &&
-          fit_eye_shell_volume(eye, resolved_.gi_shell_m, volumes[count])) {
+      // The smooth surfaces' reflections take the same volume (R71, surface_reflect.h): one shell,
+      // the larger of the two radii, since a shell holds every smaller one.
+      const f32 gi_shell_m = gi_cache_.buffer.valid() ? resolved_.gi_shell_m : 0.0f;
+      const f32 shell_m = surface_shell_m > gi_shell_m ? surface_shell_m : gi_shell_m;
+      if (shell_m > 0.0f && count < gfx::k_max_caster_volumes &&
+          fit_eye_shell_volume(eye, shell_m, volumes[count])) {
         ++count;
-        ++stats_.gi_shell_views;
+        if (gi_shell_m > 0.0f) ++stats_.gi_shell_views;
+        if (surface_shell_m > 0.0f) ++stats_.surface_reflect_views;
       }
       if (count > 0) set_caster_volumes(cull, std::span<const CasterVolume>(volumes, count));
     }
@@ -4466,6 +4491,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     if (water_reflect && resolve.scene != gfx::k_no_scene)
       resolve.shadow_flags |=
           gfx::k_shadow_water_reflect | water_reflect_shadow_flags(frame.frame_index);
+    // A smooth surface's reflection rays (R71; surface_reflect.slang).
+    if (resolve.scene != gfx::k_no_scene) resolve.shadow_flags |= surface_reflect_bits;
     // And the volume tier's refraction rays (S86; water_refract.slang).
     if (water_refract && resolve.scene != gfx::k_no_scene)
       resolve.shadow_flags |= gfx::k_shadow_water_refract;
@@ -5370,8 +5397,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             cb.fill_buffer(scene.sw_args.buffer, at + sizeof(u32), sizeof(u32) * 2, 1);
           }
           // The frame's two drop counts behind the list's last entry (GpuScene::run_drops_offset).
-          // And the resolve's capped pixels behind them (R213).
-          cb.fill_buffer(scene.visible.buffer, scene.run_drops_offset(), sizeof(u32) * 3, 0);
+          // And the resolve's capped pixels behind them (R213), and its smooth surfaces' rays (R71).
+          cb.fill_buffer(scene.visible.buffer, scene.run_drops_offset(), sizeof(u32) * 4, 0);
         }
         // Each cascade's block, in the shape its draw reads: the vertex path's
         // {vertexCount, instanceCount = 0, ...} or the mesh path's {groups = 0, 1, 1}.
@@ -6967,7 +6994,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           if (fading) b.read(rg_fade, gfx::Access::FragmentRead);  // the shadow rays
           // A masked candidate's pair (R186 A1), and the capped pixels' count behind the list
           // (R213), which the cap's atomics read and write.
-          if (shadows && light_cap_ && (light_cap_word & 0xffu) != 0u) {
+          // And the smooth surfaces' rays (R71), counted in the word behind it.
+          if ((shadows && light_cap_ && (light_cap_word & 0xffu) != 0u) ||
+              surface_reflect_bits != 0u) {
             b.write(rg_visible, gfx::Access::FragmentReadWrite);
           } else {
             b.read(rg_visible, gfx::Access::FragmentRead);
@@ -7212,6 +7241,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             const gfx::BufferCopy drops{scene.run_drops_offset(), sizeof(u32) * k_run_drop_word,
                                         sizeof(u32) * 3};
             cb.copy_buffer(scene.visible.buffer, stat_target->buffer, drops);
+            // The smooth surfaces' rays (R71), the list's fourth word, behind the chain's block.
+            const gfx::BufferCopy rays{scene.run_drops_offset() + sizeof(u32) * 3,
+                                       sizeof(u32) * reflect_stat_word(views), sizeof(u32)};
+            cb.copy_buffer(scene.visible.buffer, stat_target->buffer, rays);
           }
           if (deform_on) {
             const gfx::BufferCopy copy{0, sizeof(u32) * u64{k_stat_words} * views,

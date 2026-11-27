@@ -1581,6 +1581,9 @@ float4 empty_pixel(ResolveParams* params, float2 source, uint2 noise_pixel) {
 #endif
 
 #ifndef RESOLVE_HALF_PASS
+#ifdef RESOLVE_RAY_SHADOWS
+#include "surface_reflect.slang"  // R71: a smooth surface reflects the scene
+#endif
 #include "resolve_class.slang"
 
 // The depth test before the shader (R213; renderer.md, "A cap on the shadow rays a pixel traces"):
@@ -2074,6 +2077,22 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
         color += backlit_sun * sun_visibility;
       }
     } else {
+#ifdef RESOLVE_RAY_SHADOWS
+      // A smooth surface's specular share takes the scene along its mirror direction in place of
+      // the ambient (R71; surface_reflect.slang). Behind a specialization constant, so a scene with
+      // no such material compiles the line below alone. The share and the diffuse weight are the
+      // declared reflectance's where a material states one (R234; brdf.slang), as below.
+      bool traced = false;
+      float3 reflected = ambient;
+      const float3 share = brdf_env_specular_of(surface, n_dot_v);
+      if (k_scene_reflect && surface_reflect_material(material)) {
+        reflected = surface_reflection(params, s, surface, share, ray_bias, ambient, traced);
+      }
+      if (traced) {
+        indirect = ambient * (brdf_env_albedo(surface, n_dot_v) * (1.0 - surface.metallic)) +
+                   reflected * share;
+      } else
+#endif
       indirect = ambient * (brdf_env_albedo(surface, n_dot_v) * (1.0 - surface.metallic) +
                             brdf_env_specular_of(surface, n_dot_v));
     }

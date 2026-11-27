@@ -5152,6 +5152,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   has_terrain_materials_ = false;
   has_masked_ = false;
   has_foliage_materials_ = false;
+  has_reflective_materials_ = false;
   u32 stochastic = 0;
   u32 specular = 0;
   ENGINE_ASSERT(table_material.size() == material_table.size(), "one mark per table entry");
@@ -5170,6 +5171,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     // The packed record, not the extension bit: a material stating the defaults stores zero (R234).
     const Vec4& s = material.specular;
     if (s.x != 0.0f || s.y != 0.0f || s.z != 0.0f || s.w != 0.0f) ++specular;
+    if (gfx::material_reflects(material)) has_reflective_materials_ = true;  // R71
   }
   // The masked pipelines are chosen before any tile is, from `tile_meshes_masked`. A scene with a
   // mesh room keeps the foliage lines whatever was declared, since a tile may hand a foliage

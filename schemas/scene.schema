@@ -2695,7 +2695,9 @@ struct FrameWind @version(1) {
 /// and off-CPU time as a flight's do, and the present path's pacing inside the tail (`pace_ms`).
 ///
 /// Version 27 (R213): `light_cap_pixels`, the pixels whose lights' shadow rays stopped at the cap.
-struct FrameRecord @version(27) {
+///
+/// Version 28 (R71): `surface_reflect_rays`, the rays the resolve traced off smooth surfaces.
+struct FrameRecord @version(28) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -2891,6 +2893,10 @@ struct FrameRecord @version(27) {
   /// untraced lights over the cap's share left — the pixels whose error the cap does not bound by
   /// that share. Zero with the cap off, untraced shadows, or no point reached by more lights than it.
   light_cap_pixels: u32 = 0 @since(27)
+  /// Version 28 (R71; docs/subsystems/renderer.md, "Reflections on smooth surfaces"): the rays the
+  /// resolve traced along a smooth surface's mirror direction, one a pixel that traced, every view.
+  /// Zero with `renderer.reflect.surfaces` off, untraced shadows, or a scene with no smooth material.
+  surface_reflect_rays: u32 = 0 @since(28)
 }
 
 /// What a flight's frame loop allocated on the frame's thread, over its recorded frames (every

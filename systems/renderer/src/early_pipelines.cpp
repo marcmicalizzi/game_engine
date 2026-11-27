@@ -458,6 +458,7 @@ bool EarlyPipelines::start(const gfx::Device& device, const ResolveVariant& vari
   stats_.key.foliage = variant.foliage;
   stats_.key.light_cap = variant.light_cap;
   stats_.key.specular = variant.specular;
+  stats_.key.reflect = variant.reflect;  // R71
   stats_.key.layout = bindless_.capacity();
   stats_.mesh_files = mesh_files.size();
   stats_.started = true;
@@ -524,8 +525,8 @@ bool EarlyPipelines::start(const gfx::Device& device, const ResolveVariant& vari
     desc.fragment_entry = "fs_resolve";
     desc.layout = bindless_.pipeline_layout();
     desc.color_format = stats_.key.color_format;
-    desc.specialization =
-        resolve_specialization(stats_.key.foliage, stats_.key.light_cap, declared.specular);
+    desc.specialization = resolve_specialization(stats_.key.foliage, stats_.key.light_cap,
+                                                 declared.specular, stats_.key.reflect);
     gfx::PipelineHandle made;
     std::string failure;
     const i64 begin = time::monotonic_ns();
@@ -571,6 +572,7 @@ bool EarlyPipelines::take(const ResolveKey& key, gfx::PipelineHandle& out) {
       if (key.foliage != stats_.key.foliage) add("foliage");
       if (key.light_cap != stats_.key.light_cap) add("light_cap");
       if (key.specular != stats_.key.specular) add("specular");
+      if (key.reflect != stats_.key.reflect) add("reflect");
       if (!(key.layout == stats_.key.layout)) add("layout");
       stats_.reason =
           "asked for " + key.module + ", started " + stats_.key.module + "; differs in " + differs;

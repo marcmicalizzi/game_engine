@@ -1,0 +1,22 @@
+{
+  "format": "engine.scene.v1",
+  "name": "glass-street",
+  "camera_path": "camera-path.json",
+  "description": "A street between two walls of curtain-wall glass (roughness 0.06) at Toronto's latitude in late May, a red box standing behind the eye's start and outside the view, and beside the near wall two panels of stone, one honed into the reflection's fade (0.15) and one past it (0.45): the fixture of a smooth surface reflecting the scene (roadmap R71, renderer.md \"Reflections on smooth surfaces\"; README.md).",
+  "sky": {"latitude_deg": 43.65, "day_of_year": 140, "turbidity": 2.5},
+  "meshes": [
+    {"name": "glass", "path": "glass.gltf"},
+    {"name": "fade", "path": "fade.gltf"},
+    {"name": "rough", "path": "rough.gltf"},
+    {"name": "red", "path": "red.gltf"},
+    {"name": "pavement", "path": "pavement.gltf"}
+  ],
+  "instances": [
+    {"mesh": 4, "name": "street", "translation": [0, -0.1, 2], "scale": [60, 0.2, 80]},
+    {"mesh": 0, "name": "east panes", "translation": [7.15, 5, -8], "scale": [0.3, 10, 28]},
+    {"mesh": 1, "name": "east honed stone", "translation": [7.15, 5, 11], "scale": [0.3, 10, 10]},
+    {"mesh": 2, "name": "east rough stone", "translation": [7.15, 5, 21], "scale": [0.3, 10, 10]},
+    {"mesh": 0, "name": "west panes", "translation": [-7.15, 5, 2], "scale": [0.3, 10, 48]},
+    {"mesh": 3, "name": "red box behind the eye", "translation": [-3.5, 1.5, -5], "scale": [2, 3, 2]}
+  ]
+}

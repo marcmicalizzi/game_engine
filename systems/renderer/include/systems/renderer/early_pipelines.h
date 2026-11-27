@@ -55,6 +55,9 @@ struct ResolveVariant {
   bool foliage = false;     // a foliage material (`GpuScene::has_foliage_materials`)
   bool light_cap = false;   // the cap on the shadow rays compiled in (R213, `scene_light_cap`)
   bool specular = false;    // a declared reflectance (R234, `GpuScene::has_specular_materials`)
+  // A smooth material (R71, `GpuScene::has_reflective_materials`): never predicted, since only the
+  // load reads the materials; a scene with one makes one more compile.
+  bool reflect = false;
   gfx::Format color_format = gfx::Format::R8G8B8A8Unorm;
   bool operator==(const ResolveVariant&) const noexcept = default;
 };
@@ -133,6 +136,7 @@ struct ResolveKey {
   // The bindless set's capacity as the device clamped it: the pipeline layout is a function of it,
   // so a renderer whose scene's set has another shape never takes a pipeline made for this one.
   gfx::BindlessConfig layout;
+  bool reflect = false;  // R71's specialization
   bool operator==(const ResolveKey&) const noexcept = default;
 };
 

@@ -313,6 +313,15 @@ bool GpuScene::admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* 
       made[m].specular = Vec4{};
       if (zeroed++ == 0) first_zeroed = m;
     }
+    // A smooth surface's reflection (R71) is chosen from the load's materials, as the stochastic
+    // module is: a tile's smooth material in a scene whose load had none draws as before.
+    if (gfx::material_reflects(made[m]) && !has_reflective_materials_) {
+      ENGINE_LOG_INFO(log_renderer, "a smooth material of a tile's mesh reflects the ambient",
+                      log::field("mesh", name), log::field("material", m),
+                      log::field("reason",
+                                 "no material of the load is under the reflection's roughness, "
+                                 "and the resolve was chosen from the load's"));
+    }
     // Stochastic sampling (R131) where the set asked for it and the scene's resolve is the
     // stochastic one, which is chosen from the load's materials when the scene is made.
     const bool stochastic =

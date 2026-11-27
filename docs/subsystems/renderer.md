@@ -2166,6 +2166,136 @@ of glTF's base colour, so a sheet of the whole would cancel the shadowed card's 
 **Not done.** Water's flag-class mirror in `water.slang` does not name the byte (it checks only
 that the classes stay apart, which they do).
 
+## Reflections on smooth surfaces
+
+Roadmap R71 (batch 77; the Toronto proof of concept's gap G-T8, 2026-11-25: curtain-wall glass at
+roughness 0.06 showed a flat sky tint, with no horizon, no neighbour and no glint). Until then only
+water traced a reflection ray ([water](water.md#reflections-of-the-scene)); every other surface
+took its specular share — `brdf_env_specular` at its roughness and view — of the **ambient**, the
+sky's harmonics at its normal (or the stand-in's hemisphere), through the world-space cache where
+the frame reads one. That is right for a rough surface, whose lobe averages the hemisphere, and
+wrong for a mirror, whose lobe is one direction.
+
+**What the published methods do, briefly.** Real-time engines that trace reflections stop at a
+roughness and fade the traced term out as a surface approaches it: Unreal's ray-traced reflections
+expose a maximum roughness under which they are visible, smoothly faded close to it (the 4.26
+`RayTracingReflectionsMaxRoughness` setting's documentation, read), and Lumen's reflections trace
+up to `r.Lumen.Reflections.MaxRoughnessToTrace`, 0.4 by default by a community cheat sheet (read;
+the source itself not read). Above a mirror's roughness they sample the lobe stochastically, a ray
+or a few a pixel, and lean on a spatial and **temporal** denoiser for what one sample cannot give
+(SEED's hybrid pipeline in *Ray Tracing Gems* ch. 25 and the Frostbite and Unreal denoisers: **not
+read** tonight, named as the field's form, no figure taken). The engine's rule narrows that: a
+frame is right by itself, with no temporal pass behind it, so the first stage is the one form that
+needs none — **one ray along the mirror direction**, deterministic, where the lobe is narrow
+enough that one direction stands for it.
+
+**Which pixels trace** (`surface_reflect.slang`, `surface_reflection`; the constants in
+`visibility_resolve.h`). By the material's own numbers, never its name, so glass, polished stone
+and metal alike:
+
+- **The roughness.** GGX at alpha = roughness² falls to half its peak where tan θh = 0.644 alpha,
+  so the reflected lobe's half width at half maximum is about 1.29 roughness² radians: **0.74° at
+  roughness 0.10** (`gfx::k_reflect_roughness_full`), under which the ray replaces the ambient
+  wholly, and **2.9° at 0.20** (`k_reflect_roughness_end`), from which the pixel keeps the ambient;
+  in between the two are mixed linearly in roughness, so a surface across the band — the honed
+  stone of the fixture, 0.15 — fades rather than steps. The roughness is the pixel's own, after the
+  normal map's variance (R97), and a material whose **factor** is at or past the end never traces
+  (`gfx::material_reflects`: the factor bounds what its map can give).
+- **The share.** The reflected share at this view, `brdf_env_specular(F0, roughness, n·v)` times
+  the fade, over `k_reflect_min_share` (1/256) in some channel: a dielectric's is at least about
+  0.04 at every angle, so the floor only stops the fade's tail and a dark metal from paying a ray
+  for less than a code.
+- **Not** water (its own branch and ray), the ground's layers (their own reflection is the wet
+  film's) or foliage (its own branch). A mirror direction under the surface's own plane (a normal
+  map tilted past the view) keeps the ambient.
+
+**The ray and its hit.** From the reconstructed point lifted along the geometric normal by
+`ray_offset` (the receiver's own grid, as a shadow ray leaves), along the view reflected off the
+shading normal, against the frame's top-level structure with the shadow rays' masks
+(`trace_scene_hit`, hit_shade.slang, the water's), out to 4 km. What it meets is shaded by
+**`shade_hit`, the water's own** — its emission, its base colour at the mip the ray's width
+selects, the sun under one shadow ray, the ambient the resolve would give it through the cache —
+with the hit's shadow traced **at every pixel**, not the water's checkerboard (a mirror shows the
+checkerboard the ripples hide), and then seen through the air along the ray. Where it meets
+nothing, the sky along the mirror direction (`sky_environment`, or the stand-in's
+`environment_radiance`), which is the horizon the ambient never had. A reflection seen in a
+reflection takes the hit's own ambient and sky: **no second ray**. The pixel is then
+`ambient · diffuse + lerp(ambient, traced, fade) · share`; a pixel that does not trace computes the
+line it always did, the same arithmetic in the same order.
+
+**Shared with the water, and what is not.** The trace (`trace_scene_hit`) and the hit's shading
+(`shade_hit`) are the water's functions, called unchanged, so the water modules' hit is the
+surface's hit. The wrapper is not shared: the water's ray leaves the level surface along +y and
+takes the sky under a grazing 1e-4, carries the flat mirror's second ray for its diagnostic, and
+shades its hit's shadow at half rate, and folding those into one function would reorder the four
+ray-traced water modules' code for nothing the surfaces need. `surface_trace` (origin, direction,
+the eye's distance to the origin, a miss) is the piece a **second ray** takes: R235's view through
+glass calls it with the refracted direction and its own miss.
+
+**What the ray meets: the frame's cut, its casters, and the eye's shell.** The water's mirrored
+volume is one plane's; panes face every way, and what a facade reflects is mostly behind the eye
+and beside it — the facade across the street, the car at the kerb — which the frame's cut does not
+hold. The off-frustum casters hold only what a light's sweep asks for. So where the frame keeps
+casters and the scene has a smooth surface, every view's cull carries **the eye's shell**
+(`fit_eye_shell_volume`, eye_shell.h): every pair whose cluster sphere comes within
+`renderer.reflect.shell_m` (32 m) of the eye, whatever the frustum, built non-opaque as a caster at
+the camera's LOD, counted in `Stats::shadow_casters` and in the chain's capacity, and dropped first
+when it runs short (casters before drawn clusters, as every caster). It is the world-space cache's
+volume of the same kind (R69 stage 4), so with the cache on the one volume is the larger radius.
+Past the shell a reflection holds what the frame's structures hold — the cut, the sun's sweep, the
+water's mirror — and the sky beyond. `Stats::surface_reflect_views` counts the views that carried
+it.
+
+**A scene with no smooth surface pays nothing.** Every line sits behind a specialization constant,
+`k_scene_reflect` (`gfx::k_spec_scene_reflect`, 71), **false unless a pipeline sets it**, which the
+resolve's family sets only where a material row of the scene passes `gfx::material_reflects`
+(`GpuScene::has_reflective_materials`, from the load's materials, the way the stochastic module is
+chosen). The driver folds the branch out before it allocates a register, so such a scene's
+pipeline is the module without it. Only the ray-traced modules include the file. **A tile's mesh
+arriving later with a smooth material**, in a scene whose load had none, draws as before and is
+logged once by mesh and material ("a smooth material of a tile's mesh reflects the ambient") — the
+masked and stochastic rule, not foliage's, because the constant is fixed when the pipelines are
+made and the forest would otherwise pay for the lines. The early compile (R205) does not predict
+the constant — only the load reads the materials — so a scene with a smooth material makes one
+more compile at load (`early pipeline not taken`, differs in `reflect`).
+
+**Where it does not trace**: a device without ray queries, or shadows from the cascaded maps or
+off, draws with a module without the ray, and a smooth surface draws what it drew (the second
+tier's verdict holds it).
+
+**The switches.** `renderer.reflect.surfaces` (1; 0 off, the ambient as before; 2 on in even frames
+and off in odd ones, so one flight measures both; 3 **the diagnostic**, a measurement switch: each
+traced pixel's share red where its ray met nothing and green where it met a surface, scaled past
+any exposure) and `renderer.reflect.shell_m` (32; 0 the frame's structures alone). The resolve
+reads them as `ResolveParams::shadow_flags` bits (`gfx::k_shadow_surface_reflect`, `_diagnostic`,
+bits 23 and 24), so the block keeps its 624 bytes. **The rays are counted**: one atomic a wave, by
+a lane that is not a helper, into the visible list's fourth word behind its drop counts (the word
+the capped pixels' count left as padding, zeroed with them), read back one frame late into
+`Stats::surface_reflect_rays` and the frame record's `surface_reflect_rays` (version 28); the
+resolve declares the visible list written whenever the frame traces surfaces, as the cap's count
+does.
+
+**What holds it** (`surface_reflect_tests.cpp`, on the tree's fixture
+`content/test-scenes/glass-street`: two walls of glass at 0.06 across a 14 m street, a red box
+behind the eye and outside its view, beside the near wall a honed panel at 0.15 and a rough one at
+0.45, at 14:00).
+
+R71_MEASURED_TESTS
+
+**What it costs.** R71_MEASURED_COST
+
+**What it does not do, and the glossy stage.** One ray, so a surface rougher than 0.1 shows a
+mirror image mixed with the ambient rather than a blurred one; the band is narrow (2.9° of lobe at
+its end) for that reason. **A glossy cone** — a reflection whose blur follows the lobe from 0.1 to
+about 0.4 — needs either several rays a pixel along a fixed (not random) set of lobe directions,
+whose cost grows with the count and whose pattern a frame with no temporal pass shows as aliasing,
+or one ray against a **prefiltered** hit (the hit's radiance read at a mip of a scene radiance
+cache, R69's cells, by the cone's width at the hit), which is the cheaper and the one the cache
+already half-holds. Not built. No point lights, normal maps or ground detail on the hit (the
+water's `shade_hit`), no reflection of a reflection, no refraction (R235 attaches to
+`surface_trace`), and what stands farther than the shell outside every frustum and every caster
+volume is not in a pane.
+
 ## Alpha-tested geometry
 
 Roadmap R65 (plan 04 §4.3). A material whose glTF `alphaMode` is `MASK` draws nothing where its base

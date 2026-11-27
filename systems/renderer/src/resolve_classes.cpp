@@ -133,8 +133,9 @@ bool SceneRenderer::create_resolve_class_pipelines(bool linear, std::string* err
     desc.depth_test = true;
     desc.depth_write = false;
     desc.depth_compare = gfx::CompareOp::Equal;
-    desc.specialization = resolve_specialization(scene_->has_foliage_materials(), light_cap_,
-                                                 scene_->has_specular_materials());  // R177, R234
+    desc.specialization = resolve_specialization(
+        scene_->has_foliage_materials(), light_cap_, scene_->has_specular_materials(),
+        scene_->has_reflective_materials());  // R177, R234, R71
     if (!pipelines_.resolve_class[f].valid() &&
         !gfx::create_graphics_pipeline(device, desc, pipelines_.resolve_class[f], error)) {
       return false;

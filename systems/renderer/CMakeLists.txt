@@ -41,7 +41,7 @@ engine_module(NAME renderer LAYER systems
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
           src/overlay.cpp src/scene_leaves.cpp src/scene_water.cpp src/water_surf.cpp src/scene_wind.cpp src/scene_flora.cpp src/flora_motion.cpp
           src/flora_poser.cpp src/flora_census.cpp src/sway_lod.cpp src/scene_fire.cpp src/far_forest.cpp src/far_tile.cpp src/far_offered.cpp src/water_reflect.cpp
-          src/water_refract.cpp
+          src/water_refract.cpp src/surface_reflect.cpp
           src/scene_ground_plan.cpp src/sway_forms.cpp src/source_images.cpp
           src/resolve_classes.cpp src/early_pipelines.cpp src/temporal_change.cpp src/texture_feedback.cpp
           src/exposure_pass.cpp
@@ -72,6 +72,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/trail_tests.cpp
                     tests/shadow_map_tests.cpp tests/texture_tests.cpp tests/imported_streams_tests.cpp tests/imported_stochastic_tests.cpp
                     tests/dynamic_instances_tests.cpp tests/fire_tests.cpp tests/lamp_tests.cpp
+                    # R71: a smooth surface reflects the scene (content/test-scenes/glass-street).
+                    tests/surface_reflect_tests.cpp
                     tests/scene_georeference_tests.cpp
                     tests/tile_layout_tests.cpp tests/node_layout_tests.cpp tests/alpha_mask_tests.cpp
                     # R207: the micromaps' stored bake's key and bytes on the CPU; no device.
