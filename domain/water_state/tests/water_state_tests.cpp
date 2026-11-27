@@ -81,6 +81,7 @@ struct DamResult {
   f64 l1_relative = 0.0;  // sum |h - exact| dx over sum exact dx
   f64 min_depth = 0.0;
   f64 volume_error = 0.0;  // relative
+  u64 hash = 0;            // the state's bytes at the end
 };
 
 DamResult run_dam(u32 nx, f64 hr) {
@@ -110,6 +111,7 @@ DamResult run_dam(u32 nx, f64 hr) {
   }
   r.l1_relative = err / norm;
   r.volume_error = std::fabs(solver.surface_volume_m3() - before) / before;
+  r.hash = solver.state_hash();
   return r;
 }
 
@@ -769,6 +771,18 @@ TEST_CASE("water_state: the slope's bytes are the same on every toolchain") {
   const u64 hash = s.solver->state_hash();
   if (hash != k_pinned) MESSAGE("replacement: constexpr u64 k_pinned = " << hash << "ull;");
   CHECK(hash == k_pinned);
+}
+
+TEST_CASE("water_state: a dam break's bytes over a flat bed are the same on every toolchain") {
+  // The pin of the flat bed's path: the state's hash after Stoker's wet-bed case at 800 cells
+  // (above), taken on MSVC before W199's reconstruction for moving water (2026-11-26). Every face
+  // of a flat bed has the same bed on both sides, so a change to what a face does where the bed
+  // steps must leave this number standing: it is the proof that the flat path did not move. GCC
+  // and Clang reproduce it for the same reasons as the slope's pin.
+  const DamResult r = run_dam(800, 0.001);
+  constexpr u64 k_pinned = 11759616244214831310ull;  // MSVC 14.51, 2026-11-26
+  if (r.hash != k_pinned) MESSAGE("replacement: constexpr u64 k_pinned = " << r.hash << "ull;");
+  CHECK(r.hash == k_pinned);
 }
 
 TEST_CASE("water_state: a step refuses inputs that do not fit the grid") {

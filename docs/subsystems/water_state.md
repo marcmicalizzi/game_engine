@@ -212,6 +212,8 @@ why. Measured on MSVC 14.51, `msvc-debug` unless named, 2026-11-25:
 | `a hollow at twice the cell is recorded beside it` | the same at 0.25 m, Q 0.1 | the same less the lip | below |
 | `a hollow's crest in one dimension` | the section alone, one cell wide, q 0.05 m²/s | critical flow on the lip; the depth lost across the wall within 25 % of q Δz / (h_L abs(a⁻)) | below |
 | `a hollow's lake stands at E_c plus the crest's friction over a vertical wall` | the same run against W176's bound on the lake's level | **an expected failure** (`doctest::should_fail`): it fails today; the day it passes the suite fails and says a scheme holds moving water over a step | fails, as expected |
+| the bumps, the sill, the ledge, the perturbed and emerged lakes, section 8's graded and wall hollows | W199's cases (below) | the lakes, the ledge and the graded hollow held; the bumps and the sill reported | "Moving water over a bed that steps" |
+| `a dam break's bytes over a flat bed are the same on every toolchain` | Stoker's 800-cell run's hash | the hash MSVC gave, 11759616244214831310 | pinned |
 | `the same bytes twice and at any thread count` | the rough slope with everything on, 20 s: twice on one thread, once on four workers three rows a job | the same state hash all three times | equal |
 | `the slope's bytes are the same on every toolchain` | the same run's hash | the hash MSVC gave, 17390608002821259899 | pinned |
 | `a step refuses inputs that do not fit the grid` | a bed of the wrong size | nothing changes, the step returns 0 | |
@@ -271,7 +273,67 @@ before it is built, then held by W176's bound. **W176 is changing its specificat
 wall is a bed discontinuity on which no shallow-water scheme is owed a unique answer, so the 5 %
 bound moves to a graded approach (the bed's rise across a face near the sill a small fraction of the
 local depth), at Δx and Δx/2 with the error falling, and the vertical wall stays a reported case;
-the graded approach is not built here yet.
+the graded approach is built since 2026-11-26 and passes (below).
+
+## Moving water over a bed that steps
+
+(Roadmap W199, 2026-11-26: the cases that will judge a reconstruction keeping moving steady states,
+built and measured on today's scheme before any change to it; `moving_water_tests.cpp` and the
+section 8 cases of `hollow_tests.cpp`.) A case today's scheme fails prints its numbers and asserts
+only what holds and must keep holding (nothing that is not a finite number, the count, the
+settling); the bound the changed scheme is to meet is a named constant beside it, not yet asserted.
+The bumps are Berthon and Michel-Dansac's §6.2.2 runs (arXiv 2501.03975, read at the source for the
+cases' set-up: g 9.81, (0, 25), Z = max(0, 0.05 (x − 8)(12 − x)), the start h + Z = H0 with q = q0
+everywhere, q0 imposed at the left edge, h = H0 at the right where the outflow is subcritical), which
+are SWASHES §3.1's; the edges' imposed values are the case's own (an open edge, and the edge cell's
+discharge or depth written back after every step), so no edge kind is added. The exact depth is
+Bernoulli's head solved per cell (the cubic h³ + (z − E) h² + q²/2g = 0, *derived*; SWASHES §3.1's
+cubics are this with E from the outflow's depth or the crest's critical one), and the shock is where
+the two depths keep q²/h + gh²/2. The error e_v = √((1/Δx) Σ |v_{i+1} − v_i|²) over neighbouring
+cells, for v = q and B = q²/2h² + g(h + z), is the paper's (§6.2.2, the 1/Δx weight read in its
+markup). Measured on MSVC 14.51, 2026-11-26 (the 75-cell grids in every build, the finer ones and
+the hollows in optimised builds):
+
+| case | cells | e_q | e_B | max ∣h − exact∣ | the paper's hydrostatic first order (HLL, 75 cells) |
+|---|---|---|---|---|---|
+| subcritical bump, q0 4.42, H0 2, 500 s | 75 / 150 | 0.131 / 0.0918 | 0.302 / 0.208 | 0.031 / 0.016 | 7.73e-2, 1.79e-1 (its reconstruction: 1.06e-14, 2.73e-14) |
+| transcritical bump, q0 1.53, free outflow, 125 s | 75 / 150 / 300 | 0.065 / 0.045 / 0.031 | 0.247 / 0.160 / 0.106 | 0.028 / 0.014 / 0.0073, the largest within two cells of the crest | 3.74e-2, 1.45e-1 (4.73e-14, 4.50e-14) |
+| bump with a shock, q0 0.18, H0 0.33, 1000 s | 75 / 150 | 0.091 / 0.106 | 1.18 / 1.63 | 0.013 / 0.0068 away from the shock; the shock's cell 11.83 / 11.75 m against 11.666 m | 5.72e-2, 6.92e-1 (7.09e-2, 8.17e-1: not to improve) |
+| supercritical sill: q 0.5 at 0.1 m (Fr 5.05) over 0.05 m and 2 m, 0.05 m cells, 10 s | 200 | 0.079 | 0.015 | 0.0050 | — (this case's own; the top stays supercritical, E 1.374 m against E_c + z 0.492 m) |
+
+The errors are of the paper's order and fall with the cell (the reference's central-upwind flux is
+not HLL, so they are not the same numbers); its reconstruction holds the two smooth bumps to
+10⁻¹⁴, and `k_bump_steady_bound` (1e-11) and `k_bump_depth_bound` (1e-10) are what the change will
+be held to. The lakes beside a dry bed, held today and to stay held: **the dyadic lake with dry
+islands, every wet cell beside an island given ±2⁻⁵⁶ m²/s**, 20 s: surface drift 0, fastest
+8.0e-16 m/s, nothing clamped (held to 1e-13 m and 1e-11 m/s); **the paper's emerged lake** (its
+§6.2.1: the bed exp(1 − 1/(1 − (4(x − ½))²)) on (0, 1), top 1, under a surface at 0.5, 50 cells, to
+t = 1; `det::exp`): L2 errors 0 and 0 at rest (the paper's hydrostatic 1.85e-17 and 1.24e-16), and
+q 2.1e-18 with the hair; **a slow lake against a ledge** (0.3 m at 0.03 m/s against a 0.5 m ledge
+carrying a 1 mm film, closed edges, 20 s): the ledge's water never above its start (0.005 m³; 0.0044
+at the end, the film draining back). And **the flat bed's bytes are pinned**: Stoker's 800-cell run's
+state hash, 11759616244214831310 on MSVC, which a change to what a face does where the bed steps
+must leave standing.
+
+**Section 8's hollows, as one-dimensional columns** (`Geometry::graded` and `wall`, `one_dimensional`:
+section 8's geometry is the same across its 8 m, so a column is its run per metre at the unit
+discharge; 300 s; **the level is the mean over the flat floor from 1 to 4 m, the floor less the
+source's metre, and the last 20 s**, section 8's reading, confirmed by W176, the row that owns the
+specification). **The graded hollow passes today**, both discharges, both cells, the error falling,
+and is held:
+
+| q (m²/s) | cell | graded: level over the sill | error outside E_c … E_c + friction | bound | wall: level | the wall's first-order limit |
+|---|---|---|---|---|---|---|
+| 0.05 | 0.125 | 0.09865 m (+3.7 %) | 2.31 mm | 4.76 mm | 0.12787 m (+34 %) | 0.1333 m |
+| 0.05 | 0.0625 | 0.09771 m (+2.7 %) | 1.37 mm | 4.76 mm | 0.12824 m | |
+| 0.01 | 0.125 | 0.03521 m (+8.2 %) | 0.92 mm | 1.63 mm | 0.04755 m (+46 %) | 0.0475 m |
+| 0.01 | 0.0625 | 0.03474 m (+6.8 %) | 0.45 mm | 1.63 mm | 0.04781 m | |
+
+Every run is settled (its 20 s mean moved under 6e-9 m over the last τ on the approach, 9e-7 m at
+the wall), passes its inflow and counts its water to 1e-12. On the graded approach the hydrostatic
+reconstruction carries the hollow's energy to the crest, as W199's reading of the scheme predicted:
+the defect is the wall's, and the gain of a scheme that keeps moving states is to show on the bumps
+and the wall, with the graded hollow the guard that nothing that worked broke.
 
 ## Determinism
 
@@ -315,9 +377,8 @@ device and need nothing.
   closed and open edges.
 - A second-order form (in space, with a limiter, and in time), and a reconstruction that keeps a
   moving steady state across a bed step ("The hollow").
-- **A case of moving water over a bed that changes from cell to cell with a closed form**: a steady
-  flow over a smooth bump, subcritical and transcritical, against its closed form. No case holds
-  that today; it is owed, with W176's graded hollow.
+- **The bumps held to their closed forms**: built and reported since 2026-11-26 ("Moving water over a
+  bed that steps"), not held until a reconstruction keeps moving steady states (W199).
 - The ground's store draining and drying between wettings, and a water table for gaining reaches.
 - A law for the carried quantities' exchange with the bed (W178's): the hook is in, the law is not.
 
@@ -339,7 +400,8 @@ Read on 2026-11-25 through the fetch tool, as HTML renderings; equations only we
 | Delestre et al., SWASHES, arXiv 1110.0288 | Stoker's (§4.1.1) and Ritter's (§4.1.2) solutions and their parameters, Thacker's planar surface in a paraboloid (§4.2.2) | read (ar5iv rendering, those sections) | the paper's text arXiv's; its code is CeCILL-V2 and was **not** read or used |
 | Green and Ampt (1911), Bélanger's jump, Rawls et al. (1993) | the infiltration rate, the jump's head loss, the soils' K and ψ | through the grounding page (§3, §4), which read them in the encyclopaedia's articles and TxDOT's manual | as the grounding page records |
 | Sun, Xing (2023), arXiv 2308.09265 | the artifact at a discontinuous bed: numerical viscosity, not shrinking under refinement, wrong convergence for subsonic flow | abstract | arXiv's non-exclusive distribution licence |
-| Berthon, Michel-Dansac (2025), arXiv 2501.03975 | a fully well-balanced extension of the hydrostatic reconstruction, named as the candidate; nothing taken | abstract | CC BY-NC-ND 4.0 |
+| Berthon, Michel-Dansac (2025), arXiv 2501.03975 | a fully well-balanced extension of the hydrostatic reconstruction, named as the candidate; for W199's cases (2026-11-26) the facts of §6.2.1–6.2.2: the beds, starts, edges, run lengths, g, the error measure and the printed errors of Tables 3, 4, 6–8 | abstract; §6 through a note of the arXiv HTML's own markup taken on 2026-11-26, numbers only | CC BY-NC-ND 4.0: numbers and facts, no text |
+| SWASHES §3.1 (Delestre et al., arXiv 1110.0288) | the bumps' cases, as the paper above runs them; the cubics are re-derived here from Bernoulli's head, not taken | not read for W199; through the paper above | the paper's text arXiv's |
 | W176's specification of the hollow | the geometry, the closed form at the crest, the bounds, the settling time | the roadmap row's own page section | the engine's |
 
 ## The design: a state in a world

@@ -4,12 +4,14 @@
 // "The hollow"). `run_hollow` is the case's whole run and returns everything it measured, so a
 // later case (W176's tie to the steady solve) adds its comparison beside these without running the
 // water again or changing this file's cases.
+#include <core/math/deterministic.h>
 #include <domain/water_state/water_state.h>
 
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -65,17 +67,55 @@ Crest crest_for(f64 q_total) {
 
 enum class Start { below, above };  // the plan's level (2 cm under the sill), or 2 E_c over it
 
+/// `first`: the 2 m crest in the 8 m hollow, a vertical wall before it (W184's run). `graded` and
+/// `wall`: W176's respecified geometry (docs/experiments/water-state-grounding.md, section 8),
+/// everything 8 m wide so nothing contracts in plan; `graded` rises to the sill on the approach
+/// z = -y_r (e^(x'/l) - 1), `wall` keeps the floor flat to a vertical wall at the crest.
+enum class Geometry { first, graded, wall };
+
 struct HollowSpec {
-  f64 discharge_m3_s = 0.1;
+  f64 discharge_m3_s = 0.1;  // first: through the 2 m crest; graded and wall: over the 8 m width
   f64 cell_m = 0.125;
   Start start = Start::below;
+  Geometry geometry = Geometry::first;
+  /// One cell wide (graded and wall only): section 8's geometry is the same in every row, so the
+  /// column is the 8 m section's run per metre of width at the unit discharge.
+  bool one_dimensional = false;
 };
 
+// Section 8's approach: y_r the smaller discharge's critical depth, l = 1.25 m (ten cells of
+// 0.125 m), floored at the hollow's floor (x' <= 3.98 m).
+constexpr f64 k_approach_yr = 0.02169;
+constexpr f64 k_approach_l = 1.25;
+constexpr f64 k_width = 8.0;          // section 8's crest and hollow width
+constexpr f64 k_spec8_run_s = 300.0;  // section 8's run, fifteen of the slower lake's tau
+
+f64 spec8_bed(Geometry g, f64 cx) {
+  if (cx < 8.0) {
+    if (g == Geometry::wall) return k_floor;
+    const f64 z = -k_approach_yr * (det::exp((8.0 - cx) / k_approach_l) - 1.0);
+    return z > k_floor ? z : k_floor;
+  }
+  if (cx < 8.5) return 0.0;
+  return -k_slope * (cx - 8.5);
+}
+
+/// The crest's closed form for a run: section 8's unit discharge Q / 8 is the first geometry's
+/// Q / 2, and its lake's time constant A E_c / (1.5 Q) is over the same 64 m^2.
+Crest crest_of(const HollowSpec& spec) {
+  if (spec.geometry == Geometry::first) return crest_for(spec.discharge_m3_s);
+  Crest c = crest_for(spec.discharge_m3_s / k_width * k_crest_width);
+  c.tau_s = k_lake_area * c.ec / (1.5 * spec.discharge_m3_s);
+  return c;
+}
+
 struct HollowRun {
-  f64 level = 0.0;          // mean over x 2..6, y 2..6 over the last 10 s, m over the sill
-  f64 level_range = 0.0;    // that mean's range over the last 10 s
-  f64 level_change = 0.0;   // the 10 s mean now less the 10 s mean one tau earlier
+  f64 level = 0.0;          // first: mean over x 2..6, y 2..6 over the last 10 s, m over the sill;
+                            // graded and wall: over the flat floor x 1..4 m, the last 20 s
+  f64 level_range = 0.0;    // the level's range over the same window
+  f64 level_change = 0.0;   // the window's mean now less the window's mean one tau earlier
   f64 outflow_m3_s = 0.0;   // through the free edge over the last 10 s
+  f64 inflow_m3_s = 0.0;    // what the source gives a second
   f64 mass_balance = 0.0;   // source - (stored now - stored at start) - out, m^3
   f64 water_through = 0.0;  // the source's whole volume, the balance's scale
   f64 crest_depth = 0.0;    // mean over the crest's last column of cells, at the end
@@ -84,11 +124,12 @@ struct HollowRun {
 };
 
 HollowRun run_hollow(const HollowSpec& spec) {
-  const Crest crest = crest_for(spec.discharge_m3_s);
+  const Crest crest = crest_of(spec);
+  const bool spec8 = spec.geometry != Geometry::first;
   const f64 dx = spec.cell_m;
   Config config;
   config.nx = static_cast<u32>(13.5 / dx + 0.5);
-  config.ny = static_cast<u32>(8.0 / dx + 0.5);
+  config.ny = spec8 && spec.one_dimensional ? 1u : static_cast<u32>(8.0 / dx + 0.5);
   config.cell_m = dx;
   config.gravity = k_g;
   config.edges.east = Edge::open;  // the free edge at x = 13.5
@@ -103,7 +144,9 @@ HollowRun run_hollow(const HollowSpec& spec) {
       const f64 cy = (y + 0.5) * dx;
       const bool in_outlet = cy > 3.0 && cy < 5.0;
       f64 z = 10.0;  // wall: never wet
-      if (cx < 8.0)
+      if (spec8)
+        z = spec8_bed(spec.geometry, cx);
+      else if (cx < 8.0)
         z = k_floor;
       else if (cx < 8.5 && in_outlet)
         z = 0.0;
@@ -111,7 +154,8 @@ HollowRun run_hollow(const HollowSpec& spec) {
         z = -k_slope * (cx - 8.5);
       const u32 i = solver.index(x, y);
       bed[i] = z;
-      if (cx < 8.0) solver.depth()[i] = start_level - z;
+      if (cx < 8.0 && start_level > z) solver.depth()[i] = start_level - z;
+      // Q over 8 m^2 in every geometry: section 8's column takes q per metre of its length.
       if (cx < 1.0) source[i] = spec.discharge_m3_s / inflow_area;
     }
   }
@@ -128,7 +172,9 @@ HollowRun run_hollow(const HollowSpec& spec) {
       for (u32 x = 0; x < config.nx; ++x) {
         const f64 cx = (x + 0.5) * dx;
         const f64 cy = (y + 0.5) * dx;
-        if (cx > 2.0 && cx < 6.0 && cy > 2.0 && cy < 6.0) {
+        const bool in_window =
+            spec8 ? cx > 1.0 && cx < 4.0 : cx > 2.0 && cx < 6.0 && cy > 2.0 && cy < 6.0;
+        if (in_window) {
           const u32 i = solver.index(x, y);
           sum += solver.depth()[i] + bed[i];
           ++count;
@@ -138,9 +184,12 @@ HollowRun run_hollow(const HollowSpec& spec) {
     return sum / count;
   };
 
-  // Up to the last tau + 20 s in one go, then one second at a time, the lake's level sampled.
+  // Up to the last tau + 20 s in one go, then one second at a time, the lake's level sampled (a
+  // window of 10 s, section 8's 20 s).
+  const u32 window = spec8 ? 20u : 10u;
+  const f64 run_s = spec8 ? k_spec8_run_s : k_settle_s;
   const u32 tail_s = static_cast<u32>(crest.tau_s) + 21;
-  solver.advance(in, k_settle_s - tail_s);
+  solver.advance(in, run_s - tail_s);
   std::vector<f64> samples;
   f64 out_before_last10 = 0.0;
   for (u32 s = 0; s < tail_s; ++s) {
@@ -150,15 +199,18 @@ HollowRun run_hollow(const HollowSpec& spec) {
   }
   const auto mean_of = [&](usize end) {
     f64 m = 0.0;
-    for (usize i = end - 10; i < end; ++i)
+    for (usize i = end - window; i < end; ++i)
       m += samples[i];
-    return m / 10.0;
+    return m / window;
   };
   HollowRun run;
+  for (f64 s : source)
+    run.inflow_m3_s += s;
+  run.inflow_m3_s *= dx * dx;
   run.level = mean_of(samples.size());
   f64 lo = samples.back();
   f64 hi = samples.back();
-  for (usize i = samples.size() - 10; i < samples.size(); ++i) {
+  for (usize i = samples.size() - window; i < samples.size(); ++i) {
     lo = std::min(lo, samples[i]);
     hi = std::max(hi, samples[i]);
   }
@@ -174,7 +226,7 @@ HollowRun run_hollow(const HollowSpec& spec) {
     for (u32 x = 0; x < config.nx; ++x) {
       const f64 cx = (x + 0.5) * dx;
       const f64 cy = (y + 0.5) * dx;
-      if (cx > 8.5 - dx && cx < 8.5 && cy > 3.0 && cy < 5.0) {
+      if (cx > 8.5 - dx && cx < 8.5 && (spec8 || (cy > 3.0 && cy < 5.0))) {
         const u32 i = solver.index(x, y);
         const f64 h = solver.depth()[i];
         const f64 u = solver.momentum_x()[i] / h;
@@ -380,4 +432,110 @@ TEST_CASE(
   const Crest1d r = run_crest_1d();
   const Crest c = crest_for(k_q_1d * k_crest_width);
   CHECK(std::fabs(r.level - (c.ec + c.friction_max)) <= c.bound);
+}
+
+namespace {
+
+// Section 8's bound on its graded approach: the level within max(0.05 E_c, 1 mm) of the level by
+// hand, E_c to E_c plus the crest's friction at most (0.0951 to 0.0964 m at q 0.05 m^2/s, 0.0325 to
+// 0.0343 m at 0.01), at 0.125 m and 0.0625 m, and the error at the half cell no larger than at the
+// whole one. The error is the level's distance outside that range (zero inside it).
+f64 spec8_error(const HollowSpec& spec, const HollowRun& run) {
+  const Crest c = crest_of(spec);
+  const f64 lo = c.ec;
+  const f64 hi = c.ec + c.friction_max;
+  return run.level < lo ? lo - run.level : (run.level > hi ? run.level - hi : 0.0);
+}
+
+// Settled, passing its inflow, its water counted: W176's items held on every run of section 8.
+void check_spec8_settled(const HollowSpec& spec, const HollowRun& run) {
+  const Crest c = crest_of(spec);
+  CHECK(std::fabs(run.level_change) <= 0.1 * c.bound);
+  CHECK(run.level_range <= c.bound);
+  CHECK(std::fabs(run.outflow_m3_s - run.inflow_m3_s) <= 0.005 * run.inflow_m3_s);
+  CHECK(std::fabs(run.mass_balance) <= 1e-12 * run.water_through);
+}
+
+void report_spec8(const std::string& name, const HollowSpec& spec, const HollowRun& run) {
+  const Crest c = crest_of(spec);
+  MESSAGE(name << " Q " << spec.discharge_m3_s << " (q " << spec.discharge_m3_s / k_width
+               << "), cell " << spec.cell_m << ": level " << run.level
+               << " m over the sill against " << c.ec << " to " << c.ec + c.friction_max << " ("
+               << (run.level - c.ec) / c.ec * 100.0 << " % over E_c), error "
+               << spec8_error(spec, run) << " against " << c.bound << "; crest's last cell h "
+               << run.crest_depth << " (y_c " << c.yc << "), energy " << run.crest_energy
+               << "; range " << run.level_range << ", change over tau " << run.level_change
+               << "; outflow " << run.outflow_m3_s << " of " << run.inflow_m3_s << "; mass "
+               << run.mass_balance << " of " << run.water_through << "; " << run.steps << " steps");
+}
+
+}  // namespace
+
+TEST_CASE("water_state: a graded hollow's lake stands at E_c plus the crest's friction" *
+          doctest::skip(!k_optimised)) {
+  // Section 8's asserted case, as one-dimensional columns (its geometry is the same across its 8 m
+  // width): Q 0.4 and 0.08 m^3/s over the 8 m (q 0.05 and 0.01 m^2/s), at 0.125 m and 0.0625 m
+  // cells, from the plan's level, 300 s; the level the mean over the flat floor from 1 to 4 m (the
+  // floor less the source's metre) and the last 20 s. It passes on the first-order hydrostatic
+  // reconstruction (2026-11-26), as W199's reading of the scheme predicted: on a graded approach
+  // the scheme carries the hollow's energy to the crest, and the error falls with the cell. Held,
+  // so a scheme that keeps moving states must not lose it. Optimised builds only: the four runs
+  // are about 2e7 cell-steps.
+  const HollowSpec s[4] = {{0.4, 0.125, Start::below, Geometry::graded, true},
+                           {0.4, 0.0625, Start::below, Geometry::graded, true},
+                           {0.08, 0.125, Start::below, Geometry::graded, true},
+                           {0.08, 0.0625, Start::below, Geometry::graded, true}};
+  HollowRun r[4];
+  {
+    std::thread t0([&] { r[0] = run_hollow(s[0]); });
+    std::thread t1([&] { r[1] = run_hollow(s[1]); });
+    std::thread t2([&] { r[2] = run_hollow(s[2]); });
+    std::thread t3([&] { r[3] = run_hollow(s[3]); });
+    t0.join();
+    t1.join();
+    t2.join();
+    t3.join();
+  }
+  for (int i = 0; i < 4; ++i) {
+    report_spec8("graded hollow", s[i], r[i]);
+    check_spec8_settled(s[i], r[i]);
+  }
+  for (int q = 0; q < 4; q += 2) {
+    const f64 whole = spec8_error(s[q], r[q]);
+    const f64 half = spec8_error(s[q + 1], r[q + 1]);
+    const f64 bound = crest_of(s[q]).bound;
+    const bool passes = whole <= bound && half <= bound && half <= whole;
+    MESSAGE("graded hollow Q " << s[q].discharge_m3_s << ": error " << whole << " at the cell, "
+                               << half << " at half of it, bound " << bound << ": "
+                               << std::string(passes ? "passes" : "fails"));
+    CHECK(whole <= bound);
+    CHECK(half <= bound);
+    CHECK(half <= whole);
+  }
+}
+
+TEST_CASE("water_state: a hollow's lake over section 8's vertical wall is reported" *
+          doctest::skip(!k_optimised)) {
+  // Section 8's reported case: the floor flat at -0.5 up to a vertical wall at the crest, the same
+  // runs as the graded hollow's, the level printed beside the first-order hydrostatic limit
+  // (0.1333 m, +40 %, and 0.0475 m, +46 %). Settling, the outflow and the count are held.
+  const HollowSpec s[4] = {{0.4, 0.125, Start::below, Geometry::wall, true},
+                           {0.4, 0.0625, Start::below, Geometry::wall, true},
+                           {0.08, 0.125, Start::below, Geometry::wall, true},
+                           {0.08, 0.0625, Start::below, Geometry::wall, true}};
+  HollowRun r[4];
+  {
+    std::thread t0([&] { r[0] = run_hollow(s[0]); });
+    std::thread t1([&] { r[1] = run_hollow(s[1]); });
+    std::thread t2([&] { r[2] = run_hollow(s[2]); });
+    std::thread t3([&] { r[3] = run_hollow(s[3]); });
+    t0.join();
+    t1.join();
+    t2.join();
+    t3.join();
+  }
+  for (int i = 0; i < 4; ++i) {
+    report_spec8("wall hollow", s[i], r[i]);
+    check_spec8_settled(s[i], r[i]);
+  }
 }

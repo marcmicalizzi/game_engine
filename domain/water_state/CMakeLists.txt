@@ -10,7 +10,8 @@ engine_module(NAME water_state LAYER domain OPTIONAL
   SOURCES src/water_state.cpp)
 
 engine_module_tests(NAME water_state
-  SOURCES tests/water_state_tests.cpp tests/hollow_tests.cpp tests/size_table.cpp)
+  SOURCES tests/water_state_tests.cpp tests/hollow_tests.cpp tests/moving_water_tests.cpp
+          tests/size_table.cpp)
 
 # One step of a square grid at three sizes, in cells a second (plan 11 §11.8).
 engine_module_bench(NAME water_state
