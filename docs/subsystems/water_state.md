@@ -401,7 +401,7 @@ Read on 2026-11-25 through the fetch tool, as HTML renderings; equations only we
 | Green and Ampt (1911), Bélanger's jump, Rawls et al. (1993) | the infiltration rate, the jump's head loss, the soils' K and ψ | through the grounding page (§3, §4), which read them in the encyclopaedia's articles and TxDOT's manual | as the grounding page records |
 | Sun, Xing (2023), arXiv 2308.09265 | the artifact at a discontinuous bed: numerical viscosity, not shrinking under refinement, wrong convergence for subsonic flow | abstract | arXiv's non-exclusive distribution licence |
 | Berthon, Michel-Dansac (2025), arXiv 2501.03975 | a fully well-balanced extension of the hydrostatic reconstruction, named as the candidate; for W199's cases (2026-11-26) the facts of §6.2.1–6.2.2: the beds, starts, edges, run lengths, g, the error measure and the printed errors of Tables 3, 4, 6–8 | abstract; §6 through a note of the arXiv HTML's own markup taken on 2026-11-26, numbers only | CC BY-NC-ND 4.0: numbers and facts, no text |
-| SWASHES §3.1 (Delestre et al., arXiv 1110.0288) | the bumps' cases, as the paper above runs them; the cubics are re-derived here from Bernoulli's head, not taken | not read for W199; through the paper above | the paper's text arXiv's |
+| SWASHES §3.1 (Delestre et al., arXiv 1110.0288) | the bumps' cases, as the paper above runs them; g 9.81; the cubics' signs, which agree with the form re-derived here from Bernoulli's head | §3.1 through a note of two fetches of the ar5iv rendering, 2026-11-26 | the paper's text arXiv's |
 | W176's specification of the hollow | the geometry, the closed form at the crest, the bounds, the settling time | the roadmap row's own page section | the engine's |
 
 ## The design: a state in a world
