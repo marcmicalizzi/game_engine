@@ -50,7 +50,8 @@ namespace engine::water_live {
 /// order with no atomic, so the same device gives the same bytes twice (a case); that is not the
 /// same bytes on every device, which "hashed" (the state enters the sim hash and replays exactly
 /// everywhere) would need. Across devices it may become so only with Ops::fixed, whose open
-/// questions the experiment page lists (the denormal mode above all).
+/// questions the experiment page lists (the denormal mode above all); not yet: the fixed form also
+/// differs between two cards (docs/subsystems/water_live.md, "Two cards").
 inline constexpr const char* k_determinism = "derived";
 
 /// How division, the square root and the friction's cube root are taken. `native`: the device's

@@ -103,7 +103,7 @@ The coarser clock does not cure it: it only changes how many ulps each applicati
 
 ## The same bytes on every device
 
-ADR-0010's "hashed" asks for the same bytes twice; W173's design asks whether the step can be the same bytes on every device. Three things decide it.
+ADR-0027's "hashed" is a state that lives in the fixed-step tick, enters the sim hash and replays exactly, which the same bytes twice on one device is not enough for; W173's design asks whether the step can be the same bytes on every device. Three things decide it.
 
 **Contraction.** A driver may fuse a multiply and an add into one rounding unless the SPIR-V forbids it with NoContraction. **Slang 2026.17.1's `precise` emits no NoContraction when it writes SPIR-V directly** (`-emit-spirv-directly`, which `engine_shaders()` uses): a two-line probe and this shader, every line `precise`, came out with 2,579 float add, subtract, multiply and divide instructions and not one decoration. The compile option `-fp-mode precise` puts it on every float operation (2,581 decorations; no GLSL.std.450 Fma), so `water_live` compiles with it (`engine_shaders(... FLAGS -fp-mode precise)`), and a case counts the decorations in the embedded module. The same holds for every shader in the tree that relies on `precise` today (ADR-0074's `rt_keep` key in `clas_records.slang` among them): as compiled, their `precise` lines forbid nothing, which is a finding for those rows, not one this row changes.
 
