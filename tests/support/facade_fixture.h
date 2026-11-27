@@ -150,12 +150,30 @@ inline MeshSource facade_mesh(const Facade& f) {
 // `meshes` facades, each placed `scales` times at a scale of its own (so every placement is its own
 // proxy: `meshes * scales` of them), in a grid of 8 a row at 12 m in x and rows 12 m apart in z
 // from (6, 6), facing +z: the block's 64 at the default fill the 3 x 3 tiles of 32 m round
-// (48, 48), whose street (z = 48) runs between the fourth row and the fifth.
+// (48, 48), whose street (z = 48) runs between the fourth row and the fifth. `spacing_x`: the
+// distance between a row's facades in x (a strip of them, for a flight along it), and `per_row`
+// how many a row holds. `baked`: every placement its own mesh, its vertices scaled and moved to
+// where the placed form puts them and its instance at the origin with no scale — an import that
+// keeps its vertices in its tile's coordinates, as the Toronto session's buildings arrive.
 inline bool facade_scene(u32 meshes, u32 scales, bool small, renderer::SceneData& scene,
-                         std::string& error) {
+                         std::string& error, bool baked = false, f32 spacing_x = 12.0f,
+                         u32 per_row = 8) {
+  const auto place = [&](u32 n) {
+    return Vec3{6.0f + spacing_x * static_cast<f32>(n % per_row), 0.0f,
+                6.0f + 12.0f * static_cast<f32>(n / per_row)};
+  };
+  const auto scale_of = [&](u32 n) {
+    return 0.9f + 0.2f * static_cast<f32>(n / meshes) / static_cast<f32>(scales);
+  };
   Vector<geometry::ClusterLodMesh> lods;
-  for (u32 k = 0; k < meshes; ++k) {
-    const MeshSource m = facade_mesh(facade_for(k, small));
+  for (u32 k = 0; k < (baked ? meshes * scales : meshes); ++k) {
+    MeshSource m = facade_mesh(facade_for(k % meshes, small));
+    if (baked) {
+      const f32 s = scale_of(k);
+      const Vec3 at = place(k);
+      for (Vec3& p : m.positions)
+        p = Vec3{p.x * s + at.x, p.y * s + at.y, p.z * s + at.z};
+    }
     geometry::ClusterLodMesh lod;
     if (!geometry::build_cluster_lod(std::span<const Vec3>(m.positions.data(), m.positions.size()),
                                      std::span<const u32>(m.indices.data(), m.indices.size()),
@@ -172,11 +190,12 @@ inline bool facade_scene(u32 meshes, u32 scales, bool small, renderer::SceneData
   u32 first = 0;
   for (u32 n = 0; n < meshes * scales; ++n) {
     renderer::SceneInstance i;
-    i.mesh = n % meshes;
-    const f32 s = 0.9f + 0.2f * static_cast<f32>(n / meshes) / static_cast<f32>(scales);
-    i.transform.scale = Vec3{s, s, s};
-    i.transform.position =
-        Vec3{6.0f + 12.0f * static_cast<f32>(n % 8), 0.0f, 6.0f + 12.0f * static_cast<f32>(n / 8)};
+    i.mesh = baked ? n : n % meshes;
+    if (!baked) {
+      const f32 s = scale_of(n);
+      i.transform.scale = Vec3{s, s, s};
+      i.transform.position = place(n);
+    }
     gfx::InstanceDesc desc;
     if (!renderer::make_instance(scene, i, first, desc, &error)) return false;
     first += scene.parts[i.mesh].cluster_count;

@@ -1334,6 +1334,7 @@ JsonValue Walker::summary_json() const {
     ground.set("proxies_built_ahead", s.proxy_ahead_built);
     ground.set("proxy_ahead_waits", s.proxy_ahead_waits);
     ground.set("proxy_ahead_taken", s.proxy_ahead_claimed);
+    ground.set("proxies_withdrawn_ahead", s.proxy_ahead_withdrawn);
   }
 #endif
   bodies.set("live", live);

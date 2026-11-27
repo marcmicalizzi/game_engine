@@ -309,13 +309,15 @@ struct Stats {
   // W200, the scene's own meshes' proxies built ahead (`Config::proxy_ahead_m`): handed to the job
   // system, built there, and of the askers that wanted one before it was ready, those that waited
   // for the job building it (the wait's total and most) and those that took one no job had started
-  // and built it themselves.
+  // and built it themselves; and those handed over that a later ranking found out of range while
+  // no job had started them, taken back unbuilt (`proxy_ahead_withdrawn`). Read fresh by `stats()`.
   u64 proxy_ahead_submitted = 0;
   u64 proxy_ahead_built = 0;
   u64 proxy_ahead_waits = 0;
   i64 proxy_ahead_wait_ns = 0;
   i64 max_proxy_ahead_wait_ns = 0;
   u64 proxy_ahead_claimed = 0;
+  u64 proxy_ahead_withdrawn = 0;
   // A game's props (`set_props`; docs: "Props"): handed now, with a body now (their tile held, a
   // shape that collides), and the bodies made and let go over the consumer's life.
   // `prop_moves`: bodies put at a prop's new place, which is what a moved prop costs once its body
@@ -674,9 +676,12 @@ class SceneCollision {
   u32 door_to_reach(WorldPos feet, Vec3 facing, f32 reach) const noexcept;
   u32 door_nearest(WorldPos point, f32 radius) const noexcept;
   const DoorStats& door_stats() const noexcept { return door_stats_; }
-  const Stats& stats() const noexcept { return stats_; }
+  // The counters, with the proxies' (built on whichever thread asked first) copied in under their
+  // lock at this call, so a reader between activations sees the builds ahead as they stand (W200).
+  const Stats& stats() const noexcept;
   // W200: the scene's own meshes' proxies handed to the job system whose jobs had not returned at
-  // the last `prefetch` (`Config::proxy_ahead_m`); 0 once every one handed over is built.
+  // the last `prefetch` (`Config::proxy_ahead_m`), a withdrawn one not counted; 0 once every one
+  // handed over is built or withdrawn.
   u32 proxies_ahead_pending() const noexcept { return ahead_pending_.size(); }
   // **What is held** (docs: "Seeing the collision"): the held tiles, in the consumer's order, and a
   // tile's pieces where `Config::keep_shapes` kept them. False past the count.
@@ -955,6 +960,9 @@ class SceneCollision {
                       WorldPos corner, PlacementScratch& scratch, Vector<u64>& held, u32 entry);
   scene_gen::Context context_for(const Entry& entry) const noexcept;
   void note_bodies() noexcept;
+  // The proxies' counters into `stats_`, under their lock: the one place they are copied, from
+  // `note_bodies` and `stats()` (W200).
+  void note_proxies() const noexcept;
 
   physics::World* physics_ = nullptr;
   const renderer::SceneData* scene_ = nullptr;
@@ -984,13 +992,13 @@ class SceneCollision {
   // By (identity, scale), under the same lock: the proxies of meshes that arrived with a tile.
   FlatMap<u64, std::unique_ptr<TileProxy>> tile_proxies_;
   ProxyStats proxy_stats_;
-  std::mutex proxies_mutex_;
+  mutable std::mutex proxies_mutex_;
   // A generator's state is its own and may be scratch it writes, so the `tile` of one that does not
   // say it is reentrant (`scene_gen::PlacementGeneratorDesc::tile_reentrant`, T169) is asked by one
   // thread at a time, under this; a reentrant one is asked beside the others.
   std::mutex generators_mutex_;
   FlatMap<u64, Tile> tiles_;
-  Stats stats_;
+  mutable Stats stats_;  // mutable: `stats()` copies the proxies' counters in (`note_proxies`)
   // A game's props (`set_props`, P45): the ones that collide, held in key order with their bodies,
   // the next set handed waiting beside them, and the tiles' activations and deactivations at the
   // last update. `kinematic`: a box that has moved, so its body is a kinematic one (docs: "What a
@@ -1100,12 +1108,19 @@ class SceneCollision {
   Vector<AheadRow> ahead_rows_;
   Vector<std::unique_ptr<ProxyAhead>> ahead_;
   HashMap<u64, ProxyAhead*> ahead_by_key_;
-  Vector<ProxyAhead*> ahead_pending_;        // handed over, its job not returned yet
+  Vector<ProxyAhead*> ahead_pending_;  // handed over, its job not returned yet, not withdrawn
+  // Withdrawn while queued (a ranking found its row out of range): out of `ahead_by_key_`, so no
+  // asker can reach it, and made again for a later hand-over once its job has returned.
+  Vector<ProxyAhead*> ahead_free_;
+  Vector<ProxyAhead*> ahead_submit_;         // a hand-over's, scheduled once the lock is let go
   Vector<AheadCandidate> ahead_candidates_;  // the last scan's, nearest first; `ahead_next_` on
   u32 ahead_next_ = 0;
   WorldPos ahead_at_{};
   bool ahead_once_ = false;
   void submit_proxies(WorldPos at);
+  // Takes back every handed-over proxy no job has started that is farther than `radius` from `at`
+  // (all of them with a negative radius: the destructor's), under the proxies' lock.
+  void withdraw_proxies(WorldPos at, f64 radius) noexcept;
   // The proxy cache's own lookup and build, without the builds ahead: `proxy_for`'s body until
   // W200, and what a `ProxyAhead` job runs.
   const Proxy* cached_proxy_for(u32 mesh, Vec3 scale, PlacementScratch& scratch);

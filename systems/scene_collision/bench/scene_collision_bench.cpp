@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <facade_fixture.h>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -230,6 +231,85 @@ ENGINE_BENCH(scene_collision_proxy_build_medium, "scene_collision.proxy_build.46
 }
 ENGINE_BENCH(scene_collision_proxy_build_large, "scene_collision.proxy_build.185k") {
   proxy_build(state, 60, 110);
+}
+
+// **A small proxy after a large one** (W200's mend): the 11 k facade's proxy cut by a tick whose
+// scratch cut the 185 k facade's just before (the weld's hash table sized for it). Each iteration
+// makes a consumer over the two, the large one's tile activated untimed, then times the small
+// one's tile alone; the teardown is untimed too. Items are the small proxy's triangles, so the row
+// reads against `proxy_build.11k`, which also counts the consumer's making.
+ENGINE_BENCH(scene_collision_proxy_build_after_large,
+             "scene_collision.proxy_build.11k_after_185k") {
+  const bool smoke = bench::smoke_mode();
+  facade_fixture::Facade large;
+  large.cols = smoke ? 8 : 60;
+  large.rows = smoke ? 12 : 110;
+  facade_fixture::Facade little;
+  little.cols = smoke ? 4 : 15;
+  little.rows = smoke ? 6 : 27;
+  Vector<geometry::ClusterLodMesh> lods;
+  for (const facade_fixture::Facade& f : {large, little}) {
+    const facade_fixture::MeshSource m = facade_fixture::facade_mesh(f);
+    geometry::ClusterLodMesh lod;
+    geometry::build_cluster_lod(std::span<const Vec3>(m.positions.data(), m.positions.size()),
+                                std::span<const u32>(m.indices.data(), m.indices.size()),
+                                geometry::ClusterLodOptions{}, lod);
+    lods.push_back(std::move(lod));
+  }
+  renderer::SceneData scene;
+  geometry::merge_cluster_meshes(
+      std::span<const geometry::ClusterLodMesh>(lods.data(), lods.size()), scene.lod, scene.parts);
+  scene.mesh_fit.resize(2, Mat4::identity());
+  scene.terrain_mesh = ~0u;
+  u32 first = 0;
+  for (u32 k = 0; k < 2; ++k) {
+    renderer::SceneInstance i;
+    i.mesh = k;
+    i.transform.position = Vec3{16.0f + 128.0f * static_cast<f32>(k), 0.0f, 16.0f};
+    gfx::InstanceDesc desc;
+    renderer::make_instance(scene, i, first, desc);
+    first += scene.parts[k].cluster_count;
+    scene.instances.push_back(desc);
+  }
+  scene.pair_count = first;
+  physics::WorldOptions options;
+  options.max_bodies = 1024;
+  world::RingParams params = scene_collision::ring_params_from_tunables(32.0f);
+  params.max_activations = 0;
+  params.max_deactivations = 0;
+  sim::ObserverSet at_large;
+  at_large.add(WorldPos{16.0, 0.0, 16.0}, 1.0f);
+  sim::ObserverSet at_both;
+  at_both.add(WorldPos{16.0, 0.0, 16.0}, 1.0f);
+  at_both.add(WorldPos{144.0, 0.0, 16.0}, 1.0f);
+  std::unique_ptr<physics::World> physics;
+  std::unique_ptr<scene_collision::SceneCollision> collision;
+  std::unique_ptr<world::World> ring;
+  const auto teardown = [&] {
+    ring.reset();
+    collision.reset();
+    physics.reset();
+  };
+  u64 triangles = 0;
+  while (state.keep_running()) {
+    state.pause_timing();
+    teardown();
+    physics = std::make_unique<physics::World>();
+    physics->init(options);
+    collision = std::make_unique<scene_collision::SceneCollision>();
+    std::string error;
+    collision->create(*physics, scene, nullptr, scene_collision::Config{}, &error);
+    ring = std::make_unique<world::World>(params);
+    ring->add_consumer(collision->consumer());
+    ring->update(at_large, 0, true);
+    const u64 before = collision->stats().proxy_triangles;
+    state.resume_timing();
+    ring->update(at_both, 1, true);
+    triangles = collision->stats().proxy_triangles - before;
+    bench::keep(triangles);
+  }
+  teardown();
+  state.set_items(triangles);
 }
 
 // **The block's landing** (W200): the city block of facade_fixture.h — eight facades of about

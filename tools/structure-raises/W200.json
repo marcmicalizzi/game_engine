@@ -1,11 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "W200",
-  "reason": "W200: scene_collision.md gains 'A scene of authored meshes' (the landing's table, the weld's mend and its pair, the proxies built ahead, the frame that still waits as a design); apps.md names the walk summary's new proxy fields",
-  "date": "2026-11-26",
+  "reason": "W200: scene_collision.md gains 'A scene of authored meshes' (the landing's table, the weld's mend and its pair, the proxies built ahead, the frame that still waits as a design), and since the review's mends the lock rule, the withdrawal, the ranking by bounds, who pays and the five cases; apps.md names the walk summary's new proxy fields",
+  "date": "2026-11-27",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/apps.md": 420,
-    "page:docs/subsystems/scene_collision.md": 10748
+    "page:docs/subsystems/apps.md": 520,
+    "page:docs/subsystems/scene_collision.md": 15615
   }
 }
