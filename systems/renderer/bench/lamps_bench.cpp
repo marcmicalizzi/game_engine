@@ -113,7 +113,7 @@ void report_grid(const Frame& f) {
                              std::span<u32>(cells.data(), cells.size()), grid))
     return;
   const f64 per_cell = grid.cells > 0 ? static_cast<f64>(grid.refs) / grid.cells : 0.0;
-  // Report output that is the product of a tool (AGENTS.md, "Logging").
+  // A tool's report, which AGENTS.md ("Conventions") lets a bench print.
   std::printf("  lamps %u: %u cells (%u x %u x %u), %u words a cell, %.1f lights a cell\n",
               static_cast<u32>(f.lights.size()), grid.cells, grid.dims_x, grid.dims_y, grid.dims_z,
               grid.words, per_cell);
