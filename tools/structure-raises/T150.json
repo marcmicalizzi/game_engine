@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T150",
+  "reason": "T150 documents how an imported material and a scene's Mesh.sampling reach the stochastic mesh materials, in their own section: the rule and which word wins belong where the sampling is described",
+  "date": "2026-11-26",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 979
+  }
+}
