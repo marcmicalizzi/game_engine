@@ -777,8 +777,11 @@ TEST_CASE("water_state: a dam break's bytes over a flat bed are the same on ever
   // The pin of the flat bed's path: the state's hash after Stoker's wet-bed case at 800 cells
   // (above), taken on MSVC before W199's reconstruction for moving water (2026-11-26). Every face
   // of a flat bed has the same bed on both sides, so a change to what a face does where the bed
-  // steps must leave this number standing: it is the proof that the flat path did not move. GCC
-  // and Clang reproduce it for the same reasons as the slope's pin.
+  // steps must leave this number standing. The hash covers every plane of the state, but the run
+  // is one-dimensional, frictionless and wet, with no source and nothing carried, so it pins that
+  // path only: the y faces, friction, sources and carried quantities are not in it. The slope's pin
+  // above covers them and is expected to move when the step changes. GCC and Clang reproduce it
+  // for the same reasons as the slope's pin.
   const DamResult r = run_dam(800, 0.001);
   constexpr u64 k_pinned = 11759616244214831310ull;  // MSVC 14.51, 2026-11-26
   if (r.hash != k_pinned) MESSAGE("replacement: constexpr u64 k_pinned = " << r.hash << "ull;");

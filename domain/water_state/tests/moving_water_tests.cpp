@@ -8,10 +8,15 @@
 // variable that holds what was measured, so the commit that changes the scheme adds its CHECK
 // without restructuring a case.
 //
-// The bumps are Berthon and Michel-Dansac's section 6.2.2 runs (arXiv 2501.03975), which are
-// SWASHES section 3.1's (Delestre et al., arXiv 1110.0288): g 9.81, (0, 25), 75 cells, the start
-// h + Z = H0 with q = q0 everywhere, q0 imposed at the left edge with h's gradient zero there, h =
-// H0 imposed at the right edge where the outflow is subcritical and h's gradient zero otherwise.
+// The bumps are Berthon and Michel-Dansac's section 6.2.2 runs (arXiv 2501.03975): g 9.81, (0, 25),
+// 75 cells, the start h + Z = H0 with q = q0 everywhere, q0 imposed at the left edge with h's
+// gradient zero there, h = H0 imposed at the right edge where the outflow is subcritical and h's
+// gradient zero otherwise. The bed and the three discharges are SWASHES section 3.1's (Delestre et
+// al., arXiv 1110.0288), but not its runs: SWASHES starts from q = 0 and, in the case without a
+// shock, imposes h = 0.66 at the outflow while the flow there is subcritical, where the paper and
+// these cases start from q = q0 and leave that edge free. h = 0.33 imposed at the shock case's
+// outlet is a reading of one clause of the paper ("if the flow is subcritical", read as the flow
+// at the edge, whose Froude number there is 0.30), not a value the paper prints for that case.
 // The edges' imposed values are the test's: an open (copying) edge, and the edge cell's discharge
 // or depth written back after every step, so no edge kind is added to the module.
 #include <core/math/deterministic.h>
@@ -144,6 +149,14 @@ f64 neighbour_error(const std::vector<f64>& v, f64 dx) {
   return std::sqrt(s / dx);
 }
 
+/// The same over the cells [first, last) only (the neighbour pairs with both cells inside).
+f64 neighbour_error(const std::vector<f64>& v, f64 dx, usize first, usize last) {
+  f64 s = 0.0;
+  for (usize i = first; i + 1 < last; ++i)
+    s += (v[i + 1] - v[i]) * (v[i + 1] - v[i]);
+  return std::sqrt(s / dx);
+}
+
 std::vector<f64> bernoulli_of(const ColumnRun& r, const std::vector<f64>& bed) {
   std::vector<f64> b(r.h.size());
   for (usize i = 0; i < r.h.size(); ++i)
@@ -180,7 +193,7 @@ BumpCase bump_case(Bump b) {
 /// The exact steady state: one head throughout (subcritical), the crest's critical head with the
 /// root switching at x = 10 (transcritical), or the crest's head up to the shock and the outflow's
 /// after it, the shock where the two supercritical and subcritical depths keep the momentum
-/// function q^2 / h + g h^2 / 2 (Rankine and Hugoniot, SWASHES 3.1.4).
+/// function q^2 / h + g h^2 / 2 (Rankine and Hugoniot, SWASHES 3.1.5, equation (10)).
 struct BumpExact {
   f64 q = 0.0;
   f64 head_up = 0.0;
@@ -229,9 +242,21 @@ BumpExact bump_exact(Bump b) {
   return e;
 }
 
+// The depth's error against the closed form cannot reach round-off on the two transcritical bumps
+// whatever the scheme: no cell centre stands at the crest (the highest bed is 0.1986 m at 75
+// cells, 0.19965 m at 150, against 0.2), so the discrete critical section is not the closed form's
+// and its head is not 1.5 h_c + 0.2. It is reported and is not to be bounded at round-off; only
+// the subcritical bump, one head throughout, is.
 struct BumpRun {
-  f64 e_q = 0.0;         // the paper's neighbour-difference error of q
-  f64 e_b = 0.0;         // and of Bernoulli's B = q^2 / (2 h^2) + g (h + z)
+  f64 e_q =
+      0.0;  // the paper's neighbour-difference error of q, the whole domain (a shock included)
+  f64 e_b = 0.0;  // and of Bernoulli's B = q^2 / (2 h^2) + g (h + z)
+  // With a shock: the same over the cells more than two cells upstream of its exact place, and
+  // over those more than two cells downstream of it, the parts a scheme that keeps moving steady
+  // states could hold to round-off.
+  f64 e_q_up = 0.0, e_b_up = 0.0, e_q_down = 0.0, e_b_down = 0.0;
+  f64 x_shock = 0.0;  // the exact shock (0: none)
+  f64 cell_m = 0.0;
   f64 h_error = 0.0;     // the largest |h - h_exact|, more than two cells from a shock
   f64 kink_error = 0.0;  // the largest |h - h_exact| within two cells of x = 10
   f64 q_range = 0.0;     // max q - min q
@@ -262,7 +287,23 @@ BumpRun run_bump(Bump b, u32 nx) {
   out.non_finite = r.non_finite;
   out.steps = r.steps;
   out.e_q = neighbour_error(r.q, s.cell_m);
-  out.e_b = neighbour_error(bernoulli_of(r, s.bed), s.cell_m);
+  const std::vector<f64> bernoulli = bernoulli_of(r, s.bed);
+  out.e_b = neighbour_error(bernoulli, s.cell_m);
+  out.x_shock = exact.x_shock;
+  out.cell_m = s.cell_m;
+  if (exact.x_shock > 0.0) {
+    usize up_end = 0;       // one past the last cell more than two cells upstream of the shock
+    usize down_begin = nx;  // the first cell more than two cells downstream of it
+    for (u32 i = 0; i < nx; ++i) {
+      const f64 x = (i + 0.5) * s.cell_m;
+      if (x < exact.x_shock - 2.0 * s.cell_m) up_end = i + 1;
+      if (x > exact.x_shock + 2.0 * s.cell_m && down_begin == nx) down_begin = i;
+    }
+    out.e_q_up = neighbour_error(r.q, s.cell_m, 0, up_end);
+    out.e_b_up = neighbour_error(bernoulli, s.cell_m, 0, up_end);
+    out.e_q_down = neighbour_error(r.q, s.cell_m, down_begin, nx);
+    out.e_b_down = neighbour_error(bernoulli, s.cell_m, down_begin, nx);
+  }
   f64 q_lo = r.q[0];
   f64 q_hi = r.q[0];
   f64 jump_mid = 0.0;
@@ -289,6 +330,11 @@ BumpRun run_bump(Bump b, u32 nx) {
                    << " to " << q_hi << "; settled to " << out.settle << " m over the last second; "
                    << out.steps << " steps; the shock (0: none) at " << out.shock_x << " against "
                    << exact.x_shock);
+  if (exact.x_shock > 0.0)
+    MESSAGE("bump, " << std::string(c.name) << ", " << nx
+                     << " cells, more than two cells from the shock: upstream e_q " << out.e_q_up
+                     << ", e_B " << out.e_b_up << "; downstream e_q " << out.e_q_down << ", e_B "
+                     << out.e_b_down);
   return out;
 }
 
@@ -297,7 +343,9 @@ BumpRun run_bump(Bump b, u32 nx) {
 // asserted: the hydrostatic reconstruction misses them by twelve orders.
 constexpr f64 k_bump_steady_bound = 1e-11;  // e_q and e_B, the two smooth bumps; not yet asserted
 constexpr f64 k_bump_depth_bound = 1e-10;   // |h - exact|, the subcritical bump; not yet asserted
-constexpr f64 k_shock_cells = 2.0;          // the shock within this many cells; not yet asserted
+constexpr f64 k_shock_cells = 2.0;          // the shock within this many cells of its exact place
+// e_q and e_B upstream and downstream of the shock, more than two cells from it; not yet asserted
+constexpr f64 k_shock_smooth_bound = 1e-11;
 
 // The paper's grid, 75 cells, runs in every build (a second or two in a debug build); the finer
 // grids, which only say how the error falls, take 8 to 10 s a case in a debug build and run where
@@ -311,7 +359,7 @@ std::vector<u32> bump_grids(std::initializer_list<u32> finer) {
 }  // namespace
 
 TEST_CASE("water_state: a subcritical flow over a bump keeps its discharge and its head") {
-  // SWASHES 3.1.1 / the paper's Table 6: q0 4.42, h 2 at the outflow, 500 s, at 75 and 150 cells.
+  // SWASHES 3.1.3 / the paper's Table 6: q0 4.42, h 2 at the outflow, 500 s, at 75 and 150 cells.
   // The paper's hydrostatic first order (HLL) gives e_q 7.73e-2 and e_B 1.79e-1 at 75 cells; this
   // reference's central-upwind flux is not HLL, so agreement in order is the check on the case.
   for (u32 nx : bump_grids({150})) {
@@ -323,9 +371,10 @@ TEST_CASE("water_state: a subcritical flow over a bump keeps its discharge and i
 }
 
 TEST_CASE("water_state: a transcritical flow over a bump keeps its discharge and its head") {
-  // SWASHES 3.1.3 / the paper's Table 7: q0 1.53, a free outflow, 125 s, at 75, 150 and 300 cells;
+  // SWASHES 3.1.4 / the paper's Table 7: q0 1.53, a free outflow, 125 s, at 75, 150 and 300 cells;
   // critical at the crest (x = 10). The paper's hydrostatic first order: e_q 3.74e-2, e_B 1.45e-1
-  // at 75 cells. The kink at x = 10 is reported at each grid (it is to fall with the cell).
+  // at 75 cells. The kink at x = 10 is reported at each grid (it is to fall with the cell); the
+  // depth's error is not to be bounded at round-off (no cell centre at the crest, above BumpRun).
   for (u32 nx : bump_grids({150, 300})) {
     const BumpRun r = run_bump(Bump::transcritical, nx);
     CHECK(r.non_finite == 0u);
@@ -334,14 +383,17 @@ TEST_CASE("water_state: a transcritical flow over a bump keeps its discharge and
 }
 
 TEST_CASE("water_state: a transcritical flow over a bump with a shock") {
-  // SWASHES 3.1.4 / the paper's Table 8: q0 0.18, h 0.33 at the outflow, 1000 s, at 75 and 150
+  // SWASHES 3.1.5 / the paper's Table 8: q0 0.18, h 0.33 at the outflow, 1000 s, at 75 and 150
   // cells; the jump on the bump's falling side by Rankine and Hugoniot. The paper's first order
   // gives e_q 5.72e-2 and e_B 6.92e-1 hydrostatic, 7.09e-2 and 8.17e-1 with its reconstruction: the
-  // whole domain's error is not to improve, the smooth parts are.
+  // whole domain's error is not to improve (the 1/dx weight on a jump of fixed size grows like the
+  // root of 1/dx as the cell falls), the smooth parts on either side are. The depth's error is not
+  // to be bounded at round-off (no cell centre at the crest, above BumpRun).
   for (u32 nx : bump_grids({150})) {
     const BumpRun r = run_bump(Bump::shock, nx);
     CHECK(r.non_finite == 0u);
-    (void)k_shock_cells;  // |r.shock_x - x_shock| <= this many cells: not yet asserted
+    CHECK(std::fabs(r.shock_x - r.x_shock) <= k_shock_cells * r.cell_m);
+    (void)k_shock_smooth_bound;  // r.e_q_up, e_b_up, e_q_down, e_b_down <= this: not yet asserted
   }
 }
 namespace {

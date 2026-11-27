@@ -191,9 +191,9 @@ HollowRun run_hollow(const HollowSpec& spec) {
   const u32 tail_s = static_cast<u32>(crest.tau_s) + 21;
   solver.advance(in, run_s - tail_s);
   std::vector<f64> samples;
-  f64 out_before_last10 = 0.0;
+  f64 out_before_window = 0.0;  // the outflow is averaged over the same window as the level
   for (u32 s = 0; s < tail_s; ++s) {
-    if (s == tail_s - 10) out_before_last10 = solver.ledger().open_edge_out_m3;
+    if (s == tail_s - window) out_before_window = solver.ledger().open_edge_out_m3;
     solver.advance(in, 1.0);
     samples.push_back(lake_level());
   }
@@ -216,7 +216,7 @@ HollowRun run_hollow(const HollowSpec& spec) {
   }
   run.level_range = hi - lo;
   run.level_change = run.level - mean_of(samples.size() - static_cast<usize>(crest.tau_s));
-  run.outflow_m3_s = (solver.ledger().open_edge_out_m3 - out_before_last10) / 10.0;
+  run.outflow_m3_s = (solver.ledger().open_edge_out_m3 - out_before_window) / window;
   const auto& ledger = solver.ledger();
   run.water_through = ledger.source_m3;
   run.mass_balance = ledger.source_m3 - (solver.surface_volume_m3() - stored0) -
@@ -439,7 +439,13 @@ namespace {
 // Section 8's bound on its graded approach: the level within max(0.05 E_c, 1 mm) of the level by
 // hand, E_c to E_c plus the crest's friction at most (0.0951 to 0.0964 m at q 0.05 m^2/s, 0.0325 to
 // 0.0343 m at 0.01), at 0.125 m and 0.0625 m, and the error at the half cell no larger than at the
-// whole one. The error is the level's distance outside that range (zero inside it).
+// whole one. The error is the level's distance outside that range (zero inside it): the bound is
+// held as the distance to the band worked by hand, the most lenient reading of section 8, whose
+// bound is on the difference from the steady solve's single number somewhere in that band. The
+// distance to E_c itself is printed beside it (2026-11-26: 3.5 and 2.6 mm at q 0.05 against 4.76;
+// 2.68 and 2.21 mm at q 0.01 against 1.63, which passes only if the steady solve's number lies in
+// the band's top 0.75 mm or so), so the tie to the steady solve itself (W176) may still fail at
+// q 0.01.
 f64 spec8_error(const HollowSpec& spec, const HollowRun& run) {
   const Crest c = crest_of(spec);
   const f64 lo = c.ec;
@@ -462,11 +468,12 @@ void report_spec8(const std::string& name, const HollowSpec& spec, const HollowR
                << "), cell " << spec.cell_m << ": level " << run.level
                << " m over the sill against " << c.ec << " to " << c.ec + c.friction_max << " ("
                << (run.level - c.ec) / c.ec * 100.0 << " % over E_c), error "
-               << spec8_error(spec, run) << " against " << c.bound << "; crest's last cell h "
-               << run.crest_depth << " (y_c " << c.yc << "), energy " << run.crest_energy
-               << "; range " << run.level_range << ", change over tau " << run.level_change
-               << "; outflow " << run.outflow_m3_s << " of " << run.inflow_m3_s << "; mass "
-               << run.mass_balance << " of " << run.water_through << "; " << run.steps << " steps");
+               << spec8_error(spec, run) << " outside the band (" << run.level - c.ec
+               << " from E_c) against " << c.bound << "; crest's last cell h " << run.crest_depth
+               << " (y_c " << c.yc << "), energy " << run.crest_energy << "; range "
+               << run.level_range << ", change over tau " << run.level_change << "; outflow "
+               << run.outflow_m3_s << " of " << run.inflow_m3_s << "; mass " << run.mass_balance
+               << " of " << run.water_through << "; " << run.steps << " steps");
 }
 
 }  // namespace
@@ -505,9 +512,11 @@ TEST_CASE("water_state: a graded hollow's lake stands at E_c plus the crest's fr
     const f64 half = spec8_error(s[q + 1], r[q + 1]);
     const f64 bound = crest_of(s[q]).bound;
     const bool passes = whole <= bound && half <= bound && half <= whole;
-    MESSAGE("graded hollow Q " << s[q].discharge_m3_s << ": error " << whole << " at the cell, "
-                               << half << " at half of it, bound " << bound << ": "
-                               << std::string(passes ? "passes" : "fails"));
+    const f64 ec = crest_of(s[q]).ec;
+    MESSAGE("graded hollow Q " << s[q].discharge_m3_s << ": outside the band " << whole
+                               << " at the cell, " << half << " at half of it; from E_c "
+                               << r[q].level - ec << " and " << r[q + 1].level - ec << "; bound "
+                               << bound << ": " << std::string(passes ? "passes" : "fails"));
     CHECK(whole <= bound);
     CHECK(half <= bound);
     CHECK(half <= whole);
