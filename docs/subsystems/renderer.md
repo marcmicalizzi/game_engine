@@ -2290,7 +2290,7 @@ logged once by mesh and material ("a smooth material of a tile's mesh reflects t
 masked and stochastic rule, not foliage's, because the constant is fixed when the pipelines are
 made and the forest would otherwise pay for the lines. The early compile (R205) does not predict
 the constant — only the load reads the materials — so a scene with a smooth material makes one
-more compile at load (`early pipeline not taken`, differs in `reflect`).
+more compile at load (`early pipeline not taken`, differs in `reflect`). After batch 77's join the worker's one pass over the mesh files still returns only the reflectance and the stochastic request; predicting `reflect` would need the roughness maps' least level too, and is a row for later.
 
 **Where it does not trace**: a device without ray queries, or shadows from the cascaded maps or
 off, draws with a module without the ray, and a smooth surface draws what it drew (the second
