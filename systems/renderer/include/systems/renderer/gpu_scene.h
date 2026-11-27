@@ -2093,6 +2093,7 @@ class GpuScene {
   Vector<TerrainUpdate::ImageUpload> pending_images_;
   u32 texture_frames_ = 3;  // frames a leaving texture stays: one more than can be in flight
   bool texture_refusal_said_ = false;
+  Vector<u64> specular_refusals_said_;  // R234: meshes whose dropped reflectance was said, sorted
   mutable std::mutex texture_keys_mutex_;
   Vector<u64> texture_keys_;  // every key the table holds, sorted: `texture_resident`'s
   bool lay_out_mesh_slots(std::string* error);

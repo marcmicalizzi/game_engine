@@ -2060,24 +2060,41 @@ the reference path tracer sets nothing and keeps the lines. **A mesh room does n
 it keeps foliage's: a generator whose tiles may hand a declared material says so
 (`scene_gen::PlacementGeneratorDesc::tile_meshes_specular`, beside `tile_meshes_masked`), and in a
 scene that did not, a tile's declared material has its record zeroed where it is filled
-(`admit_mesh`) and is drawn at the stand-in's 4 %, said once by mesh and material — so the pipeline,
+(`admit_mesh`) and is drawn at the stand-in's 4 %, said once a mesh for the scene's life (by its
+source hash and path, however often its tile comes back; the line counts its materials) — so the pipeline,
 the record and the path tracer agree. That departs from finding A7's rule for foliage, that a
 picture must not depend on a generator remembering to declare, because the cost is about five times
 foliage's (0.12 ms of resolve against 0.026) and a world with a mesh room — the forest — would pay it
 whatever its tiles hand; the masked pipelines set the precedent, and the refusal is loud and the
 same every run. The early compile predicts it from the file (`predict_resolve_variant`): a
-generator's `tile_meshes_specular` under the mesh room, and every mesh file the scene names, read
-only as far as its materials — a `.gltf`'s JSON, a `.glb`'s JSON chunk, a container's section 55
-by range — packed by `set_dielectric_specular` as the load packs it, so a scene that declares a
-reflectance in its own files takes its early pipeline. It guesses wrong (one compile more) for a
-`.gltf` over 64 MiB, a file it cannot read where the load later can, and the stream setting's
-paged reading the foliage note gives. Nothing writes `specular` into a loaded table, so the
+generator's `tile_meshes_specular` under the mesh room; and then **its worker, not the load's
+thread**, reads every mesh file the scene names before it compiles (`mesh_files_to_read`,
+`read_mesh_declarations` in `early_pipelines.cpp`), only as far as its materials — a `.gltf`'s
+JSON, a `.glb`'s JSON chunk, a container's section 55 by range — packed by
+`set_dielectric_specular` as the load packs it, so a scene that declares a reflectance in its own
+files takes its early pipeline. **What the reads cost, and where**: one stat and one open a file,
+and a whole-JSON parse for a glTF, in the scene's order until one declares (so a scene that
+declares nothing reads them all: 2,303 cold opens on a scene of 2,303 `.glb` files); they run
+beside the load, which starts at once, and the startup trace names them as the stage `early
+resolve mesh reads` with the count of files opened as its items. `has` and `take` wait for the
+reads (never for the compile), since the key is not final before them; a start refused (the
+classes tunable, a device with no acceleration structures for the rays) reads none. The suffix is
+matched without regard to case before the disk is touched, a recipe's path (`SceneDesc::recipes`)
+is never read, every length is checked against the file's size before anything is allocated, and a
+container of another version is not trusted. It guesses wrong (one compile more) for a `.gltf` over
+64 MiB, a file it cannot read where the load later can, and the stream setting's paged reading the
+foliage note gives. A second fact the files say (a container's sampling flags) is a field of
+`MeshDeclarations` read by the same function in the same loop. Nothing writes `specular` into a loaded table, so the
 variant never has to change after the load; a live material edit that did would need the declared
 lines or a rebuild of the family. `mesh_texture_tests.cpp` ("a tile's declared reflectance is drawn
 only where a generator said so") holds an undeclared scene's ior-3 tiles to the same rocks stating
 nothing, byte for byte, and a declared scene's away from them; `dielectric_specular_tests.cpp`
 holds the folded pipeline's spheres to the stand-in's bytes, every dielectric of the sweep;
-`early_pipelines_tests.cpp` holds the prediction to the GPU scene's flag and the files' rules.
+`early_pipelines_tests.cpp` holds the prediction to the GPU scene's flag and the files' rules: each
+kind of file by suffix in any case, a truncated one of each, a container of another version, a
+refused start that opens nothing (by count), and the worker's read joining the key;
+`mesh_room_tests.cpp` ("a dropped reflectance is said once a mesh") holds the warning to one line a
+mesh by count.
 
 **The backlit sun's tier** (R177; `renderer.foliage.backlit_tier`, default 1). R164's lighting
 cost the grove 0.25 ms of resolve at 3840 x 2160 traced, and 0.20 of it is the sun rays a sheet

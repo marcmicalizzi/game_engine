@@ -20,17 +20,20 @@
 //
 // **A wrong guess costs a compile, never a picture.** The early compile and the renderer's creation
 // share one key (`ResolveKey`): the module's name and its SPIR-V's hash, the colour format, the
-// foliage specialization and the bindless set's clamped capacity (`GpuScene::bindless_config`). A renderer whose key differs — the content had a flag the file did not
-// name — makes its own pipeline as it always did, and the early one is destroyed untaken.
+// foliage specialization and the bindless set's clamped capacity (`GpuScene::bindless_config`). A
+// renderer whose key differs — the content had a flag the file did not name — makes its own
+// pipeline as it always did, and the early one is destroyed untaken.
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
+#include <core/containers/vector.h>
 #include <core/json/json_value.h>
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/shader_library.h>
 
+#include <condition_variable>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -67,13 +70,40 @@ struct ResolveVariant {
 //     meshes, since a generator that names no role takes the pack's defaults;
 //   - light_cap: the file's fires, lamps and props (`shadow_light_cap_compiled`), which the load
 //     keeps as they are;
-//   - specular: a mesh file whose materials pack a reflectance other than the stand-in's (a glTF's
-//     KHR_materials_ior or _specular, a container's section 55), or a generator's
-//     `tile_meshes_specular` under the mesh room (R234).
+//   - specular: a generator's `tile_meshes_specular` under the mesh room (R234). What the mesh
+//     files' own materials declare is not read here: `EarlyPipelines`' worker reads the files
+//     (`mesh_files_to_read`, `read_mesh_declarations`) before it compiles, so the load starts at
+//     once and the reads overlap it.
 // What only the load can say (renderer.md, "The resolve compiles from the scene file", lists the
 // cases) is a wrong guess at worst, and a wrong guess is one more compile, never a wrong pipeline.
+// Touches no file.
 ResolveVariant predict_resolve_variant(const SceneDesc& desc, const ResolvedSettings& resolved,
                                        gfx::Format color_format);
+
+// **What a mesh file's own materials declare that selects the resolve** (R234; renderer.md, "The
+// resolve compiles from the scene file"). One field a fact. A second fact (a container's section
+// 33 sampling flags, for the stochastic module) is a field here, its lines in
+// `read_mesh_declarations`, and a term in the worker's `known` test: the same files, the same one
+// loop, never a second pass.
+struct MeshDeclarations {
+  bool specular = false;  // a material packs a reflectance other than the stand-in's
+  bool operator==(const MeshDeclarations&) const noexcept = default;
+};
+
+// Reads one mesh file only as far as its materials' declarations and ORs them into `out`: a
+// `.gltf`'s JSON, a `.glb`'s JSON chunk, a `.clusters` container's section 55, chosen by suffix
+// without regard to case before the disk is touched. True when the file was opened (what the
+// startup trace counts). A file that is unreadable, truncated, of another container version, or
+// whose lengths claim more than it holds declares nothing, and nothing is allocated past its size:
+// a wrong guess is one more compile.
+bool read_mesh_declarations(const std::string& path, MeshDeclarations& out);
+
+// The files of `desc.meshes` the worker reads: a `.gltf`, `.glb` or `.clusters` suffix in any case,
+// less the procedural empty path and every path `desc.recipes` hands as bytes. Touches no file.
+Vector<std::string> mesh_files_to_read(const SceneDesc& desc);
+
+// How many files `read_mesh_declarations` has opened in this process: for the cases' counts.
+u64 mesh_declaration_reads() noexcept;
 
 // The key the early compile and the renderer's creation share.
 struct ResolveKey {
@@ -95,12 +125,15 @@ struct ResolveKey {
 class EarlyPipelines {
  public:
   struct Stats {
-    bool started = false;  // a compile was started
-    bool done = false;     // it finished (made or failed)
-    bool ok = false;       // it made a pipeline
-    bool taken = false;    // a renderer took it
-    u32 mismatched = 0;    // renderers that asked with another key, and made their own
-    f64 seconds = 0.0;     // the compile's wall time, on its worker
+    bool started = false;     // a compile was started
+    bool done = false;        // it finished (made or failed)
+    bool ok = false;          // it made a pipeline
+    bool taken = false;       // a renderer took it
+    u32 mismatched = 0;       // renderers that asked with another key, and made their own
+    bool read = false;        // the worker's mesh-file reads are done: the key is final
+    u32 mesh_files = 0;       // files it was handed to read (`mesh_files_to_read`)
+    u32 mesh_files_read = 0;  // files it opened before every fact was known
+    f64 seconds = 0.0;        // the compile's wall time, on its worker
     ResolveKey key;
     // Why nothing was started, or what the last mismatched key differed in ("module", "hash",
     // "format", "foliage", "layout"), or why the compile failed; empty otherwise.
@@ -116,10 +149,14 @@ class EarlyPipelines {
   // `SceneRenderer::Desc::shader_manifest`), with the bindless set's layout. False with `error`
   // when nothing was started: the device cannot draw the variant, or `renderer.resolve.classes` is
   // not `off` (the split's pipelines are other keys, made at creation). Once per object.
+  // `mesh_files` (`mesh_files_to_read`) are read on the worker before it compiles, and what they
+  // declare joins the key (`specular`); a refused start reads none of them.
   bool start(const gfx::Device& device, const ResolveVariant& variant,
-             const std::string& shader_manifest, std::string* error = nullptr);
+             const std::string& shader_manifest, std::string* error = nullptr,
+             Vector<std::string> mesh_files = {});
 
-  // For `SceneRenderer`: whether a pipeline of `key` was started and not taken. Does not wait.
+  // For `SceneRenderer`: whether a pipeline of `key` was started and not taken. Waits for the
+  // worker's mesh-file reads (the key is not final before them), never for the compile.
   bool has(const ResolveKey& key) const;
   // Waits for the compile and hands its pipeline over (the caller owns it) when `key` is the one
   // started, then frees the early set and modules; false otherwise, and the caller makes its own.
@@ -133,6 +170,8 @@ class EarlyPipelines {
 
  private:
   void join() noexcept;
+  // Under `mutex_`: until the worker's reads are done (at once when nothing was started).
+  void wait_for_reads(std::unique_lock<std::mutex>& lock) const;
 
   const gfx::Device* device_ = nullptr;
   gfx::ShaderLibrary shaders_;
@@ -142,6 +181,7 @@ class EarlyPipelines {
   const gfx::Shader* module_ = nullptr;
   std::thread worker_;
   mutable std::mutex mutex_;
+  mutable std::condition_variable read_cv_;  // `Stats::read`
   gfx::PipelineHandle pipeline_;
   std::string error_;
   Stats stats_;

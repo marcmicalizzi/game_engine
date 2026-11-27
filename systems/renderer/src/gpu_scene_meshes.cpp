@@ -24,6 +24,7 @@
 // clusters alone, which is what the world's residency decides by.
 
 #include <core/base/assert.h>
+#include <core/hash/hash.h>
 #include <core/log/log.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/material_sampling.h>
@@ -70,6 +71,7 @@ bool GpuScene::lay_out_mesh_slots(std::string* error) {
   mesh_slots_.clear();
   free_mesh_clusters_.clear();
   free_mesh_materials_.clear();
+  specular_refusals_said_.clear();  // a scene's life: said again by the next scene, never this one
   if (!wants_mesh_room(dynamic_, streamed_, data_->tile_meshes)) return true;
   const u64 budget = static_cast<u64>(meshes_budget_mib.get()) * 1024 * 1024;
   const u32 slot_count = static_cast<u32>(meshes_slots.get());
@@ -278,6 +280,8 @@ bool GpuScene::admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* 
                : TextureInfo{};
   };
   Vector<gfx::ResolveMaterial> made(nm);
+  u32 zeroed = 0;  // materials whose declared reflectance the record drops (R234)
+  u32 first_zeroed = 0;
   for (u32 m = 0; m < own; ++m) {
     assets::Material from = mesh_data.materials[m];
     // The masked pipelines are chosen when the scene is made: an alpha-tested material in a scene
@@ -302,16 +306,12 @@ bool GpuScene::admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* 
                   "a scene with a mesh room keeps its foliage lines");
     // A declared reflectance follows the masked rule (R234): in a scene whose resolve was made
     // without the declared lines, the record is zeroed here, so the pipeline, the record and the
-    // path tracer agree on the stand-in's 4 %, and said.
+    // path tracer agree on the stand-in's 4 %, and said once a mesh (below).
     const Vec4 declared = made[m].specular;
     if (!has_specular_materials_ &&
         (declared.x != 0.0f || declared.y != 0.0f || declared.z != 0.0f || declared.w != 0.0f)) {
       made[m].specular = Vec4{};
-      ENGINE_LOG_WARN(log_renderer, "a tile's material is drawn at the stand-in's reflectance",
-                      log::field("mesh", name), log::field("material", m),
-                      log::field("reason",
-                                 "no generator of the scene said its tiles hand one "
-                                 "(scene_gen::PlacementGeneratorDesc::tile_meshes_specular)"));
+      if (zeroed++ == 0) first_zeroed = m;
     }
     // Stochastic sampling (R131) where the set asked for it and the scene's resolve is the
     // stochastic one, which is chosen from the load's materials when the scene is made.
@@ -328,6 +328,25 @@ bool GpuScene::admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* 
                         log::field("mesh", name), log::field("material", m),
                         log::field("reason", refused));
       }
+    }
+  }
+  // **Said once a mesh for the life of the scene**, by its identity (its source's hash and the path
+  // the scene names it by), not once an admission: a streamed world re-admits the same mesh every
+  // time its tile comes back. The set grows only when a new mesh is refused, never in a steady
+  // frame.
+  if (zeroed > 0) {
+    const u64 identity =
+        hash_combine(data.source.source_hash, hash_bytes(name.data(), name.size()));
+    const auto at =
+        std::lower_bound(specular_refusals_said_.begin(), specular_refusals_said_.end(), identity);
+    if (at == specular_refusals_said_.end() || *at != identity) {
+      specular_refusals_said_.insert(at, identity);
+      ENGINE_LOG_WARN(log_renderer, "a tile's material is drawn at the stand-in's reflectance",
+                      log::field("mesh", name), log::field("material", first_zeroed),
+                      log::field("materials", zeroed),
+                      log::field("reason",
+                                 "no generator of the scene said its tiles hand one "
+                                 "(scene_gen::PlacementGeneratorDesc::tile_meshes_specular)"));
     }
   }
   made[own].albedo = Vec4{0.8f, 0.8f, 0.8f, 0.6f};  // the load's default for a part with none

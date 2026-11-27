@@ -1,15 +1,15 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R234",
-  "reason": "R234: KHR_materials_ior and KHR_materials_specular drawn, and since batch 77 chosen per scene; gfx.md states the two specifications' formulas, the 128-byte entry, how far shader and reference agree, the measured cost and the variant that gives it back (M0, M1); renderer.md the masked rule for the mesh room and the early compile's prediction; scene_gen.md tile_meshes_specular; geometry.md section 55; gpu_scene.h has_specular_materials",
+  "reason": "R234: KHR_materials_ior and KHR_materials_specular drawn, and since batch 77 chosen per scene; gfx.md states the two specifications' formulas, the 128-byte entry, how far shader and reference agree, the measured cost and the variant that gives it back (M0, M1); renderer.md the masked rule for the mesh room, the early compile's prediction and where its mesh-file reads run and cost (the review's mend); scene_gen.md tile_meshes_specular; geometry.md section 55; gpu_scene.h has_specular_materials and the set that says a dropped reflectance once a mesh",
   "date": "2026-11-27",
   "by": "Marc Micalizzi",
   "deltas": {
     "renderer.gpu_scene_cpp.lines": 9,
-    "renderer.gpu_scene_h.lines": 4,
-    "page:docs/subsystems/renderer.md": 3458,
+    "renderer.gpu_scene_h.lines": 5,
+    "page:docs/subsystems/renderer.md": 5005,
     "page:docs/subsystems/gfx.md": 10448,
     "page:docs/subsystems/geometry.md": 1367,
-    "page:docs/subsystems/scene_gen.md": 699
+    "page:docs/subsystems/scene_gen.md": 738
   }
 }

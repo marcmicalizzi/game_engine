@@ -393,7 +393,7 @@ struct PlacementGeneratorDesc {
   // nothing"): a material stating `KHR_materials_ior` or `KHR_materials_specular` at other than
   // their defaults. The rule is the masked one above: the resolve's declared lines are chosen when
   // the scene is made, so a generator whose tiles may hand such a material says so here, and one
-  // that hands it without saying so has it drawn at the stand-in's 4 %, said once by name. It costs
+  // that hands it without saying so has it drawn at the stand-in's 4 %, said once a mesh for the scene's life. It costs
   // a scene what its first declared material costs any scene (about 0.12 ms of resolve on the erg).
   bool tile_meshes_specular = false;
   // **What the entry plans for the ground** (R144; `GroundPlan`; scene_gen.md, "What an entry

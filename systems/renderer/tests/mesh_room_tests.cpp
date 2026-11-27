@@ -11,6 +11,7 @@
 // admitted rock is traced like the prefix (the ray path's ids against the rasterizer's).
 #include "test_device.h"
 
+#include <core/log/log.h>
 #include <domain/gfx/device.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
@@ -338,6 +339,51 @@ TEST_CASE("mesh room: a mesh is not resident before it is admitted and is gone a
   }
 }
 
+// A declared reflectance in a scene that did not say its tiles hand one (R234's masked rule) is
+// dropped from the record and said once a mesh for the scene's life, by count: a mesh that comes
+// and goes and comes back, through another slot, is one line; another mesh is a second.
+TEST_CASE("mesh room: a dropped reflectance is said once a mesh, not once an admission") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  test::TempDir tmp{"engine_renderer_mesh_room_specular"};
+  Rig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, describe(tmp, false), plain(), true), rig.error);
+  REQUIRE_FALSE(rig.scene.has_specular_materials());
+  const GpuScene::MeshRoom room = rig.scene.mesh_room();
+  REQUIRE(room.slots >= 2);
+  const auto declared = [&](u32 tile, PlacementMeshData& built) {
+    REQUIRE_MESSAGE(load_placement_mesh(rock(tile), rig.data.mesh_options, built, rig.error),
+                    rig.error);
+    REQUIRE(built.source.data.materials.size() >= 2);
+    for (assets::Material& m : built.source.data.materials)
+      m.ior = 2.0f;  // a declared index: packs other than the stand-in's
+  };
+  struct CaptureLog {
+    log::RingSink sink{512};
+    CaptureLog() { log::add_sink(&sink); }
+    ~CaptureLog() { log::remove_sink(&sink); }
+  } capture;
+  PlacementMeshData first;
+  declared(0, first);
+  for (u32 round = 0; round < 3; ++round) {  // admitted, retired, admitted again elsewhere
+    const u32 slot = room.first_mesh + round % 2;
+    REQUIRE_MESSAGE(rig.renderer.admit_mesh(slot, first, &rig.error), rig.error);
+    REQUIRE_MESSAGE(rig.renderer.retire_mesh(slot, &rig.error), rig.error);
+  }
+  PlacementMeshData second;
+  declared(1, second);
+  REQUIRE_MESSAGE(rig.renderer.admit_mesh(room.first_mesh, second, &rig.error), rig.error);
+  u32 lines = 0;
+  capture.sink.for_each(0, [&](const log::RingSink::Entry& entry) {
+    lines += entry.message == "a tile's material is drawn at the stand-in's reflectance" ? 1u : 0u;
+  });
+  CHECK(lines == 2);
+  CHECK_FALSE(rig.scene.has_specular_materials());
+}
+
 // The case below compares a streamed scene with the same scene read whole word for word, and the
 // stand-in lights stand at the scene's centre and orbit at its radius: the two loads must frame
 // them alike to the bit. They hold different instances — the whole read the rocks too, inside the
@@ -444,7 +490,8 @@ TEST_CASE("mesh room: the room's refusal names its bound and changes nothing") {
     Rig rig;
     REQUIRE_MESSAGE(rig.build(gpu.device, describe(tmp, false), plain(), true), rig.error);
     const GpuScene::MeshRoom room = rig.scene.mesh_room();
-    CHECK(room.bytes <= (u64{1} << 20) + u64{room.slots} * 64 + u64{room.materials} * sizeof(gfx::ResolveMaterial));
+    CHECK(room.bytes <= (u64{1} << 20) + u64{room.slots} * 64 +
+                            u64{room.materials} * sizeof(gfx::ResolveMaterial));
     PlacementMeshData built;
     REQUIRE_MESSAGE(load_placement_mesh(rock(0), rig.data.mesh_options, built, rig.error),
                     rig.error);
