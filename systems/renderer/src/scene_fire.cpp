@@ -78,7 +78,31 @@ bool read_lamp(const scene::Lamp& in, FireDesc& out, std::string* error) {
   if (!in_range(in.intensity, 0.0f, 1.0e7f)) return fail("intensity is not in [0, 1e7]");
   if (!in_range(in.reach_m, 0.0f, k_fire_max_reach_m)) return fail("reach_m is not in [0, 400]");
   if (!in_range(in.radius_m, 0.0f, 5.0f)) return fail("radius_m is not in [0, 5]");
+  // A spot's cone (R239): checked whether or not a direction names one, since a cone on a point
+  // lamp is an author's slip either way.
+  if (!std::isfinite(in.direction.x) || !std::isfinite(in.direction.y) ||
+      !std::isfinite(in.direction.z))
+    return fail("direction is not three finite numbers");
+  const f64 dx = static_cast<f64>(in.direction.x);
+  const f64 dy = static_cast<f64>(in.direction.y);
+  const f64 dz = static_cast<f64>(in.direction.z);
+  const f64 length = std::sqrt(dx * dx + dy * dy + dz * dz);
+  const bool spot = dx != 0.0 || dy != 0.0 || dz != 0.0;
+  if (spot && !(length >= 1.0e-6))
+    return fail("direction is too short to have one (all zero for a point lamp)");
+  if (!std::isfinite(in.outer_cone_deg) || !(in.outer_cone_deg > 0.0f) ||
+      !(in.outer_cone_deg < 180.0f))
+    return fail("outer_cone_deg is not in (0, 180)");
+  if (!in_range(in.inner_cone_deg, 0.0f, in.outer_cone_deg))
+    return fail("inner_cone_deg is not in [0, outer_cone_deg]");
   out = FireDesc{};
+  if (spot) {
+    constexpr f64 k_degree = 3.14159265358979323846 / 180.0;
+    out.direction = Vec3{static_cast<f32>(dx / length), static_cast<f32>(dy / length),
+                         static_cast<f32>(dz / length)};
+    out.cos_inner = static_cast<f32>(std::cos(static_cast<f64>(in.inner_cone_deg) * k_degree));
+    out.cos_outer = static_cast<f32>(std::cos(static_cast<f64>(in.outer_cone_deg) * k_degree));
+  }
   out.radius_m = in.radius_m;  // the globe's: where a shadow ray stops short of the light
   out.name = in.name;
   out.position = in.position;
@@ -232,6 +256,10 @@ FrameFire burn_lamp(const FireDesc& desc, const WorldPos& base, f32 scale, f32 u
   out.smoke_density = 0.0f;
   out.flicker = 0.0f;
   out.seed = desc.seed;
+  // A spot's cone (R239): the scene's lamp's axis as read; a placed prop's is turned by the caller.
+  out.direction = desc.direction;
+  out.cos_inner = desc.cos_inner;
+  out.cos_outer = desc.cos_outer;
   return out;
 }
 
@@ -267,8 +295,16 @@ u32 add_lamp_lights(std::span<const FrameFire> lamps, const WorldPos& eye,
     light = gfx::ResolveLight{};
     light.position_radius = Vec4{relative(l.base, eye), l.reach_m};
     light.color_intensity = Vec4{l.color, l.intensity};
-    light.direction_type = Vec4{0.0f, 0.0f, 0.0f, gfx::k_light_point};
-    light.spot = Vec4{0.0f, 0.0f, l.radius_m, 0.0f};  // the globe: shadow rays stop at its glass
+    if (l.direction.x != 0.0f || l.direction.y != 0.0f || l.direction.z != 0.0f) {
+      // A spot (R239): the resolve's own cone (`brdf_spot_attenuation`), its axis in the world's
+      // axes, which are the frame's (the eye moves the origin, never the axes); the globe's radius
+      // beside the cone's cosines in the same vector.
+      light.direction_type = Vec4{l.direction, gfx::k_light_spot};
+      light.spot = Vec4{l.cos_inner, l.cos_outer, l.radius_m, 0.0f};
+    } else {
+      light.direction_type = Vec4{0.0f, 0.0f, 0.0f, gfx::k_light_point};
+      light.spot = Vec4{0.0f, 0.0f, l.radius_m, 0.0f};  // the globe: shadow rays stop at its glass
+    }
     ++added;
   }
   return added;
@@ -347,6 +383,16 @@ void FireSet::place_at(const SceneInstance& instance, const FireDesc& desc, u32 
   p.desc = index;
   p.base = instance.origin + DVec3{turned};
   p.scale = std::max(t.scale.x, std::max(t.scale.y, t.scale.z));
+  // A lamp's cone turns with the instance (R239): its axis mapped as the prop's geometry is —
+  // scaled per axis, then turned — and put back to unit length. One call a statement (AGENTS.md:
+  // MSVC's by-value miscompile).
+  if (desc.direction.x != 0.0f || desc.direction.y != 0.0f || desc.direction.z != 0.0f) {
+    const Vec3 scaled{desc.direction.x * t.scale.x, desc.direction.y * t.scale.y,
+                      desc.direction.z * t.scale.z};
+    const Vec3 axis = rotate(t.rotation, scaled);
+    const f32 length = std::sqrt(dot(axis, axis));
+    if (length > 0.0f && std::isfinite(length)) p.direction = axis * (1.0f / length);
+  }
   out.push_back(p);
 }
 
@@ -381,8 +427,10 @@ void FireSet::burn_lamps(f32 units, Vector<FrameFire>& out) const {
   out.clear();
   for (const FireDesc& lamp : fixed_lamps_)
     out.push_back(burn_lamp(lamp, lamp.position, 1.0f, units));
-  for (const Placed& p : placed_lamps_)
+  for (const Placed& p : placed_lamps_) {
     out.push_back(burn_lamp(prop_lamps_[p.desc], p.base, p.scale, units));
+    out.back().direction = p.direction;  // the cone turned with its instance (place_at)
+  }
 }
 
 }  // namespace engine::renderer

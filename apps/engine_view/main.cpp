@@ -276,7 +276,9 @@ constexpr const char* k_usage =
     "  --no-cull        draw every leaf cluster; no GPU culling or LOD selection\n"
     "  --no-occlusion   skip two-pass occlusion culling (hw mode only; on by default)\n"
     "  --no-cone        skip backface culling of clusters by their normal cones (on by default)\n"
-    "  --no-lights      only the sun and the sky; no point lights (they are on by default)\n"
+    "  --no-lights      only the sun and the sky; no point lights: neither the stand-in's two nor\n"
+    "                   the scene's fires' and lamps' (a fire still burns in the medium).\n"
+    "                   render.*'s settings.lights and settings.scene_lights\n"
     "  --sun <az,el>    where the sun starts, degrees: azimuth in the ground plane from +x towards\n"
     "                   +z, elevation above the horizon (default: the renderer.sun.* tunables,\n"
     "                   48.37,53.03), still unless its day runs (--sun-rate). Refused for a scene\n"
@@ -4889,6 +4891,7 @@ int run_view(int argc, char** argv) {
       options.settings.share_textures = false;
     } else if (a == "--no-lights") {
       options.settings.lights = false;
+      options.settings.scene_lights = false;  // the scene's fires' lights and lamps too (R239)
     } else if (a == "--terrain-async") {
       options.terrain_async = true;
     } else if (a == "--orbit-lights") {

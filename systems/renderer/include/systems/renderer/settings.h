@@ -181,6 +181,10 @@ struct RenderSettings {
   // They orbit as the frame index advances (lighting.h); off, the default since 2026-09-27, they
   // stand where frame 0 puts them, so a time-lapse's sand is lit the same from frame to frame.
   bool orbit_lights = false;
+  // **The scene's own point lights** (R239; renderer.md, "Lamps"): its fires' lights and its lamps,
+  // the placed props' with them. Off, a fire still burns in the medium and lights nothing, and a
+  // lamp is dark; `lights` is the stand-in's two alone. engine-view's `--no-lights` turns both off.
+  bool scene_lights = true;
   // The sun, degrees (lighting.h, `sun_direction`); unset takes the `renderer.sun.*` tunables.
   // Not read with a sky, whose sun its provider places (sky.h).
   std::optional<f32> sun_azimuth_deg;

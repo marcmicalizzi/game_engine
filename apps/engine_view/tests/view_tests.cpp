@@ -380,3 +380,87 @@ TEST_CASE("engine-view: --deform fills the vertex pool without changing the cut"
         number(rigid_summary, "visible_pairs_last"));
   CHECK(number(identity_summary, "visible_pairs_last") > 0);
 }
+
+// R239 (the Toronto proof of concept's G-T25; renderer.md, "A lamp that throws its light one
+// way", and "Exposure"): the command line rules over the scene file. `--no-lights` puts out a
+// scene file's lamp as well as the stand-in's two lights, so the scene with its lamp under the
+// flag draws the bytes of the same scene with none; and `--exposure-ev100` holds the exposure of a
+// sky that says `Fixed` at the flag's value, which the summary's `sun.sky.ev100` reports.
+TEST_CASE("engine-view: --no-lights and --exposure-ev100 rule over the scene file") {
+  const test::TempDir tmp("engine_view_scene_switches");
+  REQUIRE(tmp.ok());
+  const std::string terrain = R"("terrain":{"size":33,"extent":16,"seed":3})";
+  const std::string lit = tmp.file("lit.json");
+  const std::string bare = tmp.file("bare.json");
+  REQUIRE(io::write_file(lit, R"({"format":"engine.scene.v1","name":"lit",)" + terrain +
+                                  R"(,"lamps":[{"name":"l","position":[0,1,0],"ground":true,)"
+                                  R"("intensity":40,"reach_m":30}]})") == io::Status::Ok);
+  REQUIRE(io::write_file(bare, R"({"format":"engine.scene.v1","name":"bare",)" + terrain + "}") ==
+          io::Status::Ok);
+  const auto shot = [&](const std::string& scene, const std::string& png, bool no_lights,
+                        std::vector<std::string> more = {}) {
+    std::vector<std::string> args = {
+        "--scene",     scene,   "--offscreen",   "--width", "96",
+        "--height",    "64",    "--frames",      "2",       "--capture",
+        tmp.file(png), "--ddc", tmp.file("ddc"), "--audio", "off"};
+    if (no_lights) args.push_back("--no-lights");
+    for (std::string& m : more)
+      args.push_back(std::move(m));
+    return view(args);
+  };
+  const Run a = shot(lit, "lit-off.png", true);
+  if (a.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << a.output);
+    return;
+  }
+  REQUIRE_MESSAGE(a.exit_code == 0, a.output);
+  const Run b = shot(bare, "bare-off.png", true);
+  REQUIRE_MESSAGE(b.exit_code == 0, b.output);
+  const Run c = shot(lit, "lit-on.png", false);
+  REQUIRE_MESSAGE(c.exit_code == 0, c.output);
+  std::string lit_off, bare_off, lit_on;
+  REQUIRE(io::read_file(tmp.file("lit-off.png"), lit_off) == io::Status::Ok);
+  REQUIRE(io::read_file(tmp.file("bare-off.png"), bare_off) == io::Status::Ok);
+  REQUIRE(io::read_file(tmp.file("lit-on.png"), lit_on) == io::Status::Ok);
+  CHECK(lit_off == bare_off);  // the lamp is out under the flag
+  CHECK(lit_on != lit_off);    // and lit without it
+
+  // A sky fixed at 15; the flag's 13 is what the frame is drawn at.
+  const std::string sky = tmp.file("sky.json");
+  REQUIRE(io::write_file(sky, R"({"format":"engine.scene.v1","name":"sky",)" + terrain +
+                                  R"(,"sky":{"exposure":"Fixed","exposure_ev100":15}})") ==
+          io::Status::Ok);
+  const auto ev100_of = [](const Run& run) {
+    usize end = run.output.size();
+    while (end > 0) {
+      usize begin = run.output.find_last_of('\n', end - 1);
+      begin = begin == std::string::npos ? 0 : begin + 1;
+      JsonValue summary;
+      if (begin < end && run.output[begin] == '{' &&
+          parse_json(std::string_view(run.output).substr(begin, end - begin), summary).ok) {
+        const JsonValue* sun = summary.find("sun");
+        const JsonValue* block = sun != nullptr ? sun->find("sky") : nullptr;
+        const JsonValue* ev = block != nullptr ? block->find("ev100") : nullptr;
+        f64 out = -100.0;
+        return ev != nullptr && ev->get_f64(out) ? out : -100.0;
+      }
+      if (begin == 0) break;
+      end = begin - 1;
+    }
+    return -100.0;
+  };
+  // At noon: a frame at the sky's own hour may be a night, black at either exposure.
+  const Run scene_ev = shot(sky, "sky-15.png", false, {"--time-of-day", "12"});
+  REQUIRE_MESSAGE(scene_ev.exit_code == 0, scene_ev.output);
+  const Run run_ev =
+      shot(sky, "sky-13.png", false, {"--time-of-day", "12", "--exposure-ev100", "13"});
+  REQUIRE_MESSAGE(run_ev.exit_code == 0, run_ev.output);
+  MESSAGE("EV100: the scene's " << ev100_of(scene_ev) << ", with --exposure-ev100 13 "
+                                << ev100_of(run_ev));
+  CHECK(ev100_of(scene_ev) == 15.0);
+  CHECK(ev100_of(run_ev) == 13.0);
+  std::string at15, at13;
+  REQUIRE(io::read_file(tmp.file("sky-15.png"), at15) == io::Status::Ok);
+  REQUIRE(io::read_file(tmp.file("sky-13.png"), at13) == io::Status::Ok);
+  CHECK(at15 != at13);
+}

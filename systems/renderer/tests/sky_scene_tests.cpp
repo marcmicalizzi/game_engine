@@ -799,6 +799,74 @@ TEST_CASE("sky scene: the same frame meters the same exposure in fresh renderers
   }
 }
 
+// **The run's exposure rules over the scene's** (R239; renderer.md, "Exposure"; the Toronto proof
+// of concept's G-T25 saw `--exposure-ev100 5` draw the picture of a sky that says `Fixed` at 7): a
+// sky fixed at 15 meters 15; the same scene with the run's fixed value (`RenderSettings::
+// exposure_ev100`, engine-view's `--exposure-ev100`) of 13 meters 13 and draws another picture,
+// two stops brighter; and a frame's own fixed request (engine-view's `0`) wins over both.
+TEST_CASE("sky scene: the run's fixed exposure rules over a sky that says Fixed") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  scene::Sky entry = erg_sky();
+  entry.exposure = scene::SkyExposure::Fixed;
+  entry.exposure_ev100 = 15.0f;
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  settings.dither = false;
+  constexpr u32 k_width = 96;
+  constexpr u32 k_height = 54;
+  Rig scene_ev;
+  REQUIRE_MESSAGE(scene_ev.build(gpu.device, hills(entry), settings, k_width, k_height, false),
+                  scene_ev.error);
+  settings.exposure_ev100 = 13.0f;
+  Rig run_ev;
+  REQUIRE_MESSAGE(run_ev.build(gpu.device, hills(entry), settings, k_width, k_height, false),
+                  run_ev.error);
+  const scene_gen::SkyProvider provider = make_earth(entry);
+  scene_gen::SkyState state;
+  provider.state(15.5 * 3600.0, state);  // the afternoon: a picture in the display's middle
+  const Vec3 light = state.sun.y > 0.0f ? state.sun : state.moon;
+  const Vec3 level = normalize(Vec3{light.x, 0.0f, light.z});
+  FrameDesc frame;
+  frame.camera = aimed(Vec3{0.0f, 20.0f, 0.0f}, normalize(normalize(light) + level), 60.0f);
+  frame.sky_time_s = 15.5 * 3600.0;
+  CapturedFrame a, b, c;
+  REQUIRE_MESSAGE(scene_ev.renderer.capture(frame, CaptureChannels{}, a, &scene_ev.error),
+                  scene_ev.error);
+  const SkyStats fixed_by_scene = scene_ev.renderer.stats().sky;
+  REQUIRE_MESSAGE(run_ev.renderer.capture(frame, CaptureChannels{}, b, &run_ev.error),
+                  run_ev.error);
+  const SkyStats fixed_by_run = run_ev.renderer.stats().sky;
+  FrameDesc keyed = frame;
+  keyed.exposure.fixed = true;
+  keyed.exposure.ev100 = 11.0f;
+  REQUIRE_MESSAGE(run_ev.renderer.capture(keyed, CaptureChannels{}, c, &run_ev.error),
+                  run_ev.error);
+  const SkyStats fixed_by_frame = run_ev.renderer.stats().sky;
+  MESSAGE("EV100: the scene's " << fixed_by_scene.ev100 << ", the run's " << fixed_by_run.ev100
+                                << ", the frame's " << fixed_by_frame.ev100);
+  CHECK(fixed_by_scene.ev100 == 15.0f);
+  CHECK(fixed_by_run.ev100 == 13.0f);
+  CHECK(fixed_by_frame.ev100 == 11.0f);
+  REQUIRE(a.color.size() == b.color.size());
+  REQUIRE(a.color.size() == c.color.size());
+  u32 brighter = 0, darker = 0;
+  for (u32 i = 0; i < a.color.size(); i += 4) {
+    for (u32 ch = 0; ch < 3; ++ch) {
+      brighter += b.color[i + ch] > a.color[i + ch];
+      darker += b.color[i + ch] < a.color[i + ch];
+    }
+  }
+  MESSAGE(brighter << " channel values brighter at the run's EV100 13 than the scene's 15, "
+                   << darker << " darker");
+  CHECK(brighter > a.color.size() / 8);
+  CHECK(darker == 0);
+  CHECK(std::memcmp(b.color.data(), c.color.data(), b.color.size()) != 0);
+}
+
 #if defined(ENGINE_SKY_TESTS_TERRAIN)
 TEST_CASE("sky scene: the sky stands at the ground's time plus the frame's offset") {
   Gpu gpu;

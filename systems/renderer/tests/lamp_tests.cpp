@@ -272,6 +272,142 @@ TEST_CASE("lamp: a prop's lamp stands where each placed instance stands, counted
   CHECK(set.lamps_refused() == 0);
 }
 
+TEST_CASE("lamp: a spot lamp's direction and cone are read, and a bad one refused by its field") {
+  // R239: `direction` any length, taken to unit length; the half-angles' cosines in f64; a lamp
+  // with no direction the point it was, whatever its cone says.
+  constexpr f64 k_degree = 3.14159265358979323846 / 180.0;  // read_lamp's own
+  const test::TempDir tmp("renderer_spot_scene");
+  const std::string path = tmp.file("spot.json");
+  REQUIRE(
+      io::write_file(
+          path,
+          R"({"format":"engine.scene.v1","name":"spots","terrain":{"size":17,"extent":16,"seed":1},
+      "lamps":[{"name":"street","position":[0,6,0],"direction":[0,-2,0],"inner_cone_deg":30,
+                "outer_cone_deg":60},
+               {"name":"globe","position":[0,1.5,0]}],
+      "props":[{"name":"head","mesh":"head.glb",
+                "lamp":{"name":"lens","position":[0,0.4,0],"direction":[3,0,4],
+                        "outer_cone_deg":90}}]})") == io::Status::Ok);
+  SceneDesc desc;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+  REQUIRE(desc.lamps.size() == 2);
+  const FireDesc& street = desc.lamps[0];
+  CHECK(street.direction == Vec3{0.0f, -1.0f, 0.0f});
+  CHECK(street.cos_inner == static_cast<f32>(std::cos(30.0 * k_degree)));
+  CHECK(street.cos_outer == static_cast<f32>(std::cos(60.0 * k_degree)));
+  CHECK(desc.lamps[1].direction == Vec3{});  // no direction: a point lamp
+  REQUIRE(desc.props.size() == 1);
+  REQUIRE(desc.props[0].lamp.has_value());
+  const FireDesc& lens = *desc.props[0].lamp;
+  CHECK(lens.direction.x == doctest::Approx(0.6).epsilon(1e-6));
+  CHECK(lens.direction.z == doctest::Approx(0.8).epsilon(1e-6));
+  CHECK(lens.cos_inner == 1.0f);             // the schema's inner 0
+  CHECK(std::fabs(lens.cos_outer) < 1e-7f);  // 90 degrees: a full cut-off head
+
+  // Each bad field refused, naming the lamp and the field.
+  const struct {
+    const char* lamp;
+    const char* field;
+  } bad[] = {
+      {R"("direction":[0,1e-9,0])", "direction"},
+      {R"("direction":[0,-1,0],"outer_cone_deg":0)", "outer_cone_deg"},
+      {R"("direction":[0,-1,0],"outer_cone_deg":180)", "outer_cone_deg"},
+      {R"("outer_cone_deg":-5)", "outer_cone_deg"},
+      {R"("direction":[0,-1,0],"inner_cone_deg":50,"outer_cone_deg":40)", "inner_cone_deg"},
+      {R"("inner_cone_deg":-1)", "inner_cone_deg"},
+  };
+  for (const auto& b : bad) {
+    CAPTURE(b.lamp);
+    REQUIRE(
+        io::write_file(
+            path, std::string(R"({"format":"engine.scene.v1","name":"bad","terrain":{"size":17,)"
+                              R"("extent":16,"seed":1},"lamps":[{"name":"x","position":[0,2,0],)") +
+                      b.lamp + "}]}") == io::Status::Ok);
+    SceneDesc refused;
+    CHECK_FALSE(read_scene_file(path, refused, error));
+    MESSAGE(error);
+    CHECK(error.find("lamps 0 (\"x\")") != std::string::npos);
+    CHECK(error.find(b.field) != std::string::npos);
+  }
+}
+
+TEST_CASE("lamp: a spot reaches the array as the resolve's spot, a point lamp as it was") {
+  // A point lamp's light is the bytes R86 wrote: a point, its globe in `spot.z` and nothing else,
+  // so a scene with no cone hands the resolve the array it handed it (no shader changed with R239).
+  FrameFire point;
+  point.base = WorldPos{3.0, 2.5, -1.0};
+  point.intensity = 12.0f;
+  point.color = Vec3{1.1f, 0.95f, 0.8f};
+  point.reach_m = 9.0f;
+  point.radius_m = 0.18f;
+  gfx::ResolveLight was{};
+  const WorldPos eye{1.0, 1.0, 1.0};
+  was.position_radius = Vec4{relative(point.base, eye), point.reach_m};
+  was.color_intensity = Vec4{point.color, point.intensity};
+  was.direction_type = Vec4{0.0f, 0.0f, 0.0f, gfx::k_light_point};
+  was.spot = Vec4{0.0f, 0.0f, point.radius_m, 0.0f};
+  FrameLighting lighting;
+  lighting.light_count = 0;
+  REQUIRE(add_lamp_lights(std::span<const FrameFire>(&point, 1), eye, lighting) == 1);
+  CHECK(std::memcmp(&lighting.lights[0], &was, sizeof(was)) == 0);
+
+  // A spot: its axis, the cosines and the globe.
+  FireDesc desc;
+  desc.lamp = true;
+  desc.intensity = 400.0f;
+  desc.radius_m = 0.1f;
+  desc.direction = Vec3{0.0f, -1.0f, 0.0f};
+  desc.cos_inner = 0.9f;
+  desc.cos_outer = 0.6f;
+  const FrameFire spot = burn_lamp(desc, WorldPos{0.0, 8.0, 0.0}, 1.0f);
+  CHECK(spot.direction == desc.direction);
+  REQUIRE(add_lamp_lights(std::span<const FrameFire>(&spot, 1), eye, lighting) == 1);
+  const gfx::ResolveLight& light = lighting.lights[1];
+  CHECK(light.direction_type.w == gfx::k_light_spot);
+  CHECK(light.direction_type.xyz() == Vec3{0.0f, -1.0f, 0.0f});
+  CHECK(light.spot.x == 0.9f);
+  CHECK(light.spot.y == 0.6f);
+  CHECK(light.spot.z == 0.1f);
+  CHECK(light.spot.w == 0.0f);
+
+  // A prop's spot turns with each placed instance: its axis scaled per axis and turned, at unit
+  // length; a point prop lamp stays a point.
+  SceneData scene;
+  scene.parts.resize(2);
+  FireDesc head = desc;
+  head.position = WorldPos{0.0, 0.5, 0.0};
+  head.direction = Vec3{0.0f, 0.6f, 0.8f};
+  SceneProp prop{"head", 1u};
+  prop.lamp = head;
+  scene.props.push_back(prop);
+  FireSet set;
+  set.reset(scene);
+  SceneInstance tail[2];
+  tail[0].mesh = 1;
+  tail[0].transform.rotation = quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, 0.5f * k_pi);
+  tail[0].transform.scale = Vec3{2.0f, 2.0f, 2.0f};
+  tail[1].mesh = 1;  // stretched along y, then turned an eighth about -x
+  tail[1].transform.rotation = quat_from_axis_angle(Vec3{1.0f, 0.0f, 0.0f}, -0.25f * k_pi);
+  tail[1].transform.scale = Vec3{1.0f, 3.0f, 1.0f};
+  set.place(std::span<const SceneInstance>(tail, 2));
+  Vector<FrameFire> out;
+  set.burn_lamps(1.0f, out);
+  REQUIRE(out.size() == 2);
+  CHECK(out[0].direction.x == doctest::Approx(0.8).epsilon(1e-5));  // z turned to x
+  CHECK(out[0].direction.y == doctest::Approx(0.6).epsilon(1e-5));
+  CHECK(std::fabs(out[0].direction.z) < 1e-6f);
+  CHECK(out[0].cos_inner == 0.9f);
+  CHECK(out[0].cos_outer == 0.6f);
+  const Vec3 stretched{0.0f, 1.8f, 0.8f};
+  const Vec3 axis = rotate(tail[1].transform.rotation, stretched);
+  const Vec3 turned = axis * (1.0f / std::sqrt(dot(axis, axis)));
+  CHECK(out[1].direction.x == doctest::Approx(turned.x).epsilon(1e-5));
+  CHECK(out[1].direction.y == doctest::Approx(turned.y).epsilon(1e-5));
+  CHECK(out[1].direction.z == doctest::Approx(turned.z).epsilon(1e-5));
+  CHECK(dot(out[1].direction, out[1].direction) == doctest::Approx(1.0).epsilon(1e-6));
+}
+
 // ---- on a GPU
 // ------------------------------------------------------------------------------------
 
@@ -396,7 +532,7 @@ struct LampRig {
   std::string error;
 
   bool build(const gfx::Device& device, const std::string& room, ShadowMode shadows,
-             const FireDesc* lamp, std::span<const FireDesc> more = {}) {
+             const FireDesc* lamp, std::span<const FireDesc> more = {}, bool scene_lights = true) {
     SceneDesc desc;
     desc.meshes.push_back(room);
     desc.cache = false;
@@ -407,6 +543,7 @@ struct LampRig {
     RenderSettings settings;
     settings.shadows = shadows;
     settings.lights = false;  // the stand-in's two lights out: the lamp is the only point light
+    settings.scene_lights = scene_lights;  // off: --no-lights, the scene's own out too (R239)
     settings.dither = false;
     resolve_settings(settings, device.features(), &data, resolved);
     if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
@@ -1009,6 +1146,231 @@ void shadow_ray_cap(ShadowMode shadows, const char* name) {
   CHECK(classed.renderer.stats().light_cap_pixels == three_capped);
 }
 
+// **A spot lamp** (R239; renderer.md, "A lamp that throws its light one way"): the globe of the
+// floor's case pointed straight down with a cone of 20 and 35 degrees. Inside the outer cone the
+// lamp's light (the frame with it less the frame without) is `brdf_reference.h`'s `direct` times
+// its `spot_attenuation`, within the floor case's 2% and 0.002; past it, by a margin, the lamp adds
+// not a bit to any value. Then 63 spots of short reach turned every way, drawn with the light grid
+// and without it at every ray, at the cap's default and at three rays: the same bytes; and the lamp
+// and a fire with `scene_lights` off (engine-view's `--no-lights`): the bytes of no lamp, none lit.
+void spot_on_the_floor(ShadowMode shadows, const char* name) {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(renderer_test::device_options(), &error) ||
+      !device.features().buffer_int64_atomics) {
+    MESSAGE("skipped: no device with 64-bit buffer atomics: " << error);
+    return;
+  }
+  const test::TempDir dir("renderer_spot_floor");
+  std::string room;
+  REQUIRE(write_room(dir, room));
+  constexpr f64 k_degree = 3.14159265358979323846 / 180.0;
+  FireDesc lamp;
+  lamp.lamp = true;
+  lamp.name = "spot";
+  lamp.position = WorldPos{static_cast<f64>(k_lamp_at.x), static_cast<f64>(k_lamp_at.y),
+                           static_cast<f64>(k_lamp_at.z)};
+  lamp.intensity = 4.0f;
+  lamp.color = Vec3{1.25f, 0.95f, 0.7f};
+  lamp.color = lamp.color * (1.0f / luminance(lamp.color));
+  lamp.radius_m = k_globe_radius;
+  lamp.direction = Vec3{0.0f, -1.0f, 0.0f};
+  lamp.cos_inner = static_cast<f32>(std::cos(20.0 * k_degree));
+  lamp.cos_outer = static_cast<f32>(std::cos(35.0 * k_degree));
+  const Vec3 eye{1.5f, 7.0f, 3.0f};
+  const Vec3 target{1.5f, 0.0f, 0.0f};
+  const f32 fov_y = 60.0f * k_pi / 180.0f;
+  FrameDesc frame;
+  frame.camera.position =
+      WorldPos{static_cast<f64>(eye.x), static_cast<f64>(eye.y), static_cast<f64>(eye.z)};
+  frame.camera.target =
+      WorldPos{static_cast<f64>(target.x), static_cast<f64>(target.y), static_cast<f64>(target.z)};
+  frame.camera.fov_y = fov_y;
+  frame.camera.znear = 0.05f;
+  frame.world_time_s = 1.5;
+
+  LampRig lit;
+  if (!lit.build(device, room, shadows, &lamp)) {
+    REQUIRE_MESSAGE(lit.error == "unavailable", lit.error);
+    MESSAGE("skipped: " << std::string(name) << " is not available here");
+    return;
+  }
+  LampRig dark;
+  REQUIRE_MESSAGE(dark.build(device, room, shadows, nullptr), dark.error);
+  CaptureChannels channels;
+  channels.color = false;
+  channels.light = true;
+  CapturedFrame a, b;
+  REQUIRE_MESSAGE(lit.renderer.capture(frame, channels, a, &lit.error), lit.error);
+  REQUIRE_MESSAGE(dark.renderer.capture(frame, channels, b, &dark.error), dark.error);
+  CHECK(lit.renderer.stats().lamp_lights == 1);
+  REQUIRE(a.light.size() == size_t{k_width} * k_height * 3);
+  REQUIRE(b.light.size() == a.light.size());
+
+  const Vec3 f = normalize(target - eye);
+  const Vec3 sv = normalize(cross(f, Vec3{0.0f, 1.0f, 0.0f}));
+  const Vec3 uv = cross(sv, f);
+  const f64 t = std::tan(0.5 * static_cast<f64>(fov_y));
+  const f64 aspect = static_cast<f64>(k_width) / k_height;
+  const brdf_ref::Dvec3 lamp_at = brdf_ref::dvec3(k_lamp_at);
+  const brdf_ref::Dvec3 axis = brdf_ref::dvec3(lamp.direction);
+  const f64 reach = static_cast<f64>(fire_light_reach(lamp.intensity));
+  u32 inside = 0, banded = 0, outside = 0, moved_outside = 0;
+  f64 worst = 0.0;
+  for (u32 py = 0; py < k_height; ++py) {  // every pixel: the inner cone is a small disc
+    for (u32 px = 0; px < k_width; ++px) {
+      const f64 xn = (2.0 * (px + 0.5) / k_width - 1.0) * t * aspect;
+      const f64 yn = (1.0 - 2.0 * (py + 0.5) / k_height) * t;
+      const brdf_ref::Dvec3 d = brdf_ref::normalize(brdf_ref::dvec3(f) + brdf_ref::dvec3(sv) * xn +
+                                                    brdf_ref::dvec3(uv) * yn);
+      const brdf_ref::Dvec3 e = brdf_ref::dvec3(eye);
+      {  // the globe seen from above, and a margin about it: not the floor
+        f64 t0 = 0.0, t1 = 1e30;
+        const f64 lo[3] = {lamp_at.x - 0.15, lamp_at.y - 0.15, lamp_at.z - 0.15};
+        const f64 hi[3] = {lamp_at.x + 0.15, lamp_at.y + 0.15, lamp_at.z + 0.15};
+        const f64 o[3] = {e.x, e.y, e.z}, dd[3] = {d.x, d.y, d.z};
+        for (u32 k = 0; k < 3; ++k) {
+          const f64 a0 = (lo[k] - o[k]) / dd[k], a1 = (hi[k] - o[k]) / dd[k];
+          t0 = std::max(t0, std::min(a0, a1));
+          t1 = std::min(t1, std::max(a0, a1));
+        }
+        if (t0 <= t1) continue;
+      }
+      const f64 ts = (static_cast<f64>(k_slab_y) - e.y) / d.y;  // the slab and a margin
+      const f64 sx = e.x + d.x * ts, sz = e.z + d.z * ts;
+      if (sx > static_cast<f64>(k_slab_x0) - 0.15 && sx < static_cast<f64>(k_slab_x1) + 0.15 &&
+          std::fabs(sz) < static_cast<f64>(k_slab_z) + 0.15)
+        continue;
+      const f64 tf = -e.y / d.y;
+      const brdf_ref::Dvec3 p{e.x + d.x * tf, 0.0, e.z + d.z * tf};
+      if (std::fabs(p.x) > 5.5 || std::fabs(p.z) > 5.5) continue;
+      const brdf_ref::Dvec3 to_light = lamp_at - p;
+      const f64 d2 = brdf_ref::dot(to_light, to_light);
+      const brdf_ref::Dvec3 from_light = brdf_ref::normalize(p - lamp_at);
+      const f64 cos_axis = brdf_ref::dot(from_light, axis);
+      const u32 i = (py * k_width + px) * 3;
+      if (cos_axis < static_cast<f64>(lamp.cos_outer) - 0.01) {
+        // Past the cone: the lamp adds nothing, to the bit.
+        for (u32 ch = 0; ch < 3; ++ch)
+          moved_outside += a.light[i + ch] != b.light[i + ch];
+        ++outside;
+        continue;
+      }
+      if (d2 >= reach * reach) continue;
+      brdf_ref::Surface surface;
+      surface.position = p;
+      surface.normal = brdf_ref::Dvec3{0.0, 1.0, 0.0};
+      surface.view = brdf_ref::normalize(e - p);
+      surface.albedo = brdf_ref::splat(static_cast<f64>(k_albedo));
+      surface.roughness = 1.0;
+      const f64 cone = brdf_ref::spot_attenuation(
+          from_light, axis, static_cast<f64>(lamp.cos_inner), static_cast<f64>(lamp.cos_outer));
+      const brdf_ref::Dvec3 radiance =
+          brdf_ref::dvec3(lamp.color) *
+          (static_cast<f64>(lamp.intensity) * brdf_ref::distance_attenuation(d2, reach) * cone);
+      const brdf_ref::Dvec3 expected =
+          brdf_ref::direct(surface, brdf_ref::normalize(to_light), radiance);
+      for (u32 ch = 0; ch < 3; ++ch) {
+        const f64 got = static_cast<f64>(a.light[i + ch]) - static_cast<f64>(b.light[i + ch]);
+        const f64 want = ch == 0 ? expected.x : (ch == 1 ? expected.y : expected.z);
+        const f64 err = std::fabs(got - want) / (std::fabs(want) * 0.02 + 2e-3);
+        worst = std::max(worst, err);
+        if (err > 1.0) {
+          MESSAGE("pixel " << px << "," << py << " (" << p.x << ", " << p.z << ") channel " << ch
+                           << ": " << got << " against the reference's " << want);
+        }
+        CHECK(err <= 1.0);
+      }
+      (cos_axis >= static_cast<f64>(lamp.cos_inner) ? inside : banded) += 1;
+    }
+  }
+  MESSAGE(std::string(name) << ": " << inside << " floor pixels inside the inner cone and "
+                            << banded << " in its falloff held to the reference (worst at " << worst
+                            << " of the allowance); " << outside << " past the outer cone, "
+                            << moved_outside << " values moved there");
+  CHECK(inside > 300);
+  CHECK(banded > 600);
+  CHECK(outside > 20000);
+  CHECK(moved_outside == 0);
+
+  // Spots of short reach turned every way, the light grid on and off, under the cap too.
+  Vector<FireDesc> spots;
+  for (u32 j = 0; j < 7; ++j) {
+    for (u32 i = 0; i < 9; ++i) {
+      FireDesc s = lamp;
+      s.position = WorldPos{-5.0 + 1.25 * i, 0.4 + 0.15 * ((i + j) % 5), -4.5 + 1.5 * j};
+      s.intensity = 0.4f + 0.05f * static_cast<f32>((i * 7 + j) % 9);
+      s.reach_m = 1.0f + 0.25f * static_cast<f32>((i + 2 * j) % 6);
+      s.radius_m = 0.0f;
+      const Vec3 aim{0.7f * static_cast<f32>(static_cast<i32>(i % 3) - 1), -1.0f,
+                     0.7f * static_cast<f32>(static_cast<i32>(j % 3) - 1)};
+      s.direction = normalize(aim);
+      s.cos_inner = static_cast<f32>(std::cos((10.0 + 5.0 * (i % 3)) * k_degree));
+      s.cos_outer = static_cast<f32>(std::cos((30.0 + 12.0 * (j % 4)) * k_degree));
+      spots.push_back(s);
+    }
+  }
+  LampRig many;
+  REQUIRE_MESSAGE(many.build(device, room, shadows, nullptr, std::span<const FireDesc>(spots)),
+                  many.error);
+  struct Restore {
+    ~Restore() {
+      (void)tunables::apply_overrides("renderer.lights.grid=true");
+      (void)tunables::apply_overrides("renderer.shadow.light_rays=8");
+    }
+  } restore;
+  u32 lit_values = 0;
+  for (const char* rays : {"renderer.shadow.light_rays=0", "renderer.shadow.light_rays=8",
+                           "renderer.shadow.light_rays=3"}) {
+    CAPTURE(rays);
+    REQUIRE(tunables::apply_overrides(rays));
+    REQUIRE(tunables::apply_overrides("renderer.lights.grid=true"));
+    CapturedFrame culled, whole;
+    REQUIRE_MESSAGE(many.renderer.capture(frame, channels, culled, &many.error), many.error);
+    const auto on = many.renderer.stats();
+    REQUIRE(tunables::apply_overrides("renderer.lights.grid=false"));
+    REQUIRE_MESSAGE(many.renderer.capture(frame, channels, whole, &many.error), many.error);
+    const auto off = many.renderer.stats();
+    u32 differ = 0;
+    lit_values = 0;
+    for (u32 i = 0; i < culled.light.size(); ++i) {
+      differ += culled.light[i] != whole.light[i];
+      lit_values += culled.light[i] != b.light[i];
+    }
+    MESSAGE(std::string(name) << ", " << std::string(rays) << ": " << differ
+                              << " values differ with the grid off; " << on.light_grid_cells
+                              << " cells, " << on.light_grid_refs << " set bits; capped pixels "
+                              << on.light_cap_pixels << " on, " << off.light_cap_pixels << " off");
+    CHECK(differ == 0);
+    CHECK(on.light_cap_pixels == off.light_cap_pixels);
+    CHECK(on.lamp_lights == 63);
+    CHECK(on.light_grid_cells > 100);
+    CHECK(off.light_grid_cells == 0);
+  }
+  CHECK(lit_values > b.light.size() / 16);  // the spots light the floor
+
+  // `scene_lights` off: the lamp and a fire beside it light nothing, and the frame is no lamp's.
+  FireDesc fire;
+  fire.name = "fire";
+  fire.position = WorldPos{-2.0, 0.0, 1.0};
+  fire.intensity = 2.0f;
+  LampRig off;
+  REQUIRE_MESSAGE(
+      off.build(device, room, shadows, &lamp, std::span<const FireDesc>(&fire, 1), false),
+      off.error);
+  CapturedFrame none;
+  REQUIRE_MESSAGE(off.renderer.capture(frame, channels, none, &off.error), off.error);
+  CHECK(off.renderer.stats().lamp_lights == 0);
+  CHECK(off.renderer.stats().fire_lights == 0);
+  CHECK(off.renderer.stats().fires == 1);  // it still burns, for the medium
+  u32 moved = 0;
+  for (u32 i = 0; i < none.light.size(); ++i)
+    moved += none.light[i] != b.light[i];
+  MESSAGE(std::string(name) << ": with scene_lights off " << moved
+                            << " values differ from no lamp");
+  CHECK(moved == 0);
+}
+
 }  // namespace
 
 TEST_CASE("lamp: a lamp-lit floor is the model's, shadowed by a slab under traced shadows") {
@@ -1035,4 +1397,13 @@ TEST_CASE(
 TEST_CASE(
     "lamp: the cap on the shadow rays a pixel traces changes nothing under the cascaded maps") {
   shadow_ray_cap(ShadowMode::Cascaded, "--shadows csm");
+}
+
+TEST_CASE(
+    "lamp: a spot lamp's cone is the model's, culled and capped alike, under traced shadows") {
+  spot_on_the_floor(ShadowMode::RayTraced, "--shadows rt");
+}
+
+TEST_CASE("lamp: a spot lamp's cone is the model's, culled alike, under the cascaded maps") {
+  spot_on_the_floor(ShadowMode::Cascaded, "--shadows csm");
 }

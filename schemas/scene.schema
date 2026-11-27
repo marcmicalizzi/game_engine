@@ -1538,8 +1538,9 @@ struct Fire @version(1) {
 /// material gives it off through its emissive slot (renderer.md says how to match the two). On a
 /// scene's `lamps` its `position` is the light's centre in the world; on a prop's `lamp` it is
 /// measured from the prop's origin, turned and scaled with the prop, so a game lights a lamp by
-/// placing the prop.
-struct Lamp @version(1) {
+/// placing the prop. Version 2 (R239) gave it a direction and a cone: a street light throws its
+/// light down and along the street and none upward.
+struct Lamp @version(2) @additive(2) {
   name: string
   /// The light's centre (the globe's).
   position: worldpos @unit(m)
@@ -1559,6 +1560,18 @@ struct Lamp @version(1) {
   /// The globe's radius, metres, [0, 5]: a traced shadow ray stops this far short of the light's
   /// centre, so the glass the lamp stands in does not shadow its own light. 0: at the centre.
   radius_m: f32 = 0 @unit(m)
+  /// **A spot** (R239; renderer.md, "A lamp that throws its light one way"): the axis of the
+  /// lamp's cone, the way its light goes ((0, -1, 0) straight down), any length; in the world on a
+  /// scene's `lamps`, in the prop's frame on a prop's, turned with each placed instance. Absent
+  /// (all zero): a point lamp, lit the same every way, as before the field existed.
+  direction: vec3 @since(2)
+  /// The cone's inner half-angle from the axis, degrees, [0, `outer_cone_deg`]: the full intensity
+  /// inside it (glTF's `innerConeAngle`, in degrees). Read only with a `direction`.
+  inner_cone_deg: f32 = 0 @since(2) @unit(deg)
+  /// The outer half-angle, degrees, (0, 180): no light past it, and between the two the falloff of
+  /// glTF's KHR_lights_punctual. 90 is a full cut-off head: nothing above the horizontal of a lamp
+  /// pointed straight down. Read only with a `direction`.
+  outer_cone_deg: f32 = 45 @since(2) @unit(deg)
 }
 
 /// How a placed prop stops a walker (roadmap P45; docs/subsystems/apps.md, "Props: the objects a

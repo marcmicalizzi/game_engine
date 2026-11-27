@@ -3770,10 +3770,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // A fire's intensity is candela, and a sky's light is in sun units of 128,000 lux (sky.h).
   fires_.burn(frame.world_time_s, sky_on ? 1.0f / gfx::k_sky_sun_lux : 1.0f, frame_fires_);
   stats_.fires = static_cast<u32>(frame_fires_.size());
-  stats_.fire_lights = add_fire_lights(frame_fires_, frame.camera.position, lighting);
+  const bool lit = settings.scene_lights;  // off: `--no-lights` (R239); the flames still burn
+  stats_.fire_lights = lit ? add_fire_lights(frame_fires_, frame.camera.position, lighting) : 0;
   // **The lamps** (R86, renderer.md "Lamps"): steady, every one behind the fires.
   fires_.burn_lamps(sky_on ? 1.0f / gfx::k_sky_sun_lux : 1.0f, frame_lamps_);
-  stats_.lamp_lights = add_lamp_lights(frame_lamps_, frame.camera.position, lighting);
+  stats_.lamp_lights = lit ? add_lamp_lights(frame_lamps_, frame.camera.position, lighting) : 0;
   stats_.lamps_refused = fires_.lamps_refused();
   std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * views, lighting.lights,  // by count:
               sizeof(gfx::ResolveLight) * lighting.light_count);  // no reader passes light_count

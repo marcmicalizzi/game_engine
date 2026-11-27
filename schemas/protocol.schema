@@ -438,7 +438,7 @@ struct DisplaysResult @version(1) {
 /// field this is `renderer::RenderSettings` in engine-view's spellings and units, read by one
 /// function the renderer owns (`renderer::read_protocol_settings`, systems/renderer/request.h);
 /// `request_tests.cpp` fails when a renderer field has no field here and no reason to have none.
-struct RenderSettings @version(14) {
+struct RenderSettings @version(15) @additive(15) {
   /// direct, hw, vertex, sw, auto, or rt. `hw` and `direct` fall back to `vertex` on a device
   /// without mesh shaders; the result says which one ran.
   raster: string = "hw"
@@ -595,6 +595,11 @@ struct RenderSettings @version(14) {
   /// `--shadow-ray-band`.
   shadow_ray_distance_m: f32 = 100 @since(14) @unit(m)
   shadow_ray_band_m: f32 = 20 @since(14) @unit(m)
+  /// The scene's own point lights: its fires' lights and its lamps, the placed props' with them
+  /// (docs/subsystems/renderer.md, "Lamps"). Off, a fire still burns and smokes in the medium and
+  /// lights nothing, and a lamp is dark; `lights` is the stand-in's two. `engine-view --no-lights`
+  /// turns both off (R239).
+  scene_lights: bool = true @since(15)
 }
 
 /// What a frame is drawn at beyond its camera and its number: the world's one clock

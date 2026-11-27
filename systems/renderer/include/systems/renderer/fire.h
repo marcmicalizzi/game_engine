@@ -66,14 +66,22 @@ struct FireDesc {
   bool lamp = false;
   Vec3 color{1.0f, 1.0f, 1.0f};
   f32 reach_m = 0.0f;
+  // **A spot lamp** (R239): `direction` the cone's axis at unit length — in the world on a scene's
+  // lamp, in the prop's frame on a prop's — or zero for a point lamp; `cos_inner` and `cos_outer`
+  // the cosines of the cone's half-angles, as `gfx::ResolveLight::spot.x` and `.y` carry them.
+  Vec3 direction{};
+  f32 cos_inner = 1.0f;
+  f32 cos_outer = 0.70710678f;
 };
 
 // The block's numbers checked: false with a sentence naming the field for a size, an intensity, a
 // temperature or a share out of range, or a position no cell can hold.
 bool read_fire(const scene::Fire& in, FireDesc& out, std::string* error);
 // A lamp's block checked the same way (a colour channel outside [0, 1000], an intensity outside
-// [0, 1e7], a reach outside [0, 400]) into a `FireDesc` with `lamp` set: its colour taken to a
-// luminance of 1 (all zero: white), its flicker and smoke 0.
+// [0, 1e7], a reach outside [0, 400], a direction that is not three finite numbers or is too short
+// to have one, a cone's outer half-angle outside (0, 180) or an inner one outside [0, outer]) into
+// a `FireDesc` with `lamp` set: its colour taken to a luminance of 1 (all zero: white), its
+// direction to unit length (all zero: a point), its flicker and smoke 0.
 bool read_lamp(const scene::Lamp& in, FireDesc& out, std::string* error);
 
 // **One fire of one frame**: where it stands in the world and how its light burns at the frame's
@@ -97,6 +105,11 @@ struct FrameFire {
   f32 smoke_spread = 0.25f;
   f32 flicker = 0.0f;
   u32 seed = 1;
+  // A lamp's cone (R239; `FireDesc::direction`): its axis in the world at unit length, turned with
+  // a placed prop, or zero for a point; the half-angles' cosines. A fire's is always zero.
+  Vec3 direction{};
+  f32 cos_inner = 1.0f;
+  f32 cos_outer = 0.70710678f;
 };
 
 // A frame's fires, the scene's and its placed props' together, and the light array's room for
@@ -155,9 +168,11 @@ FrameFire burn_lamp(const FireDesc& desc, const WorldPos& base, f32 scale,
 // (measured from `eye` in f64), while the array has room. Returns how many it added.
 u32 add_fire_lights(std::span<const FrameFire> fires, const WorldPos& eye,
                     FrameLighting& out) noexcept;
-// **The light array's lamps**: every one of `lamps` (burnt by `burn_fire`, at most `k_max_lamps`)
-// in their order, as point lights at their centres appended after the lights `out` has, while the
-// array has room. Returns how many it added.
+// **The light array's lamps**: every one of `lamps` (burnt by `burn_lamp`, at most `k_max_lamps`)
+// in their order, as lights at their centres appended after the lights `out` has, while the array
+// has room: a point (`gfx::k_light_point`), or with a `direction` a spot (`gfx::k_light_spot`, the
+// axis in `direction_type.xyz`, the cone's cosines in `spot.x` and `.y`); either way the globe's
+// radius in `spot.z`. Returns how many it added.
 u32 add_lamp_lights(std::span<const FrameFire> lamps, const WorldPos& eye,
                     FrameLighting& out) noexcept;
 
@@ -192,6 +207,7 @@ class FireSet {
     u32 desc = 0;  // into `prop_fires_`
     WorldPos base{};
     f32 scale = 1.0f;
+    Vec3 direction{};  // a lamp's cone axis turned with the instance (R239); zero: a point
   };
   Vector<FireDesc> fixed_;       // the scene's own, at their world positions
   Vector<FireDesc> prop_fires_;  // one per prop that declares one

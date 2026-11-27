@@ -388,3 +388,25 @@ of the CPU), free commit 78 GB at each start; upper bounds.
 **Proposed next**: a fill that knows the walls — the untraced lights' visibility estimated from the
 traced ones nearest them in direction rather than from all of them — and a weight that sees a
 glossy lobe without seeing the eye (the BSDF's peak over the view, which bounds a highlight).
+## More lamps than the room
+
+**Measured and proposed, not changed** (2026-11-26, roadmap R239 task 5; [renderer](../subsystems/renderer.md#more-lamps-than-the-frames-room)). The Toronto proof of concept's three tiles hold 3,199 street lights and the frame lights `k_max_lamps` = 256 (its gap G-T25). Since R87 a pixel walks the lights whose reach covers it, so the question is what the rest of the frame pays as the count grows, and what the grid's fixed room does to the walk.
+
+**The bench** (`renderer.lamps.frame_cpu.*`, `systems/renderer/bench/lamps_bench.cpp`, no device): a street grid of 1.5 km, streets every 105 m each way, a lamp every 35 m on each kerb at 9 m, the `count` nearest the middle, each a full cut-off spot of 1,910 cd (the Toronto session's cobra heads); the eye at street level in the middle. One frame's CPU for its lamps: the array's fill (`add_lamp_lights`' arithmetic), the light grid's build (`gfx::build_light_grid` into its 65,536 words) and the copy of both into a slot-sized host buffer. `msvc-release`, RTX 5090 box, **machine state**: others' processes held 100% of the CPU and another row held the GPU lock throughout, so every figure is an upper bound; the mean of the harness's runs.
+
+| lamps | reach | frame CPU | grid | lights a cell | array + grid a slot |
+|---|---|---|---|---|---|
+| 256 | 50 m | 0.35 ms | 35 × 6 × 35, 8 words a cell | 6.9 | 16 + 235 KiB |
+| 1,024 | 50 m | 0.31 ms | 26 × 3 × 26, 32 words | 12.0 | 64 + 253 KiB |
+| 4,096 | 50 m | 0.52 ms | 16 × 2 × 16, 128 words | 32.8 | 256 + 256 KiB |
+| 256 | 195 m (the fire's rule at 1,910 cd) | 0.73 ms | 19 × 9 × 19, 8 words | 35.0 | 16 + 104 KiB |
+| 1,024 | 195 m | 1.14 ms | 18 × 5 × 18, 32 words | 75.2 | 64 + 203 KiB |
+| 4,096 | 195 m | 1.12 ms | 13 × 3 × 13, 128 words | 172.4 | 256 + 198 KiB |
+
+**What it says.** The CPU does not grow with the count so much as with the grid: the build fills a fixed room of cells, so 4,096 lamps cost about what 1,024 do (and 256 at a long reach more than 4,096 at a short one). The copy is the array's 64 bytes a light, 256 KiB a slot at 4,096. **What grows is the walk**: the grid's room is words, and a cell holds a bit a light, so at 4,096 lights a cell is 128 words and there are at most 512 cells; the cells grow until each lists 33 lamps at 50 m and 172 at the fire's rule, where at 256 they listed 7 and 35. A pixel's walk visits every light its cell lists (a distance test each, the lit ones a BSDF and, under `rt`, a ray up to [the cap](#the-cap)'s eight), so the GPU's cost per pixel rises with the count even though a lamp 500 m away lights no pixel near the eye. And a lamp's reach by the fire's rule (0.05 lux) is 195 m for a street head, which is most of a city block in every direction: **an author should name `reach_m`**, and a street head's 40 to 60 m is where its light falls under a lux.
+
+**What a scene of thousands needs** (proposed, two parts, either alone helps):
+1. **The grid's room grown with the count, not the array's alone**: the cells' words scale with the lights (a cell is `lights / 32` words), so a room of 4,096 lamps at the 256-lamp grid's resolution is 16 times the words, 4 MiB a slot. A sparser cell — a short list of light indices per cell instead of a bitset, built the same way in the array's order so the walk is the same sum — holds the same resolution in the lights actually listed (at 50 m about 7 a cell: a few hundred KiB), and keeps the "culling is exact" property, since a list is a set like the bits.
+2. **Lamps taken by reach round the eye, without a pop**: the frame's array as the lamps whose sphere comes within a distance D of the eye (a lamp past D lights only points past D − reach), chosen from a lamp table the scene keeps resident (the file's, a tile's). A hard cut at D pops a pool of light in or out as the eye crosses it, so the cut is a **fade by distance that is a function of the eye's position alone** — a lamp's intensity times w(d), 1 inside D − band and 0 at D, smooth between — never a hysteresis, which would make the frame depend on the path that reached it. That changes the picture far away and is a shortcut by the tree's rules: behind one tunable, off until the owner has judged it, with its error stated (the fade's share of the light at the pixels it dims) and its saving measured on the city's own lamps. The cap's ranking and the grid's walk need nothing new for it.
+
+A tile-streamed lamp set (W47's tile stage, the gap's first remedy) is the same selection made by the tile rings instead of by D, and needs the same fade at the ring's edge.

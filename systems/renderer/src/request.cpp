@@ -621,6 +621,7 @@ bool read_protocol_settings(const protocol::RenderSettings& in, RenderRequest& o
   s.shadow_ray_band_m = in.shadow_ray_band_m;
   s.lights = in.lights;
   s.orbit_lights = in.orbit_lights;
+  s.scene_lights = in.scene_lights;
   s.sun_azimuth_deg = in.sun_azimuth_deg;
   s.sun_elevation_deg = in.sun_elevation_deg;
   s.exposure_ev = in.exposure_ev;
