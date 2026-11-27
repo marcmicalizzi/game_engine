@@ -549,12 +549,30 @@ inline constexpr f32 k_reflect_min_share = 1.0f / 256.0f;
 // has a material under `k_reflect_roughness_end` (`GpuScene::has_reflective_materials`), so every
 // other scene's resolve has none of its lines. Unset, it is 0.
 inline constexpr u32 k_spec_scene_reflect = 71u;
-// Whether a material row may trace a reflection: not water, not the ground's layers, not foliage,
-// and its roughness factor (which bounds what its map can give) under the end.
+// **A material that may reflect** (R71, the mend: renderer.md, "Which pixels trace"): bit 19 of the
+// flags word, a bit of the **surface class** — a material with none of the three class markers
+// (not water, not a terrain root, no foliage byte), which is the only class that sets or reads it,
+// so the foliage class may reuse it (the class table below). Set at upload where the roughness
+// factor times **the least the material's roughness map can give** (`set_may_reflect`) is under
+// `k_reflect_roughness_end`: an imported curtain wall is authored as a factor of 1 and a map of
+// about 0.06, and the factor alone never traced it. A material with no roughness map passes 1, so
+// the test is the factor's, as before the mend. The resolve's gate tests the bit, then the
+// pixel's own roughness.
+inline constexpr u32 k_material_may_reflect = 1u << 19;
+inline constexpr bool material_surface_class(u32 flags) noexcept {
+  return (flags & (k_material_water | k_material_terrain_layers | k_material_foliage_mask)) == 0u;
+}
+// `least_roughness` is the least the roughness map's G can give at the bound's level (1 without a
+// map; 0 for a map whose bound is unknown, which keeps the variant rather than lose a reflection).
+inline void set_may_reflect(ResolveMaterial& material, f32 least_roughness) noexcept {
+  material.flags &= ~k_material_may_reflect;
+  if (material_surface_class(material.flags) &&
+      material.albedo.w * least_roughness < k_reflect_roughness_end)
+    material.flags |= k_material_may_reflect;
+}
+// Whether a material row may trace a reflection: the surface class with the bit.
 inline bool material_reflects(const ResolveMaterial& material) noexcept {
-  return (material.flags & (k_material_water | k_material_terrain_layers)) == 0u &&
-         (material.flags & k_material_foliage_mask) == 0u &&
-         material.albedo.w < k_reflect_roughness_end;
+  return material_surface_class(material.flags) && (material.flags & k_material_may_reflect) != 0u;
 }
 // A share (0..1) as the four-bit code the byte holds: the nearest fifteenth; a NaN reads 0.
 inline u32 foliage_code(f32 share) noexcept {
@@ -878,7 +896,9 @@ inline void set_water_shore(ResolveMaterial& water, ResolveMaterial& entry, f32 
 //            root), 13 (normal_variance), 17 (stochastic), 24-31 (foliage optics, two codes)
 //   terrain  10-12, 14-16, 18 (a layer's projection, height, stochastic tiles, response, formation)
 //   water    6-8 (depth map, open, spectrum), 20-23 (shore, channel, plunge, volume)
-//   free     19
+//   surface  19 (may reflect, R71), on a material with no class marker: not water, no terrain root,
+//            no foliage byte (`material_surface_class`)
+//   free     none outside a class
 //
 // A new bit takes a free one and joins exactly one of the three masks below; the static_asserts
 // refuse a class bit that is also common and two names for one bit within a class (the popcounts),
@@ -904,6 +924,9 @@ static_assert((k_material_terrain_flags & k_material_common_flags) == 0,
               "a terrain flag is a common flag's bit: readers that ask no class would misread it");
 static_assert((k_material_water_flags & k_material_common_flags) == 0,
               "a water flag is a common flag's bit: readers that ask no class would misread it");
+inline constexpr u32 k_material_surface_flags = k_material_may_reflect;
+static_assert((k_material_surface_flags & k_material_common_flags) == 0,
+              "a surface flag is a common flag's bit: readers that ask no class would misread it");
 
 // **The wet band** (docs/subsystems/water.md, "The shore"): one water body's record in the array
 // the resolve's water modules read through `ResolveParams::water_shores`. A pixel of terrain whose

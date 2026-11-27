@@ -35,8 +35,8 @@ bool GpuScene::make_run_buffer(bool vertex_path, std::string* error) {
   }
   // One visible list for the whole frame, in three runs per view and one per shadow cascade (see
   // `create_working_set`), and behind its last entry the frame's two drop counts and the resolve's
-  // capped pixels (R213), which the frame zeroes and reads back with its statistics
-  // (`run_drops_offset`), and a word of padding.
+  // capped pixels (R213) and its smooth surfaces' reflection rays (R71), which the frame zeroes and
+  // reads back with its statistics (`run_drops_offset`).
   constexpr u64 k_entry_bytes = 2 * sizeof(u32);
   visible_run_bytes_ = u64{run_capacity_} * k_entry_bytes;
   return gfx::create_buffer(

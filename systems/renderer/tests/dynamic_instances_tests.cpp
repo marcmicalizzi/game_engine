@@ -1045,7 +1045,8 @@ TEST_CASE("dynamic instances: a tail's arrival lays the runs out at the first bo
   const Arrival bounded = arrive(k_first);
   CHECK(bounded.capacity == k_first);  // W156: at the bound; before it, at the stride
   // The list is its runs' entries and four words behind them (16 bytes): the frame's two drop
-  // counts, the resolve's capped pixels (R213) and a word of padding (`GpuScene::make_run_buffer`).
+  // counts, the resolve's capped pixels (R213) and its smooth surfaces' reflection rays (R71)
+  // (`GpuScene::make_run_buffer`).
   constexpr u64 k_tail_bytes = 4 * sizeof(u32);
   CHECK(bounded.list_bytes - k_tail_bytes ==
         (stride.list_bytes - k_tail_bytes) / stride.stride * k_first);

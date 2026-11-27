@@ -33,7 +33,9 @@
 // colour at the mip its footprint selects (`k_material_mipped`), no normal map and no ground detail.
 //
 // Included by water_reflect.slang, inside visibility_resolve.slang with RESOLVE_RAY_SHADOWS and
-// RESOLVE_WATER: the ray-traced water modules alone. Every other module is the bytes it was.
+// RESOLVE_WATER, and by surface_reflect.slang in every other ray-traced module (R71: a smooth
+// surface's reflection shades its hit here too, behind `k_scene_reflect`, so a scene with no smooth
+// material folds it out). The modules without ray queries never include it.
 
 // The nearest surface a ray met: the query's committed hit.
 struct SceneHit {

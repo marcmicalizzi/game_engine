@@ -2199,15 +2199,44 @@ and metal alike:
   wholly, and **2.9° at 0.20** (`k_reflect_roughness_end`), from which the pixel keeps the ambient;
   in between the two are mixed linearly in roughness, so a surface across the band — the honed
   stone of the fixture, 0.15 — fades rather than steps. The roughness is the pixel's own, after the
-  normal map's variance (R97), and a material whose **factor** is at or past the end never traces
-  (`gfx::material_reflects`: the factor bounds what its map can give).
+  normal map's variance (R97).
+- **The material's bound, found at load** (the mend of 2026-11-27: until then the scene's choice
+  and the shader's gate tested the roughness **factor** alone, and an imported curtain wall —
+  authored the standard glTF way, a factor of 1 and about 0.06 from its metallic-roughness map,
+  polished granite the same — never traced). A material **may reflect** when its factor times
+  **the least its roughness map can give** is under the end, recorded at upload as
+  `gfx::k_material_may_reflect` (bit 19 of the flags word, a bit of the **surface class**: a
+  material with no class marker — not water, not a terrain root, no foliage byte — so the foliage
+  class may reuse it; [gfx](gfx.md), "The material flags word"), set by `gfx::set_may_reflect`
+  in `fill_material`, so a tile's mesh arriving later is decided by the same rule; the scene's
+  variant (`GpuScene::has_reflective_materials`, logged as "materials that may reflect") and the
+  shader's gate test the bit, then the pixel's own roughness. A material with no roughness map
+  passes 1, so its test is the factor's as before. **How the least is found**: each channel's
+  least texel of the built chain's level nearest 32 × 32 (the first of at most 1,024 texels),
+  decoded by the decoder the stochastic means already use (`texture::decode_level`, 1,024 texels
+  at load, no derived format, cache key or version constant changed), in linear light; for an
+  image decoded at load, which is sampled at its one level, the least of the means over cells a
+  thirty-second of its sides, the same footprint. Chosen over a block's endpoints because the
+  decode is exact and already there, and over the mean (`TextureInfo::mean`) because a mean
+  misses glass beside rough mullions. **What it over-flags**: a map whose smooth part is never
+  mapped onto the mesh, or is smooth only where the normal map's variance will widen it past
+  0.2, compiles the variant and carries the eye's shell for no ray (the rays it then counts are
+  zero, which the frame record shows). **What it misses**: a smooth region narrower than a
+  thirty-second of the image (a pane of an atlas 2,048 texels wide under 64 texels across):
+  its 32 × 32 texel is averaged with its neighbours past the end, and the material keeps the
+  ambient, as before the mend; and an image that would not decode passes 0 (it flags, never
+  misses). The ground's entries (a native terrain's root and layers) never carry the bit.
 - **The share.** The reflected share at this view, `brdf_env_specular(F0, roughness, n·v)` times
   the fade, over `k_reflect_min_share` (1/256) in some channel: a dielectric's is at least about
   0.04 at every angle, so the floor only stops the fade's tail and a dark metal from paying a ray
-  for less than a code.
+  for less than a code. **The floor fades**: the ray's weight rises from zero at the floor to its
+  whole at twice it, so a pixel either side of the floor differs by what the ray brings at a
+  weight near zero, not by the floor's step.
 - **Not** water (its own branch and ray), the ground's layers (their own reflection is the wet
-  film's) or foliage (its own branch). A mirror direction under the surface's own plane (a normal
-  map tilted past the view) keeps the ambient.
+  film's) or foliage (its own branch). **A mirror direction under the surface's own plane** (a
+  normal map tilted past the view) is brought up to graze it, `k_reflect_graze` (the sine of
+  0.57°) over the geometric plane: until the mend such a pixel dropped to the ambient, a speckle at
+  grazing angles; now it traces the plane's horizon, continuous with its neighbours.
 
 **The ray and its hit.** From the reconstructed point lifted along the geometric normal by
 `ray_offset` (the receiver's own grid, as a shadow ray leaves), along the view reflected off the
@@ -2220,8 +2249,12 @@ checkerboard the ripples hide), and then seen through the air along the ray. Whe
 nothing, the sky along the mirror direction (`sky_environment`, or the stand-in's
 `environment_radiance`), which is the horizon the ambient never had. A reflection seen in a
 reflection takes the hit's own ambient and sky: **no second ray**. The pixel is then
-`ambient · diffuse + lerp(ambient, traced, fade) · share`; a pixel that does not trace computes the
-line it always did, the same arithmetic in the same order.
+`ambient · diffuse · occlusion + lerp(ambient, traced, fade) · share`: **the material's occlusion
+map darkens the ambient's part only**, since it says what of the hemisphere the surface's own
+relief hides, and the ray saw past it (until the mend it darkened the traced reflection too); a
+pixel that does not trace computes the line it always did, the same arithmetic in the same order.
+A water surface the ray meets is shaded as a plain surface by `shade_hit` (its shallow colour), not
+by the water's branch: a pane by a lake reflects a flat lake.
 
 **Shared with the water, and what is not.** The trace (`trace_scene_hit`) and the hit's shading
 (`shade_hit`) are the water's functions, called unchanged, so the water modules' hit is the
@@ -2278,7 +2311,10 @@ does.
 **What holds it** (`surface_reflect_tests.cpp`, on the tree's fixture
 `content/test-scenes/glass-street`: two walls of glass at 0.06 across a 14 m street, a red box
 behind the eye and outside its view, beside the near wall a honed panel at 0.15 and a rough one at
-0.45, at 14:00).
+0.45, at 10:00; and copies of it the cases write into their scratch directories, whose panes are
+glass authored as an import is, a factor of 1 and a 64 × 64 PNG map). **Every case that counts the
+reflection runs on two tiers**: the default raster mode and `--raster rt --shadows rt`, the traced
+primaries the owner judges by.
 
 - **The panes reflect the box, and nothing else moves**: with the reflection on against off, at 480 x 270 from the camera path's pose at 10:00 (the morning sun on the box's face towards the panes, the panes in their own shade), **1,033 pane pixels** turn red by six codes more than without the ray (the box stands 77 degrees off the view's axis, past the frustum's 46-degree half width), none was red before, every pixel that changes (79,274) is the glass's or the honed stone's, the rough stone's and the street's are the bytes they were, no id changes, the same frame twice is the same bytes, and the frame counts 79,274 rays, one a smooth pixel. On a device that does not trace the two pictures are the same bytes and no ray is counted.
 - **The shell holds what no view holds** (the lights' off-frustum volumes off, so the shell is alone in the difference): **0 pane pixels** reddened by the box without it, **712** with it (ten codes), one more caster, one view carrying it. **The diagnostic measured what the frame's structures already hold on the fixture**: the rays that met a surface are the same 53,197 of the panes' 75,388 with the shell and without, and the 22,191 that met nothing are the high ones that pass over the west panes into the sky — because without the shell the rays that would meet the box meet the west panes behind it, which the frame's cut holds (their bounds cross the frustum). So the count of misses a structure of the whole scene would have met is **zero here and the loss is a wrong hit, not a miss**: the box, which the diagnostic cannot see and the colour count can. That is the general case — what a facade reflects is a neighbour standing in front of something the cut may hold — and it is why the choice is a volume about the eye and not the cut alone. What it costs the chain: on the fixture, one caster (the box: every instance here is one cluster); on the forest, where the cache's shell (24 m) is already on, a scene with no smooth material adds nothing, and one with them would widen that shell to 32 m (the cache's stage 8 measured its ring from 24 to 48 m at 9,300 swaying clusters and 0.2 ms, which bounds the step).

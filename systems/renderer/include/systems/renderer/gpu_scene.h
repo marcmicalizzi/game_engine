@@ -2029,6 +2029,10 @@ class GpuScene {
     bool normal_variance = false;  // its variance chain is at `slot + 1`
     bool has_mean = false;         // `mean` is its linear mean texel (R131)
     Vec4 mean{};
+    // R71: the least texel of its level nearest 32 x 32 (`texture_least`), what a smooth
+    // surface's flag is decided from; `has_least` false where it was not found.
+    bool has_least = false;
+    Vec4 least{};
   };
   struct TileTexture {
     u64 key = 0;

@@ -370,6 +370,13 @@ with a warning naming the feature (every desktop GPU has it; `engine-cli gpu.ada
 row). `engine-view`'s summary says what happened: `"textures":{"built":n,"decoded":m,"bytes":b,…}`,
 the bytes being what the allocator gave the images.
 
+**What the load reads back from a texture, beside its blocks**: its mean (the stochastic
+materials', R131: its first level of at most 16 × 16, decoded) and, since R71's mend, **its least
+texel by channel at the level nearest 32 × 32** (the first of at most 1,024 texels; for a decoded
+image, the least of its means over cells a thirty-second of its sides), from which a material's
+"may reflect" flag is decided ([renderer](renderer.md#reflections-on-smooth-surfaces)). Both are
+decoded at load from what the `.tex` already holds; neither changes a format, a key or a version.
+
 **One texture per distinct `.tex` per scene.** The build key is also how the renderer tells two
 meshes' images apart: a mesh whose image has a key the scene already uploaded — every member of a kit
 that embeds one atlas — takes that texture's bindless slot instead of uploading another copy, and a

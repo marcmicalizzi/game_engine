@@ -40,6 +40,12 @@
 
 namespace engine::renderer {
 
+// R71: gpu_scene_textures.cpp's, the least a texture can give at its level nearest 32 x 32.
+namespace detail {
+bool built_texture_least_of(const texture::TextureData& t, Vec4& least);
+bool decoded_texture_least_of(const image::Image& decoded, bool srgb, Vec4& least);
+}  // namespace detail
+
 namespace {
 
 // A tail block's instances (renderer.md, "Instances that come and go"; W81): its own, when the
@@ -231,6 +237,10 @@ struct SceneTexture {
   // are made from (R131); `has_mean` false for a decoded one.
   Vec4 mean{};
   bool has_mean = false;
+  // Its least texel at the level nearest 32 x 32 (`built_texture_least`, `decoded_texture_least`),
+  // which a smooth surface's flag is decided from (R71).
+  Vec4 least{};
+  bool has_least = false;
 };
 
 // **A built texture's mean** (R131; renderer.md, "Stochastic mesh materials"): the texels of its
@@ -4704,6 +4714,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           if (!ok && uploaded.image.valid()) destroy_held_image(chunks, uploaded);
           if (ok) ++textures_built_;
           if (ok) made.has_mean = built_texture_mean(t, made.mean);
+          if (ok) made.has_least = detail::built_texture_least_of(t, made.least);  // R71
         } else {
           // The encoded bytes — embedded, or the file as it is now — are what a decoded texture
           // is keyed by, so they are read and hashed before anything is decoded: a repeat costs
@@ -4746,6 +4757,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
             ok = false;
           }
           if (ok) ++textures_decoded_;
+          if (ok)  // R71
+            made.has_least = detail::decoded_texture_least_of(
+                decoded, format == gfx::Format::R8G8B8A8Srgb, made.least);
         }
         if (!ok) {
           ENGINE_LOG_WARN(log_renderer, "texture skipped", log::field("image", index),
@@ -4845,6 +4859,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
             const u32 index = static_cast<u32>(image);
             info.has_mean = image_made[index].has_mean;
             info.mean = image_made[index].mean;
+            info.has_least = image_made[index].has_least;  // R71
+            info.least = image_made[index].least;
             if (use_built && index < built.size()) {
               info.normal_rg = built[index].stored == texture::TextureFormat::bc5;
               info.normal_variance = built[index].normal_variance;
@@ -4942,6 +4958,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         }
         bool record_entry = false;  // the terrain's record: an entry no cluster names
         if (m == data_->terrain_mesh && data_->terrain.materials.has_value()) {
+          material.flags &= ~gfx::k_material_may_reflect;  // R71: the ground's class, not a surface
           // The native terrain's entries (renderer.md, "Native authored terrain materials",
           // "Ground materials by place"): the root, an ordinary material that names its record by
           // one word; the layers (the palette, with masks); then the record, which no cluster
@@ -5064,6 +5081,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         info.normal_variance = held.normal_variance;
         info.has_mean = held.has_mean;
         info.mean = held.mean;
+        info.has_least = held.has_least;  // R71
+        info.least = held.least;
         load_textures_.try_emplace(held.content, info);
       }
     }
@@ -5152,7 +5171,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   has_terrain_materials_ = false;
   has_masked_ = false;
   has_foliage_materials_ = false;
-  has_reflective_materials_ = false;
+  u32 reflective = 0;
   u32 stochastic = 0;
   u32 specular = 0;
   ENGINE_ASSERT(table_material.size() == material_table.size(), "one mark per table entry");
@@ -5171,8 +5190,12 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     // The packed record, not the extension bit: a material stating the defaults stores zero (R234).
     const Vec4& s = material.specular;
     if (s.x != 0.0f || s.y != 0.0f || s.z != 0.0f || s.w != 0.0f) ++specular;
-    if (gfx::material_reflects(material)) has_reflective_materials_ = true;  // R71
+    if (gfx::material_reflects(material)) ++reflective;  // R71
   }
+  has_reflective_materials_ = reflective != 0;
+  if (reflective != 0)  // R71: which scenes compile the reflection, said by the load
+    ENGINE_LOG_INFO(log_renderer, "materials that may reflect",
+                    log::field("materials", reflective));
   // The masked pipelines are chosen before any tile is, from `tile_meshes_masked`. A scene with a
   // mesh room keeps the foliage lines whatever was declared, since a tile may hand a foliage
   // material at any frame (R177; review finding A7): only a closed scene with none drops them.

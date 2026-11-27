@@ -27,13 +27,16 @@
 #include <core/log/log.h>
 #include <domain/geometry/material_sampling.h>
 #include <domain/gfx/bindless.h>
+#include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
+#include <foundation/image/decode.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/gpu_scene.h>
 
 #include <algorithm>
 #include <cstring>
 #include <renderer_log.h>
+#include <span>
 #include <string>
 
 namespace engine::renderer {
@@ -42,7 +45,78 @@ namespace engine::renderer {
 namespace detail {
 gfx::Format built_texture_format(const texture::TextureData& t) noexcept;
 bool built_texture_mean_of(const texture::TextureData& t, Vec4& mean);
+bool built_texture_least_of(const texture::TextureData& t, Vec4& least);
 gfx::SamplerDesc material_sampler_desc(const geometry::TextureSampler& sampler, bool mipmapped);
+}  // namespace detail
+
+// R71, for both files: gpu_scene.cpp's load and a tile's texture here.
+namespace detail {
+// **The least a texture can give, coarsely** (R71; renderer.md, "Which pixels trace"): each
+// channel's least texel of a level of about 32 x 32 texels, in linear light as the GPU samples it.
+// A smooth surface's flag is its roughness factor times this (the roughness map's G), so a map
+// whose smooth part is wider than a thirty-second of the image flags its material, and a speckle
+// of dark texels in a rough map is averaged away by the chain's filter before it is read. Chosen
+// over a block's endpoints because the decoder the mean uses is already here and exact: 1,024
+// texels decoded at load, no derived format, key or version changed.
+namespace {
+constexpr u64 k_least_texels = 1024;
+bool least_of_rgba(std::span<const u8> rgba, bool srgb, Vec4& least) {
+  const u64 texels = rgba.size() / 4u;
+  if (texels == 0) return false;
+  u8 code[4] = {255, 255, 255, 255};
+  for (u64 i = 0; i < texels; ++i)
+    for (u32 c = 0; c < 4; ++c)
+      code[c] = std::min(code[c], rgba[i * 4u + c]);
+  const auto linear = [&](u32 c) {
+    return c < 3 && srgb ? texture::srgb8_to_linear(code[c]) : static_cast<f32>(code[c]) / 255.0f;
+  };
+  least = Vec4{linear(0), linear(1), linear(2), linear(3)};
+  return true;
+}
+}  // namespace
+bool built_texture_least_of(const texture::TextureData& t, Vec4& least) {
+  if (t.levels.empty()) return false;
+  u32 level = t.levels.size() - 1u;
+  for (u32 l = 0; l < t.levels.size(); ++l) {
+    if (u64{t.levels[l].width} * t.levels[l].height <= k_least_texels) {
+      level = l;
+      break;
+    }
+  }
+  Vector<u8> rgba;
+  if (!texture::decode_level(t.format, t.level_bytes(level), t.levels[level].width,
+                             t.levels[level].height, rgba))
+    return false;
+  return least_of_rgba(std::span<const u8>(rgba.data(), rgba.size()),
+                       t.color_space == texture::ColorSpace::srgb, least);
+}
+// A decoded image is sampled at its one level, so its least is taken over the means of cells of
+// a thirty-second of its sides (whole texels, at least one), the built chain's 32 x 32 level's
+// footprint: the same rule for both paths.
+bool decoded_texture_least_of(const image::Image& decoded, bool srgb, Vec4& least) {
+  const u32 w = decoded.width;
+  const u32 h = decoded.height;
+  if (w == 0 || h == 0 || decoded.pixels.size() < u64{w} * h * 4u) return false;
+  const u32 cw = std::max(1u, w / 32u);
+  const u32 ch = std::max(1u, h / 32u);
+  Vector<u8> cells;
+  for (u32 y0 = 0; y0 < h; y0 += ch) {
+    for (u32 x0 = 0; x0 < w; x0 += cw) {
+      u64 sum[4] = {0, 0, 0, 0};
+      u64 n = 0;
+      for (u32 y = y0; y < std::min(h, y0 + ch); ++y) {
+        for (u32 x = x0; x < std::min(w, x0 + cw); ++x, ++n) {
+          const u8* p = &decoded.pixels[(u64{y} * w + x) * 4u];
+          for (u32 c = 0; c < 4; ++c)
+            sum[c] += p[c];
+        }
+      }
+      for (u32 c = 0; c < 4; ++c)
+        cells.push_back(static_cast<u8>((sum[c] + n / 2) / n));
+    }
+  }
+  return least_of_rgba(std::span<const u8>(cells.data(), cells.size()), srgb, least);
+}
 }  // namespace detail
 
 namespace {
@@ -277,6 +351,7 @@ GpuScene::TextureAdmit GpuScene::acquire_texture(const PlacementTexture& texture
   made.info.normal_rg = t.format == texture::TextureFormat::bc5;
   made.info.normal_variance = variance;
   made.info.has_mean = detail::built_texture_mean_of(t, made.info.mean);
+  made.info.has_least = detail::built_texture_least_of(t, made.info.least);  // R71
   // The pair's descriptors: no material names them before the frame that copies the levels, so no
   // frame in flight reads what is written here.
   bindless_.update_sampled_image(made.info.slot, made.view, gfx::ImageLayout::ShaderReadOnly);
@@ -465,6 +540,14 @@ bool GpuScene::fill_material(const assets::Material& source, bool built, const T
   // declares them is lit from behind its sheet too. Nothing else sets the flags word's top byte.
   if (source.double_sided && (source.transmission > 0.0f || source.normal_spread > 0.0f))
     gfx::set_foliage_optics(material, source.transmission, source.normal_spread);
+  // A smooth surface may reflect (R71; renderer.md, "Which pixels trace"): its factor times the
+  // least its roughness map gives at the level nearest 32 x 32, last, so that the class it tests
+  // is final. A map whose least is unknown passes 0: the variant is kept rather than a reflection
+  // lost.
+  const TextureInfo& mr = tex[geometry::k_slot_metallic_roughness];
+  gfx::set_may_reflect(material, material.metallic_roughness_texture == gfx::k_no_texture
+                                     ? 1.0f
+                                     : (mr.has_least ? mr.least.y : 0.0f));
   out = material;
   return true;
 }

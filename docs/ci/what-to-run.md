@@ -294,7 +294,7 @@ affected build sees without a driver. A file's cases run alone with doctest's fi
 `renderer` as `renderer.1` to `.4`).
 
 - **The visible list and its tail** (`GpuScene::make_run_buffer`: the runs' `uint2` entries, then
-  the two drop counts, the resolve's capped pixels and a pad word). `engine_renderer_tests`:
+  the two drop counts, the resolve's capped pixels and its smooth surfaces' reflection rays, R71). `engine_renderer_tests`:
   "dynamic instances: a tail's arrival lays the runs out at the first bound" (the tail's bytes),
   "dynamic instances: runs sized by the frame draw the same, and a full run counts drops",
   "dynamic instances: a refused lay-out of the runs leaves the scene as it was", and "lamp: the
@@ -303,8 +303,10 @@ affected build sees without a driver. A file's cases run alone with doctest's fi
   changing the picture" lays a list out by hand (`cone_tests.cpp`).
 - **The statistics words** (`scene_renderer.cpp`: sixteen a view, words 13 and 14 the drop
   counts and 15 the capped pixels, then the pool's `DeformAlloc`, the chain's
-  `k_cluster_record_count_words`, the cascades' five each). The drop counts' and the capped
-  pixels' readers are the visible list's cases above. The chain's words: `engine_gfx_tests`,
+  `k_cluster_record_count_words`, one word of the smooth surfaces' reflection rays (R71,
+  `reflect_stat_word`), the cascades' five each). The drop counts', the capped pixels' and the
+  reflection rays' readers are the visible list's cases above, and for the rays
+  `surface_reflect_tests.cpp`'s cases, which count them. The chain's words: `engine_gfx_tests`,
   every case of `clas_records_tests.cpp` ("clas records: a set sized under the frame keeps whole
   instances, casters last", "clas records: past the capacity the cut keeps what rt_keep keeps"
   read them by index). The vertex path's header: "vertex path: the indexed draw draws the cut's

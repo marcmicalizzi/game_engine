@@ -2046,6 +2046,10 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
                             length(s.position - params->camera.xyz), s.normal, ambient, crown);
     const float n_dot_v = max(dot(surface.normal, surface.view), 0.0);
     float3 indirect;
+#ifdef RESOLVE_RAY_SHADOWS
+    bool traced = false;  // R71: a smooth surface's ray left, and its share is `traced_specular`
+    float3 traced_specular = float3(0.0);
+#endif
     if (foliage) {
       // Foliage's diffuse takes the hemisphere its sheet's back sees, through `transmit`, and its
       // sphere's share the n.v-weighted mean over a sphere's visible normals (brdf.slang,
@@ -2082,15 +2086,16 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       // the ambient (R71; surface_reflect.slang). Behind a specialization constant, so a scene with
       // no such material compiles the line below alone. The share and the diffuse weight are the
       // declared reflectance's where a material states one (R234; brdf.slang), as below.
-      bool traced = false;
       float3 reflected = ambient;
       const float3 share = brdf_env_specular_of(surface, n_dot_v);
       if (k_scene_reflect && surface_reflect_material(material)) {
         reflected = surface_reflection(params, s, surface, share, ray_bias, ambient, traced);
       }
       if (traced) {
-        indirect = ambient * (brdf_env_albedo(surface, n_dot_v) * (1.0 - surface.metallic)) +
-                   reflected * share;
+        // The traced share is added after the occlusion map, which darkens what the ambient
+        // brings and not what the ray saw (below).
+        indirect = ambient * (brdf_env_albedo(surface, n_dot_v) * (1.0 - surface.metallic));
+        traced_specular = reflected * share;
       } else
 #endif
       indirect = ambient * (brdf_env_albedo(surface, n_dot_v) * (1.0 - surface.metallic) +
@@ -2099,6 +2104,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     if (material.occlusion_texture != k_no_texture) {
       indirect *= sample_occlusion(material, uv, duv_dx, duv_dy);
     }
+#ifdef RESOLVE_RAY_SHADOWS
+    if (traced) indirect += traced_specular;  // R71: after the occlusion map
+#endif
     // **A light too faint to test** (renderer.md; R115, after Ward, "Adaptive Shadow Testing for
     // Ray Tracing", 1991): with the lights' shadows traced, a light whose unshadowed contribution
     // here is at most `light_tolerance` of the rest of the pixel's light — the sun as its query

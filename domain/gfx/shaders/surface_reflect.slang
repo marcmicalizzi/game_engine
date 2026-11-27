@@ -61,13 +61,20 @@ float surface_reflect_weight(float roughness) {
                   (k_reflect_roughness_end - k_reflect_roughness_full));
 }
 
-// Whether a material may trace at all: not water, not the ground's layers (each has its own
-// reflection or none), not foliage (its branch is its own), and a roughness factor under the end.
-// (512 is `k_material_terrain_layers`, which only the terrain modules declare.)
+// Whether a material may trace at all: the surface class — not water, not the ground's layers
+// (each has its own reflection or none), not foliage (its branch is its own) — with
+// `k_material_may_reflect`, which the upload sets where the roughness factor times the least its
+// map can give is under the end (gfx::set_may_reflect). (512 is `k_material_terrain_layers`,
+// which only the terrain modules declare; 0xFF000000 the foliage byte.)
+static const uint k_material_may_reflect = 1u << 19;  // gfx::k_material_may_reflect
 bool surface_reflect_material(ResolveMaterial material) {
-  return (material.flags & (k_material_water | 512u)) == 0u &&
-         !material_is_foliage(material) && material.albedo.w < k_reflect_roughness_end;
+  return (material.flags & (k_material_water | 512u | 0xFF000000u)) == 0u &&
+         (material.flags & k_material_may_reflect) != 0u;
 }
+// A mirror direction is brought up to at least this far over the surface's geometric plane (the
+// sine of 0.57 degrees): a normal map tilted past the view sends it under, and the pixel then
+// grazes the plane, continuous with its neighbours, instead of dropping to the ambient.
+static const float k_reflect_graze = 0.01;
 
 // What a ray from `origin` along `dir` meets within `k_surface_reflect_m`, shaded by `shade_hit` and
 // seen through the air along the ray, or `miss`; `path_m` is the eye's distance to the origin, which
@@ -114,12 +121,18 @@ float3 surface_reflection(ResolveParams* params, Surface s, BrdfSurface surface,
   if ((params->shadow_flags & k_shadow_surface_reflect) == 0u || params->scene == k_no_scene) {
     return ambient;
   }
-  const float w = surface_reflect_weight(surface.roughness);
-  if (!(w * max(share.r, max(share.g, share.b)) > k_reflect_min_share)) return ambient;
-  const float3 r = reflect(-surface.view, surface.normal);
-  // A shading normal tilted past the view can send the mirror under the surface; that pixel keeps
-  // the ambient.
-  if (!(dot(r, s.geometric) > 1.0e-4)) return ambient;
+  // The fade in roughness, and over the floor: the weight rises from zero where the reflected share
+  // is the floor to whole at twice it, so a pixel either side of the floor differs by what the ray
+  // brings at a weight near zero, never by the floor's whole step.
+  const float faded = surface_reflect_weight(surface.roughness);
+  const float reach = faded * max(share.r, max(share.g, share.b));
+  if (!(reach > k_reflect_min_share)) return ambient;
+  const float w = faded * saturate((reach - k_reflect_min_share) / k_reflect_min_share);
+  float3 r = reflect(-surface.view, surface.normal);
+  // A shading normal tilted past the view can send the mirror under the surface: it is brought up
+  // to graze the geometric plane, so the picture stays continuous across the pixels it happens on.
+  const float under = dot(r, s.geometric);
+  if (under < k_reflect_graze) r = normalize(r + s.geometric * (k_reflect_graze - under));
   float3 miss;
   if (params->sky_params != 0) {
     SkyParams* sky = (SkyParams*)params->sky_params;
