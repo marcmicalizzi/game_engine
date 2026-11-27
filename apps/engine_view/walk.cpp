@@ -675,6 +675,9 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
     config.lead_s = scene_collision::lead_tunable();
     config.prefetch_slots = 2 * count;
     config.mesh_copy_bytes = scene_collision::mesh_copies_tunable();
+    // The scene's own meshes' proxies built ahead round the walker or the flying camera, nearest
+    // first (W200, `walk.collision.proxy_ahead_m`): a landing on a city finds them built.
+    config.proxy_ahead_m = scene_collision::proxy_ahead_tunable();
   }
   world::RingParams ring;
   ring.tile_size = tile;
@@ -1320,6 +1323,17 @@ JsonValue Walker::summary_json() const {
     ground.set("prefetch_waits", s.prefetch_waits);
     ground.set("prefetch_inline", s.prefetch_inline);
     ground.set("prefetch_dropped", s.prefetch_dropped);
+    // The scene's own meshes' proxies (W200; scene_collision.md, "A scene of authored meshes"):
+    // the two halves of their build over every thread, and those built ahead — handed over, built
+    // by a job, waited for by a build or the tick, and taken from a job not started.
+    ms.set("proxy_cut_total", static_cast<f64>(s.proxy_cut_ns) / 1.0e6);
+    ms.set("proxy_shape_total", static_cast<f64>(s.proxy_shape_ns) / 1.0e6);
+    ms.set("proxy_ahead_wait_total", static_cast<f64>(s.proxy_ahead_wait_ns) / 1.0e6);
+    ms.set("proxy_ahead_wait_max", static_cast<f64>(s.max_proxy_ahead_wait_ns) / 1.0e6);
+    ground.set("proxies_handed_ahead", s.proxy_ahead_submitted);
+    ground.set("proxies_built_ahead", s.proxy_ahead_built);
+    ground.set("proxy_ahead_waits", s.proxy_ahead_waits);
+    ground.set("proxy_ahead_taken", s.proxy_ahead_claimed);
   }
 #endif
   bodies.set("live", live);

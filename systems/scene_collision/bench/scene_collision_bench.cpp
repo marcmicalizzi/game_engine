@@ -3,6 +3,7 @@
 // heightfield and a compound of a hundred pieces each) and three let go — over a ground of plain
 // arithmetic and a scene of boxes read whole. The dunes' own evaluation is the terrain
 // capability's cost and is measured in engine-view's summary, where the real ground is.
+#include <core/jobs/job_system.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/physics/character.h>
 #include <domain/physics/physics.h>
@@ -11,8 +12,11 @@
 #include <systems/scene_collision/scene_collision.h>
 #include <systems/world/world.h>
 
+#include <chrono>
 #include <cmath>
+#include <facade_fixture.h>
 #include <string>
+#include <thread>
 
 using namespace engine;
 
@@ -164,6 +168,189 @@ ENGINE_BENCH(scene_collision_tick, "scene_collision.tick") {
 // standing walker rebuilt at it (a 34 x 34 heightfield and its body, the broadphase after), and the
 // walker carried with it — the frame's first tick. The pair is fixed, so no field is evaluated:
 // that is the generator's cost, and comes a pair at a time.
+// What one proxy of an authored mesh costs to build (W200; docs/subsystems/scene_collision.md, "A
+// scene of authored meshes"): one facade of the block's (facade_fixture.h) read whole, a consumer
+// made over it and the one tile it stands on activated, every iteration — the copy, the cut at
+// 5 cm, the weld, the backend's tree, the compound and the bodies. Items are the proxy's triangles,
+// so the rate is triangles a second, at three sizes of facade.
+namespace {
+
+void proxy_build(bench::State& state, u32 cols, u32 rows) {
+  facade_fixture::Facade f;
+  f.cols = bench::smoke_mode() ? 4 : cols;  // the CTest smoke run stays seconds long
+  f.rows = bench::smoke_mode() ? 6 : rows;
+  const facade_fixture::MeshSource m = facade_fixture::facade_mesh(f);
+  geometry::ClusterLodMesh lod;
+  geometry::build_cluster_lod(std::span<const Vec3>(m.positions.data(), m.positions.size()),
+                              std::span<const u32>(m.indices.data(), m.indices.size()),
+                              geometry::ClusterLodOptions{}, lod);
+  Vector<geometry::ClusterLodMesh> lods;
+  lods.push_back(std::move(lod));
+  renderer::SceneData scene;
+  geometry::merge_cluster_meshes(
+      std::span<const geometry::ClusterLodMesh>(lods.data(), lods.size()), scene.lod, scene.parts);
+  scene.mesh_fit.resize(1, Mat4::identity());
+  scene.terrain_mesh = ~0u;
+  renderer::SceneInstance i;
+  i.transform.position = Vec3{16.0f, 0.0f, 16.0f};
+  gfx::InstanceDesc desc;
+  renderer::make_instance(scene, i, 0, desc);
+  scene.instances.push_back(desc);
+  scene.pair_count = scene.parts[0].cluster_count;
+  physics::WorldOptions options;
+  options.max_bodies = 1024;
+  u32 triangles = 0;
+  world::RingParams params = scene_collision::ring_params_from_tunables(32.0f);
+  params.max_activations = 0;
+  params.max_deactivations = 0;
+  sim::ObserverSet at;
+  at.add(WorldPos{16.0, 0.0, 16.0}, 1.0f);
+  while (state.keep_running()) {
+    physics::World physics;
+    physics.init(options);
+    scene_collision::SceneCollision collision;
+    std::string error;
+    collision.create(physics, scene, nullptr, scene_collision::Config{}, &error);
+    world::World ring(params);
+    ring.add_consumer(collision.consumer());
+    ring.update(at, 0, true);
+    triangles = collision.stats().proxy_triangles;
+    bench::keep(triangles);
+  }
+  state.set_items(triangles);
+}
+
+}  // namespace
+
+ENGINE_BENCH(scene_collision_proxy_build_small, "scene_collision.proxy_build.11k") {
+  proxy_build(state, 15, 27);
+}
+ENGINE_BENCH(scene_collision_proxy_build_medium, "scene_collision.proxy_build.46k") {
+  proxy_build(state, 30, 55);
+}
+ENGINE_BENCH(scene_collision_proxy_build_large, "scene_collision.proxy_build.185k") {
+  proxy_build(state, 60, 110);
+}
+
+// **The block's landing** (W200): the city block of facade_fixture.h — eight facades of about
+// 45,000 triangles, each at eight scales, so 64 proxies of 2.85 M triangles — and a drop at its
+// middle with no job system, the tick building all of it: the landing's worst case, a consumer made
+// and the ring filled every iteration. Items are the proxies' triangles. With the builds ahead a
+// landing takes them from the cache instead (authored_mesh_tests.cpp); this row is what a proxy
+// costs whoever builds it.
+ENGINE_BENCH(scene_collision_landing, "scene_collision.landing") {
+  const bool small = bench::smoke_mode();
+  renderer::SceneData scene;
+  std::string error;
+  facade_fixture::facade_scene(small ? 2 : 8, small ? 2 : 8, small, scene, error);
+  physics::WorldOptions options;
+  options.max_bodies = 1024;
+  world::RingParams params = scene_collision::ring_params_from_tunables(32.0f);
+  params.max_activations = 0;
+  params.max_deactivations = 0;
+  sim::ObserverSet at;
+  at.add(WorldPos{48.0, 0.0, 48.0}, 1.0f);
+  u32 triangles = 0;
+  while (state.keep_running()) {
+    physics::World physics;
+    physics.init(options);
+    scene_collision::SceneCollision collision;
+    collision.create(physics, scene, nullptr, scene_collision::Config{}, &error);
+    world::World ring(params);
+    ring.add_consumer(collision.consumer());
+    ring.update(at, 0, true);
+    triangles = collision.stats().proxy_triangles;
+    bench::keep(triangles);
+  }
+  state.set_items(triangles);
+}
+
+// **The block's landing with the builds ahead** (W200): the same block and drop, engine-view's
+// walker's settings — four workers, the tiles a tile past the ring and 4 s along the velocity, the
+// slots, the proxies within `walk.collision.proxy_ahead_m` — after a hover of the argument's
+// milliseconds over the middle at 240 Hz (`prefetch` a tick; 0: the drop on the first tick, as a
+// fall from a fast flight lands). Only the drop is timed: the ring's fill on the tick, taking what
+// the workers built, waiting for what they are building and building what they had not started.
+// `flight_ms`: before the hover, the camera flies 1 km from the west to the middle at 240 Hz in
+// that many milliseconds, `prefetch` handed its place and velocity every tick, as engine-view's
+// walker is while flying (`look_ahead`).
+static void landing_ahead(bench::State& state, i64 hover_ms, i64 flight_ms);
+
+ENGINE_BENCH_ARGS(scene_collision_landing_ahead, "scene_collision.landing_ahead", 0, 250, 1000) {
+  landing_ahead(state, state.arg(0), 0);
+}
+// A fast flight then the drop at once: 1 km in 10 s (100 m/s) and in 3.3 s (300 m/s), where the
+// outrun rule holds the tiles' builds back and only the proxies are built ahead.
+ENGINE_BENCH_ARGS(scene_collision_landing_flight, "scene_collision.landing_flight", 10000, 3333) {
+  landing_ahead(state, 0, state.arg(0));
+}
+
+static void landing_ahead(bench::State& state, i64 hover_arg, i64 flight_arg) {
+  const bool small = bench::smoke_mode();
+  const i64 hover_ms = small ? 0 : hover_arg;
+  const i64 flight_ms = small ? 0 : flight_arg;
+  renderer::SceneData scene;
+  std::string error;
+  facade_fixture::facade_scene(small ? 2 : 8, small ? 2 : 8, small, scene, error);
+  physics::WorldOptions options;
+  options.max_bodies = 1024;
+  world::RingParams params = scene_collision::ring_params_from_tunables(32.0f);
+  params.max_activations = 0;
+  params.max_deactivations = 0;
+  scene_collision::Config config;
+  config.prefetch_radius_tiles = params.radius[0] + 1.0f;
+  config.ring_radius_tiles = params.radius[0];
+  config.lead_s = 4.0f;
+  config.prefetch_slots = 8;
+  // The tunable's 256 m; `--set=walk.collision.proxy_ahead_m=0` is the walker before W200, whose
+  // builds ahead were the tiles' alone.
+  config.proxy_ahead_m = scene_collision::proxy_ahead_tunable();
+  jobs::JobSystemConfig pool;
+  pool.performance_workers = 4;
+  pool.pin_threads = false;
+  const WorldPos middle{48.0, 0.0, 48.0};
+  sim::ObserverSet at;
+  at.add(middle, 1.0f);
+  u32 triangles = 0;
+  while (state.keep_running()) {
+    state.pause_timing();
+    {
+      jobs::JobSystem workers(pool);
+      physics::World physics;
+      physics.init(options);
+      scene_collision::SceneCollision collision;
+      collision.create(physics, scene, nullptr, config, &error, nullptr, &workers);
+      world::World ring(params);
+      ring.add_consumer(collision.consumer());
+      if (flight_ms > 0) {
+        const auto off = std::chrono::steady_clock::now();
+        const f64 speed = 1000.0 / (static_cast<f64>(flight_ms) / 1000.0);
+        for (;;) {
+          const f64 t = std::chrono::duration<f64>(std::chrono::steady_clock::now() - off).count();
+          const f64 left = 1000.0 - speed * t;
+          if (left <= 0.0) break;
+          collision.prefetch(WorldPos{middle.x - left, 0.0, middle.z},
+                             Vec3{static_cast<f32>(speed), 0.0f, 0.0f});
+          std::this_thread::sleep_for(std::chrono::microseconds(4167));
+        }
+      }
+      const auto start = std::chrono::steady_clock::now();
+      while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(hover_ms)) {
+        collision.prefetch(middle);
+        std::this_thread::sleep_for(std::chrono::microseconds(4167));
+      }
+      collision.prefetch(middle);
+      state.resume_timing();
+      ring.update(at, 0, true);
+      state.pause_timing();
+      triangles = collision.stats().proxy_triangles;
+      bench::keep(triangles);
+    }
+    state.resume_timing();
+  }
+  state.set_items(triangles);
+}
+
 ENGINE_BENCH(scene_collision_follow, "scene_collision.follow") {
   renderer::SceneData scene;
   build(scene);

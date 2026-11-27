@@ -65,6 +65,10 @@ tunables::Int collision_mesh_copies{
     "walk.collision.mesh_copies_mib", 64, 0, 4096,
     "MiB of tile-handed meshes' proxy copies kept between the "
     "collision's builds (T166); 0 reads a tile's meshes every build"};
+tunables::Float collision_proxy_ahead{
+    "walk.collision.proxy_ahead_m", 256.0, 0.0, 100000.0,
+    "Metres round the walker within which the scene's own meshes' collision proxies are built "
+    "ahead on the job system, nearest first (W200); 0 builds none ahead"};
 
 i64 floor_div(i64 a, i64 b) noexcept {
   i64 q = a / b;
@@ -164,6 +168,7 @@ f32 lead_tunable() noexcept { return static_cast<f32>(collision_lead.get()); }
 u64 mesh_copies_tunable() noexcept {
   return static_cast<u64>(collision_mesh_copies.get()) * 1024u * 1024u;
 }
+f32 proxy_ahead_tunable() noexcept { return static_cast<f32>(collision_proxy_ahead.get()); }
 
 Config config_from_tunables(f32 tile_size) noexcept {
   Config c;
@@ -298,6 +303,34 @@ struct SceneCollision::PropProxy {
   }
 };
 
+// **A scene mesh's proxy built ahead** (W200; docs: "A scene of authored meshes"): one job a
+// proxy, into the proxies' cache (`cached_proxy_for`), which is what any asker would have built.
+// `state` says who builds it: the job, once it has moved it from queued to running; or an asker
+// that found it still queued and moved it to done, and so builds it itself (`proxy_for`). Kept for
+// the consumer's life: an asker may be waiting on `ran`.
+struct SceneCollision::ProxyAhead {
+  SceneCollision* owner = nullptr;
+  u32 mesh = 0;
+  Vec3 scale{};
+  static constexpr u32 k_queued = 0, k_running = 1, k_done = 2;
+  std::atomic<u32> state{k_queued};
+  jobs::Counter ran;
+
+  static void run(void* data) noexcept {
+    auto* entry = static_cast<ProxyAhead*>(data);
+    u32 expected = k_queued;
+    if (!entry->state.compare_exchange_strong(expected, k_running, std::memory_order_acq_rel))
+      return;
+    {
+      PlacementScratch scratch;  // the job's own, gone with it
+      (void)entry->owner->cached_proxy_for(entry->mesh, entry->scale, scratch);
+      std::lock_guard<std::mutex> lock(entry->owner->proxies_mutex_);
+      ++entry->owner->proxy_stats_.ahead_built;
+    }
+    entry->state.store(k_done, std::memory_order_release);
+  }
+};
+
 SceneCollision::SceneCollision() = default;
 
 SceneCollision::~SceneCollision() {
@@ -309,6 +342,8 @@ SceneCollision::~SceneCollision() {
     build->ran.wait_blocking();
   builds_.clear();
   retired_.clear();
+  for (const std::unique_ptr<ProxyAhead>& entry : ahead_)  // a proxy built ahead (W200)
+    entry->ran.wait_blocking();
   for (u32 i = 0; i < prop_proxies_.size(); ++i)  // a prop's proxy a job may still build (P45)
     if (prop_proxies_.value_at(i)->submitted) prop_proxies_.value_at(i)->ran.wait_blocking();
   for (const std::unique_ptr<PropProxy>& entry : prop_retired_)
@@ -433,6 +468,11 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
   // sources place their own. The terrain is the ground's, and a skinned instance moves, so neither
   // has a static body.
   bins_.clear();
+  ahead_rows_.clear();
+  ahead_candidates_.clear();
+  ahead_next_ = 0;
+  ahead_once_ = false;
+  const bool ahead = jobs_ != nullptr && config_.proxy_ahead_m > 0.0f;
   // **The far forest gets no body** (P62, 2026-11-08): a far tile's mesh is the coarsest forms of
   // every streamed tree on a world tile merged into one rigid instance of the prefix, drawn only
   // where the ring's tail does not draw that tile's trees — so never round a walker, whose tile the
@@ -498,6 +538,19 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
       if (!fits_i32(x0) || !fits_i32(x1) || !fits_i32(z0) || !fits_i32(z1)) continue;
       if ((x1 - x0 + 1) * (z1 - z0 + 1) > 4096)
         continue;  // a scene-sized mesh is ground, not a piece
+      // Its proxy, which a tile's build will ask for by this mesh and scale (`add_piece`), built
+      // ahead from the first `prefetch` on (W200), nearest first by where it stands.
+      if (ahead) {
+        Placement placed;
+        if (decompose(cell_frame_matrix(instance), placed)) {
+          AheadRow row;
+          row.at = to_world(gfx::instance_cell(instance));
+          row.mesh = instance.mesh;
+          row.scale = placed.scale;
+          row.key = proxy_key(instance.mesh, placed.scale);
+          ahead_rows_.push_back(row);
+        }
+      }
       for (i64 z = z0; z <= z1; ++z) {
         for (i64 x = x0; x <= x1; ++x) {
           const u64 key =
@@ -594,6 +647,13 @@ void SceneCollision::note_bodies() noexcept {
   stats_.proxies_coarsened = proxy_stats_.coarsened;
   stats_.proxy_bytes = proxy_stats_.bytes;
   stats_.proxy_ns = proxy_stats_.ns;
+  stats_.proxy_cut_ns = proxy_stats_.cut_ns;
+  stats_.proxy_shape_ns = proxy_stats_.shape_ns;
+  stats_.proxy_ahead_built = proxy_stats_.ahead_built;
+  stats_.proxy_ahead_waits = proxy_stats_.ahead_waits;
+  stats_.proxy_ahead_wait_ns = proxy_stats_.ahead_wait_ns;
+  stats_.max_proxy_ahead_wait_ns = proxy_stats_.max_ahead_wait_ns;
+  stats_.proxy_ahead_claimed = proxy_stats_.ahead_claimed;
 }
 
 // ---- the ground
@@ -1375,7 +1435,7 @@ u32 SceneCollision::cut_proxy(const ProxySource& source, u32 mesh, Vec3 scale,
                               PlacementScratch& scratch, bool& coarsened) const {
   Vector<Vec3>& vertices = scratch.vertices;
   Vector<u32>& indices = scratch.indices;
-  FlatMap<u32, u32>& remap = scratch.remap;
+  HashMap<u32, u32>& remap = scratch.remap;
   u32 left_out = 0;
   vertices.clear();
   indices.clear();
@@ -1455,7 +1515,9 @@ void SceneCollision::build_proxy(u32 mesh, Vec3 scale, PlacementScratch& scratch
   profiling::TraceStage proxy_stage("collision proxy");  // a scene mesh's, cut and built (T172)
   coarsened = false;
   bytes = 0;
+  const i64 cut_start = time::monotonic_ns();
   left_out = cut_proxy(*proxy_source_, mesh, scale, scratch, coarsened);
+  scratch.cut_ns = time::monotonic_ns() - cut_start;
   const Vector<Vec3>& vertices = scratch.vertices;
   const Vector<u32>& indices = scratch.indices;
   if (config_.keep_shapes) {
@@ -1466,6 +1528,7 @@ void SceneCollision::build_proxy(u32 mesh, Vec3 scale, PlacementScratch& scratch
   SupportSource supports;
   if (mesh < scene_->sources.size()) supports = support_source(scene_->sources[mesh]);
   fill_supports(mesh < scene_->sources.size() ? &supports : nullptr, scale, scratch, out);
+  const i64 shape_start = time::monotonic_ns();
   if (!indices.empty() &&
       physics_->build_mesh(std::span<const Vec3>(vertices.data(), vertices.size()),
                            std::span<const u32>(indices.data(), indices.size()),
@@ -1474,10 +1537,44 @@ void SceneCollision::build_proxy(u32 mesh, Vec3 scale, PlacementScratch& scratch
     u32 triangles = 0;
     if (!physics_->built_memory(out.shape, false, bytes, triangles)) bytes = 0;
   }
+  scratch.shape_ns = time::monotonic_ns() - shape_start;
 }
 
+// **A proxy a job may be building** (W200; docs: "A scene of authored meshes"): in the cache, it is
+// taken; handed to a job that has not started, the asker takes it from the job and builds it here,
+// as it did before; running on a job, the asker waits for that one proxy alone — never for the
+// queue behind it — and takes what the job put in the cache.
 const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
                                                        PlacementScratch& scratch) {
+  const u64 key = proxy_key(mesh, scale);
+  ProxyAhead* ahead = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(proxies_mutex_);
+    if (const std::unique_ptr<Proxy>* proxy = proxies_.find_value(key))
+      return (*proxy)->shape ? proxy->get() : nullptr;
+    if (ProxyAhead* const* found = ahead_by_key_.find_value(key)) ahead = *found;
+  }
+  if (ahead != nullptr) {
+    u32 expected = ProxyAhead::k_queued;
+    if (ahead->state.compare_exchange_strong(expected, ProxyAhead::k_done,
+                                             std::memory_order_acq_rel)) {
+      std::lock_guard<std::mutex> lock(proxies_mutex_);
+      ++proxy_stats_.ahead_claimed;
+    } else if (expected == ProxyAhead::k_running) {
+      const i64 start = time::monotonic_ns();
+      ahead->ran.wait_blocking();
+      const i64 waited = time::monotonic_ns() - start;
+      std::lock_guard<std::mutex> lock(proxies_mutex_);
+      ++proxy_stats_.ahead_waits;
+      proxy_stats_.ahead_wait_ns += waited;
+      proxy_stats_.max_ahead_wait_ns = std::max(proxy_stats_.max_ahead_wait_ns, waited);
+    }
+  }
+  return cached_proxy_for(mesh, scale, scratch);
+}
+
+const SceneCollision::Proxy* SceneCollision::cached_proxy_for(u32 mesh, Vec3 scale,
+                                                              PlacementScratch& scratch) {
   const u64 key = proxy_key(mesh, scale);
   {
     std::lock_guard<std::mutex> lock(proxies_mutex_);
@@ -1492,6 +1589,8 @@ const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
   build_proxy(mesh, scale, scratch, *proxy, left_out, coarsened, bytes);
   std::lock_guard<std::mutex> lock(proxies_mutex_);
   proxy_stats_.ns += time::monotonic_ns() - start;
+  proxy_stats_.cut_ns += scratch.cut_ns;
+  proxy_stats_.shape_ns += scratch.shape_ns;
   if (const std::unique_ptr<Proxy>* found = proxies_.find_value(key))
     return (*found)->shape ? found->get() : nullptr;  // another thread's: this one goes
   proxy_stats_.flora_left_out += left_out;
@@ -2105,6 +2204,9 @@ void SceneCollision::prefetch(WorldPos at, Vec3 velocity) {
       ++k;
     }
   }
+  // The scene's own meshes' proxies (W200): whatever the ground is and however fast the walker
+  // goes, since a proxy depends on neither.
+  submit_proxies(at);
   if (!can_prefetch()) return;
   // Every tick, the waiting builds' turn (T166): the walker has moved, and a worker may be free.
   struct Submit {
@@ -2198,6 +2300,69 @@ void SceneCollision::prefetch(WorldPos at, Vec3 velocity) {
       build->placements = placements;
       builds_.push_back(std::move(build));
     }
+  }
+}
+
+// **The scene's own meshes' proxies built ahead** (W200; docs: "A scene of authored meshes"). The
+// rows within `Config::proxy_ahead_m` of the walker are ranked nearest first — again once the
+// walker is 8 m from where they were last ranked, or the ranking is used up — and their proxies
+// handed to the job system from the head of the ranking while fewer than the slots are running:
+// one job a proxy, so a landing's nearest are built first on every worker, and a fast flight
+// holds at most the slots' worth of workers, each for one proxy's build. A row whose proxy is in
+// the cache or handed over already is passed by. The ranking is the walker's alone, so it decides
+// only which proxy is built when and on which thread, never what a proxy is.
+void SceneCollision::submit_proxies(WorldPos at) {
+  if (jobs_ == nullptr || ahead_rows_.empty()) return;
+  for (u32 k = 0; k < ahead_pending_.size();) {
+    if (ahead_pending_[k]->ran.done()) {
+      ahead_pending_[k] = ahead_pending_[ahead_pending_.size() - 1];
+      ahead_pending_.pop_back();
+    } else {
+      ++k;
+    }
+  }
+  const u32 slots = config_.prefetch_slots > 0 ? config_.prefetch_slots : 4u;
+  if (ahead_pending_.size() >= slots) return;
+  const f64 radius = static_cast<f64>(config_.proxy_ahead_m);
+  const auto rank = [&] {
+    ahead_once_ = true;
+    ahead_at_ = at;
+    ahead_next_ = 0;
+    ahead_candidates_.clear();
+    for (u32 r = 0; r < ahead_rows_.size(); ++r) {
+      const DVec3 d = ahead_rows_[r].at - at;
+      const f64 distance = std::sqrt(d.x * d.x + d.z * d.z);
+      if (distance <= radius) ahead_candidates_.push_back(AheadCandidate{distance, r});
+    }
+    // Nearest first, then by row: the same ranking from the same place.
+    std::sort(ahead_candidates_.begin(), ahead_candidates_.end(),
+              [](const AheadCandidate& a, const AheadCandidate& b) {
+                return a.distance != b.distance ? a.distance < b.distance : a.row < b.row;
+              });
+  };
+  if (!ahead_once_) {
+    rank();
+  } else {
+    const DVec3 moved = at - ahead_at_;
+    if (moved.x * moved.x + moved.z * moved.z >= 64.0) rank();
+  }
+  if (ahead_next_ >= ahead_candidates_.size()) return;  // used up until the walker moves on
+  std::lock_guard<std::mutex> lock(proxies_mutex_);
+  while (ahead_pending_.size() < slots && ahead_next_ < ahead_candidates_.size()) {
+    const AheadRow& row = ahead_rows_[ahead_candidates_[ahead_next_++].row];
+    if (proxies_.find_value(row.key) != nullptr || ahead_by_key_.find_value(row.key) != nullptr)
+      continue;
+    auto entry = std::make_unique<ProxyAhead>();
+    entry->owner = this;
+    entry->mesh = row.mesh;
+    entry->scale = row.scale;
+    ProxyAhead* job = entry.get();
+    ahead_by_key_.insert(row.key, job);
+    ahead_.push_back(std::move(entry));
+    ahead_pending_.push_back(job);
+    job->ran.add(1);
+    jobs_->schedule(jobs::Pool::Performance, jobs::Job{&ProxyAhead::run, job, &job->ran});
+    ++stats_.proxy_ahead_submitted;
   }
 }
 

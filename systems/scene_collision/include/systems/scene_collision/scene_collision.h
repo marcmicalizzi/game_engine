@@ -56,6 +56,7 @@
 #include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/flat_map.h>
+#include <core/containers/hash_map.h>
 #include <core/containers/vector.h>
 #include <core/math/math.h>
 #include <domain/geometry/cluster_file.h>
@@ -120,6 +121,9 @@ f32 prefetch_tunable() noexcept;
 u32 prefetch_workers_tunable() noexcept;
 f32 lead_tunable() noexcept;
 u64 mesh_copies_tunable() noexcept;
+// W200: how far round the walker (or the flying camera) the scene's own meshes' proxies are built
+// ahead, metres (`Config::proxy_ahead_m`): 256. 0 builds none ahead. Changes no body.
+f32 proxy_ahead_tunable() noexcept;
 // The farthest the lead reaches along the walker's velocity, in tiles: past it the builds of a
 // fast flight are let go before any worker reaches them (docs: "Ahead of a running walker").
 inline constexpr f32 k_lead_max_tiles = 4.0f;
@@ -173,6 +177,17 @@ struct Config {
   // did. 0: built at the update that wants it, on the tick (a host with no job system, the tests).
   // A declared prop's proxy at scale 1 is built at `create` and needs no wait.
   u32 prop_build_updates = 0;
+  // **The scene's own meshes' proxies built ahead** (W200; docs: "A scene of authored meshes"): a
+  // proxy of a scene instance's mesh — a scene read whole, or a streamed scene's prefix — is one a
+  // mesh and scale, known at the load, the same whichever tile asks and never stale, so from the
+  // first `prefetch` on, the proxies of the instances within this many metres of the point it is
+  // given are built on the job system `create` was handed, nearest first, at most
+  // `prefetch_slots` (or four) at once, whatever the walker's speed: the outrun rule is about a
+  // tile's whole build and does not hold these back. A tile's build, or the tick, that wants one a
+  // job is building waits for that proxy alone; one no job has started it builds itself. 0 (or no
+  // job system) builds none ahead. Changes no body: a proxy is a function of its mesh, scale and
+  // error, whoever builds it, and the bodies are still made on the tick in the ring's order.
+  f32 proxy_ahead_m = 0.0f;
 };
 // engine-view's walk (apps/engine_view/walk.cpp): twelve of its 240 Hz ticks, 50 ms. A constant of
 // the walk, like its tick rate, so a recorded walk and its replay make every prop's body at the
@@ -287,6 +302,20 @@ struct Stats {
   i64 refresh_ns = 0;
   i64 max_refresh_ns = 0;
   i64 proxy_ns = 0;
+  // W200: of `proxy_ns`, a scene mesh's proxy's two halves, summed over every thread that built
+  // one: the cut and weld (`cut_proxy`) and the backend's shape over it (`build_mesh`, its tree).
+  i64 proxy_cut_ns = 0;
+  i64 proxy_shape_ns = 0;
+  // W200, the scene's own meshes' proxies built ahead (`Config::proxy_ahead_m`): handed to the job
+  // system, built there, and of the askers that wanted one before it was ready, those that waited
+  // for the job building it (the wait's total and most) and those that took one no job had started
+  // and built it themselves.
+  u64 proxy_ahead_submitted = 0;
+  u64 proxy_ahead_built = 0;
+  u64 proxy_ahead_waits = 0;
+  i64 proxy_ahead_wait_ns = 0;
+  i64 max_proxy_ahead_wait_ns = 0;
+  u64 proxy_ahead_claimed = 0;
   // A game's props (`set_props`; docs: "Props"): handed now, with a body now (their tile held, a
   // shape that collides), and the bodies made and let go over the consumer's life.
   // `prop_moves`: bodies put at a prop's new place, which is what a moved prop costs once its body
@@ -646,6 +675,9 @@ class SceneCollision {
   u32 door_nearest(WorldPos point, f32 radius) const noexcept;
   const DoorStats& door_stats() const noexcept { return door_stats_; }
   const Stats& stats() const noexcept { return stats_; }
+  // W200: the scene's own meshes' proxies handed to the job system whose jobs had not returned at
+  // the last `prefetch` (`Config::proxy_ahead_m`); 0 once every one handed over is built.
+  u32 proxies_ahead_pending() const noexcept { return ahead_pending_.size(); }
   // **What is held** (docs: "Seeing the collision"): the held tiles, in the consumer's order, and a
   // tile's pieces where `Config::keep_shapes` kept them. False past the count.
   u32 held_tiles() const noexcept { return tiles_.size(); }
@@ -743,14 +775,28 @@ class SceneCollision {
     u32 coarsened = 0;
     u64 bytes = 0;
     i64 ns = 0;
+    i64 cut_ns = 0;
+    i64 shape_ns = 0;
+    u64 ahead_built = 0;  // W200, the proxies built ahead (`ProxyAhead`)
+    u64 ahead_waits = 0;
+    i64 ahead_wait_ns = 0;
+    i64 max_ahead_wait_ns = 0;
+    u64 ahead_claimed = 0;
   };
   // What one thread's placements build uses, reused: the tick has one, a build ahead its own.
   struct PlacementScratch {
+    // The last `build_proxy`'s two halves (W200): the cut and weld, and the backend's shape.
+    i64 cut_ns = 0;
+    i64 shape_ns = 0;
     Vector<physics::BuiltChild> children;
     Vector<Vec3> vertices;
     Vector<u32> indices;
     Vector<u32> parts;
-    FlatMap<u32, u32> remap;
+    // The weld's source vertex to proxy vertex (`cut_proxy`). A hash map, not a sorted one (W200):
+    // a cut inserts a key a new source vertex, and an imported mesh, split at every crease by the
+    // import's weld, has about as many as it has triangles — inserted into a sorted array that was
+    // quadratic, 82% of a block of facades' landing.
+    HashMap<u32, u32> remap;
     scene_gen::Placements placed;
     Vector<PieceRecord> records;  // beside `children`, with `Config::keep_shapes`
     // The last mesh a tile handed that this thread built (`renderer::load_placement_mesh`), kept
@@ -1036,6 +1082,33 @@ class SceneCollision {
   // A build that ran, folded into `Stats::build_estimate_s` (T172): what one takes on this machine
   // and this world, which the rule above reads against how long the walker stays in reach.
   void count_build(const Build& build) noexcept;
+  // **The scene's own meshes' proxies built ahead** (W200; `Config::proxy_ahead_m`): a row per
+  // binned instance — where it stands, its proxy's key, mesh and scale — made at `create`; a job
+  // per proxy handed over, kept for the consumer's life (its scratch is the job's own and goes with
+  // it), found by key under the proxies' lock; and the scan's own scratch.
+  struct ProxyAhead;
+  struct AheadRow {
+    WorldPos at{};
+    u64 key = 0;
+    u32 mesh = 0;
+    Vec3 scale{};
+  };
+  struct AheadCandidate {
+    f64 distance = 0.0;
+    u32 row = 0;
+  };
+  Vector<AheadRow> ahead_rows_;
+  Vector<std::unique_ptr<ProxyAhead>> ahead_;
+  HashMap<u64, ProxyAhead*> ahead_by_key_;
+  Vector<ProxyAhead*> ahead_pending_;        // handed over, its job not returned yet
+  Vector<AheadCandidate> ahead_candidates_;  // the last scan's, nearest first; `ahead_next_` on
+  u32 ahead_next_ = 0;
+  WorldPos ahead_at_{};
+  bool ahead_once_ = false;
+  void submit_proxies(WorldPos at);
+  // The proxy cache's own lookup and build, without the builds ahead: `proxy_for`'s body until
+  // W200, and what a `ProxyAhead` job runs.
+  const Proxy* cached_proxy_for(u32 mesh, Vec3 scale, PlacementScratch& scratch);
   // The kept copies of tile-handed meshes, by identity (T166), and the order they were last used.
   FlatMap<u64, std::unique_ptr<MeshCopy>> mesh_copies_;
   Vector<std::unique_ptr<MeshCopy>> copies_orphans_;  // replaced while a cut still read them
