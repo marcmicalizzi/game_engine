@@ -217,7 +217,10 @@ class DeviceStep {
   bool read_partials_bits(std::span<WaterPartial> out, std::string* error = nullptr);
   bool read_ledger_bits(WaterLedger& out, std::string* error = nullptr);
   /// Diagnosis: the step's length pass alone (the records to a length and the ledger's sums), with
-  /// no update after it; the state does not move, but the ledger does.
+  /// no update after it. Not read-only: the state does not move, but the ledger's length and sums
+  /// are written and the records' volumes are folded in and zeroed, so a diagnosis runs it on a
+  /// step it then discards, never between the steps of a run it means to compare. The two reads
+  /// above are copies and change nothing.
   bool run_length_pass(f32 max_dt, std::string* error = nullptr);
 
  private:

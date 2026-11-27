@@ -592,7 +592,8 @@ Rung ladder_rung(DeviceStep& step, const std::string& form, u32 steps, bool full
                 static_cast<unsigned long long>(plane_hash[1]),
                 static_cast<unsigned long long>(plane_hash[2]),
                 static_cast<unsigned long long>(plane_hash[3]),
-                static_cast<unsigned long long>(hash_bytes(partials.data(), partials.size() * sizeof(partials[0]))),
+                static_cast<unsigned long long>(
+                    hash_bytes(partials.data(), partials.size() * sizeof(partials[0]))),
                 static_cast<unsigned long long>(hash_bytes(&ledger, sizeof ledger)));
   r.lines.emplace_back(head);
   std::string records = "ladder " + form + " step " + std::to_string(steps) + " records";
@@ -649,7 +650,8 @@ std::vector<std::string> run_ladder(gfx::Device& device, const Slope& s, Ops ops
     for (std::string& l : ladder_rung(step, form, rung, rung <= 2u).lines)
       out.push_back(std::move(l));
   }
-  out.push_back("ladder " + form + " state hash after 400 " + std::to_string(step.state_hash(&error)));
+  out.push_back("ladder " + form + " state hash after 400 " +
+                std::to_string(step.state_hash(&error)));
   return out;
 }
 
@@ -659,8 +661,9 @@ TEST_CASE("water_live: a ladder of the count's flow, to find where two devices p
   // A diagnosis, not a bound (W175, 2026-11-26; docs/subsystems/water_live.md, "Two cards"): the
   // same-bytes case's 400 steps, read after steps 1 to 4, 8, ..., 256 and 400, each field's hash
   // apart, the step's length as the card chose it, the workgroups' records, and every cell's bits
-  // before the first step and after the first two, printed so two machines' logs diff line by line. It asserts only what
-  // holds on every device: the same ladder twice on one device.
+  // before the first step and after the first two, printed so two machines' logs diff line by
+  // line. It asserts only what holds on every device: the same ladder twice on one device, and
+  // the same final state as the 400 steps in one batch.
   gfx::Device opened;
   if (!open_device(opened)) return;
   const Slope s = slope_case();
@@ -673,6 +676,15 @@ TEST_CASE("water_live: a ladder of the count's flow, to find where two devices p
       text += "\n" + l;
     MESSAGE(text);
     CHECK(first == second);
+    // The stepped ladder is the same run as the 400 steps in one batch (the same-bytes case's).
+    StepOptions options;
+    options.ops = ops;
+    DeviceStep batch;
+    load_slope(batch, opened, s, options);
+    std::string error;
+    REQUIRE_MESSAGE(batch.run_steps(400, k_no_limit, &error), error);
+    CHECK(first.back() == "ladder " + ops_name(ops) + " state hash after 400 " +
+                              std::to_string(batch.state_hash(&error)));
   }
 }
 
