@@ -1875,7 +1875,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   surface.view = normalize(-from_eye);
   surface.roughness = roughness;
   surface.metallic = sampled.metallic;
-  surface.specular = material.specular;  // R234: zero but where the material declares its own
+  surface.specular = material_specular(material);  // R234: zero but where the material declares its own
   // **Foliage optics** (R164; brdf.slang, "foliage"; renderer.md, "Foliage lit from both sides"):
   // a material that declares them takes a light from behind its sheet (transmitted) and, for the
   // share of it whose normals are a sphere's, from any side; its shadow ray leaves from the side of

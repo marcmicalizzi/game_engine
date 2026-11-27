@@ -389,6 +389,13 @@ struct PlacementGeneratorDesc {
   // by name. It costs a scene what its first alpha-tested material costs any scene, so a solver of
   // rock leaves it false.
   bool tile_meshes_masked = false;
+  // **Those meshes may declare their own reflectance** (R234; renderer.md, "A scene with none pays
+  // nothing"): a material stating `KHR_materials_ior` or `KHR_materials_specular` at other than
+  // their defaults. The rule is the masked one above: the resolve's declared lines are chosen when
+  // the scene is made, so a generator whose tiles may hand such a material says so here, and one
+  // that hands it without saying so has it drawn at the stand-in's 4 %, said once by name. It costs
+  // a scene what its first declared material costs any scene (about 0.12 ms of resolve on the erg).
+  bool tile_meshes_specular = false;
   // **What the entry plans for the ground** (R144; `GroundPlan`; scene_gen.md, "What an entry
   // plans for the ground"): its edits of the heights and its openings, for the host to add to the
   // scene's own **before the ground is made**. Called once a scene read, after an `open` of its

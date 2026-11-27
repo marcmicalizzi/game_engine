@@ -148,7 +148,7 @@ struct Rig {
   u32 slot_of_tile[k_tiles] = {~0u, ~0u, ~0u, ~0u};
 
   bool build(const gfx::Device& device, const SceneDesc& desc, RenderSettings settings,
-             bool streamed, u32 rocks_look, bool masked = false) {
+             bool streamed, u32 rocks_look, bool masked = false, bool specular = false) {
     look = rocks_look;
     if (!load_scene(desc, data, error)) return false;
     if (streamed) {
@@ -157,6 +157,7 @@ struct Rig {
       data.dynamic = true;
       data.tile_meshes = true;
       data.tile_meshes_masked = masked;
+      data.tile_meshes_specular = specular;  // or declare a reflectance (R234)
     }
     resolve_settings(settings, device.features(), &data, resolved);
     if (!scene.create(device, data, resolved, &error)) return false;
@@ -177,9 +178,15 @@ struct Rig {
   // `textures` false admits the mesh without them, as a refusal leaves it. `transmission` at zero
   // or more makes every material of the mesh two-sided with that diffuse transmission, which is
   // foliage optics from 0 up (gpu_scene_textures.cpp, `fill_material`).
-  bool admit(u32 tile, u32 slot, bool textures = true, f32 transmission = -1.0f) {
+  bool admit(u32 tile, u32 slot, bool textures = true, f32 transmission = -1.0f, f32 ior = -1.0f) {
     PlacementMeshData built;
     if (!make(tile, built)) return false;
+    if (ior >= 0.0f) {  // every material states KHR_materials_ior (R234)
+      for (assets::Material& material : built.source.data.materials) {
+        material.extensions |= assets::k_ext_ior;
+        material.ior = ior;
+      }
+    }
     if (transmission >= 0.0f) {
       for (assets::Material& material : built.source.data.materials) {
         material.double_sided = true;
@@ -867,6 +874,62 @@ TEST_CASE("mesh textures: a tile's foliage material arriving after the first fra
           << optics.rock_color << " of " << optics.rock_pixels << " rock pixels differ");
   CHECK(optics.ids == 0);
   CHECK(optics.rock_color > 1000);
+}
+
+TEST_CASE("mesh textures: a tile's declared reflectance is drawn only where a generator said so") {
+  // R234's masked rule: the resolve's declared lines are chosen when the scene is made. A scene
+  // whose generator said its tiles may hand a declared reflectance (`tile_meshes_specular`) draws
+  // a tile's ior 3.0 as such; one that did not draws it at the stand-in's 4 %, the record zeroed,
+  // which is the same rocks stating nothing to the byte. A closed scene declares none.
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  const u32 look = 0;
+  test::TempDir tmp{"engine_renderer_mesh_textures_specular"};
+  Rig closed;
+  REQUIRE_MESSAGE(closed.build(gpu.device, describe(tmp, true, look), plain(), false, look),
+                  closed.error);
+  CHECK_FALSE(closed.scene.has_specular_materials());
+  Rig told;
+  REQUIRE_MESSAGE(
+      told.build(gpu.device, describe(tmp, false, look), plain(), true, look, false, true),
+      told.error);
+  CHECK(told.scene.has_specular_materials());
+  Rig untold;
+  REQUIRE_MESSAGE(untold.build(gpu.device, describe(tmp, false, look), plain(), true, look),
+                  untold.error);
+  CHECK_FALSE(untold.scene.has_specular_materials());
+  Rig stated_none;  // the same rocks stating nothing, in a scene told to expect a reflectance
+  REQUIRE_MESSAGE(
+      stated_none.build(gpu.device, describe(tmp, false, look), plain(), true, look, false, true),
+      stated_none.error);
+  for (Rig* rig : {&told, &untold, &stated_none}) {
+    const f32 ior = rig == &stated_none ? -1.0f : 3.0f;
+    for (u32 t = 0; t < k_tiles; ++t)
+      REQUIRE_MESSAGE(rig->admit(t, t, true, -1.0f, ior), rig->error);
+    REQUIRE_MESSAGE(rig->hand_over(k_in_order), rig->error);
+  }
+  CapturedFrame a;
+  CapturedFrame u;
+  CapturedFrame n;
+  REQUIRE_MESSAGE(told.shoot(a), told.error);
+  REQUIRE_MESSAGE(untold.shoot(u), untold.error);
+  REQUIRE_MESSAGE(stated_none.shoot(n), stated_none.error);
+  const Difference zeroed = compare(u, untold, n, stated_none);
+  MESSAGE("ior 3.0 tiles in a scene not told, against the same rocks stating nothing: "
+          << zeroed.depth << " depths, " << zeroed.color << " colours, " << zeroed.ids
+          << " ids over " << zeroed.rock_pixels << " rock pixels");
+  CHECK(zeroed.rock_pixels > 3000);
+  CHECK(zeroed.depth == 0);
+  CHECK(zeroed.ids == 0);
+  CHECK(zeroed.color == 0);
+  const Difference drawn = compare(a, told, n, stated_none);
+  MESSAGE("ior 3.0 tiles in a scene told, against the same rocks stating nothing: "
+          << drawn.rock_color << " of " << drawn.rock_pixels << " rock pixels differ");
+  CHECK(drawn.ids == 0);
+  CHECK(drawn.rock_color > 1000);
 }
 
 // **Under a texture ceiling a tile's mesh shares the load's held texture, and a swap moves its

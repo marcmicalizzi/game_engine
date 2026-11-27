@@ -5153,6 +5153,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   has_masked_ = false;
   has_foliage_materials_ = false;
   u32 stochastic = 0;
+  u32 specular = 0;
   ENGINE_ASSERT(table_material.size() == material_table.size(), "one mark per table entry");
   for (u32 e = 0; e < material_table.size(); ++e) {
     // Only the materials: a record's word at `flags`' offset is not flags (R141, above).
@@ -5166,12 +5167,20 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     if ((material.flags & gfx::k_material_terrain_layers) != 0) has_terrain_materials_ = true;
     if ((material.flags & gfx::k_material_alpha_mask) != 0) has_masked_ = true;
     if ((material.flags & gfx::k_material_foliage_mask) != 0) has_foliage_materials_ = true;
+    // The packed record, not the extension bit: a material stating the defaults stores zero (R234).
+    const Vec4& s = material.specular;
+    if (s.x != 0.0f || s.y != 0.0f || s.z != 0.0f || s.w != 0.0f) ++specular;
   }
   // The masked pipelines are chosen before any tile is, from `tile_meshes_masked`. A scene with a
   // mesh room keeps the foliage lines whatever was declared, since a tile may hand a foliage
   // material at any frame (R177; review finding A7): only a closed scene with none drops them.
   if (mesh_room_.slots != 0) has_masked_ = has_masked_ || data_->tile_meshes_masked;
   if (mesh_room_.slots != 0) has_foliage_materials_ = true;
+  // A declared reflectance follows the masked rule, not foliage's (R234; renderer.md, "A scene with
+  // none pays nothing"): a tile's is drawn only where a generator said its tiles may hand one.
+  has_specular_materials_ = specular != 0 || (mesh_room_.slots != 0 && data_->tile_meshes_specular);
+  if (specular != 0)
+    ENGINE_LOG_INFO(log_renderer, "declared reflectances", log::field("materials", specular));
   // The resolve's stochastic variant is the one only such a scene draws with (scene_renderer.cpp,
   // `resolve_module`).
   has_stochastic_materials_ = stochastic != 0;

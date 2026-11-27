@@ -109,6 +109,15 @@ uint slot_sampler(ResolveMaterial material, uint word, uint shift) {
 bool material_is_foliage(ResolveMaterial material) {
   return k_scene_foliage && (material.flags >> k_material_foliage_shift) != 0u;
 }
+// **Whether the scene declares a reflectance at all** (gfx::k_spec_scene_specular, R234; gfx.md, "A
+// dielectric's own reflectance"): false where no material of the scene has a non-zero `specular`,
+// so the record's read and every declared branch of brdf.slang fold out of the pipeline and a
+// scene that declares none compiles the resolve it compiled before R234. Every reader takes the
+// field through `material_specular`, never `.specular`. Unset (the path tracer), it is true.
+[vk::constant_id(234)] const bool k_scene_specular = true;
+float4 material_specular(ResolveMaterial material) {
+  return k_scene_specular ? material.specular : float4(0.0);
+}
 float material_foliage_transmit(ResolveMaterial material) {
   return float((material.flags >> 24u) & 15u) / 15.0;
 }

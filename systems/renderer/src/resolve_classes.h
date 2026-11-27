@@ -36,8 +36,10 @@ std::string resolve_manifest_path(const std::string& named);
 // "Foliage lit from both sides"): `gfx::k_spec_scene_foliage` false where the scene has no foliage
 // material, so its foliage lines drop out at the driver's compile; nothing set where it has one.
 // And `gfx::k_spec_scene_light_cap` false where the scene cannot light more lights than the cap on
-// the shadow rays (R213, `scene_light_cap`), so the capped walk drops out the same way.
-gfx::Specialization resolve_specialization(bool foliage, bool light_cap) noexcept;
+// the shadow rays (R213, `scene_light_cap`), so the capped walk drops out the same way. And
+// `gfx::k_spec_scene_specular` false where no material declares its own reflectance (R234,
+// `GpuScene::has_specular_materials`), so the record's read and brdf.slang's declared lines do.
+gfx::Specialization resolve_specialization(bool foliage, bool light_cap, bool specular) noexcept;
 // R213: whether a scene of these fires, lamps and props can light more lights than the cap
 // (`shadow_light_cap_compiled`, settings.h).
 bool scene_light_cap(std::span<const FireDesc> fires, std::span<const FireDesc> lamps,

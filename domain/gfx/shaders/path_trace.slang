@@ -380,7 +380,7 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     surface.view = -direction;
     surface.roughness = roughness;
     surface.metallic = sampled.metallic;
-    surface.specular = material.specular;  // R234, as the resolve reads it
+    surface.specular = material_specular(material);  // R234, as the resolve reads it
 
     // Every ray from here leaves the surface by the resolve's own offset (`ray_offset`): the hit
     // is rebuilt off the mesh's grid by `fetch_triangle` exactly as a rasterized pixel is, so it

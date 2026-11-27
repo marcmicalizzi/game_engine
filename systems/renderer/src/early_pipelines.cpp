@@ -6,10 +6,12 @@
 #include <core/json/json.h>
 #include <core/platform/process.h>
 #include <core/time/time.h>
+#include <domain/assets/gltf.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/material_sampling.h>
 #include <domain/gfx/display.h>
 #include <domain/gfx/pipeline.h>
+#include <domain/gfx/visibility_resolve.h>
 #include <domain/materials/materials.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/early_pipelines.h>
@@ -17,6 +19,7 @@
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
 
+#include <cstring>
 #include <shaders/visibility_resolve.spv.h>
 #include <shaders/visibility_resolve_rt.spv.h>
 #include <shaders/visibility_resolve_rt_stochastic.spv.h>
@@ -133,6 +136,102 @@ void read_recipe(const JsonValue& value, const materials::Pack* pack, ResolveVar
   }
 }
 
+// The whole range or nothing.
+bool read_range(const std::string& path, u64 offset, void* dst, u64 bytes) {
+  u64 read = 0;
+  return io::read_file_range(path, offset, dst, bytes, read) == io::Status::Ok && read == bytes;
+}
+
+// R234: whether a reflectance packs to other than the stand-in's, by the record's own packer.
+bool packs_specular(f32 ior, f32 specular, Vec3 colour) {
+  gfx::ResolveMaterial m;
+  gfx::set_dielectric_specular(m, ior, specular, colour);
+  return m.specular.x != 0.0f || m.specular.y != 0.0f || m.specular.z != 0.0f ||
+         m.specular.w != 0.0f;
+}
+
+f32 json_number(const JsonValue* value, f32 fallback) {
+  f64 v = 0.0;
+  return value != nullptr && value->get_f64(v) ? static_cast<f32>(v) : fallback;
+}
+
+// A glTF's JSON: does a material state KHR_materials_ior or _specular at other than the defaults.
+bool gltf_declares_specular(std::string_view text) {
+  JsonValue root;
+  if (!parse_json(text, root).ok) return false;
+  const JsonValue* materials = root.find("materials");
+  if (materials == nullptr || !materials->is_array()) return false;
+  for (const JsonValue& material : materials->as_array()) {
+    const JsonValue* ext = material.is_object() ? material.find("extensions") : nullptr;
+    if (ext == nullptr || !ext->is_object()) continue;
+    const JsonValue* ior = ext->find("KHR_materials_ior");
+    const JsonValue* spec = ext->find("KHR_materials_specular");
+    if (ior == nullptr && spec == nullptr) continue;
+    const bool ior_obj = ior != nullptr && ior->is_object();
+    const bool spec_obj = spec != nullptr && spec->is_object();
+    Vec3 colour{1.0f, 1.0f, 1.0f};
+    const JsonValue* c = spec_obj ? spec->find("specularColorFactor") : nullptr;
+    if (c != nullptr && c->is_array() && c->as_array().size() == 3) {
+      colour = Vec3{json_number(&c->as_array()[0], 1.0f), json_number(&c->as_array()[1], 1.0f),
+                    json_number(&c->as_array()[2], 1.0f)};
+    }
+    if (packs_specular(ior_obj ? json_number(ior->find("ior"), 1.5f) : 1.5f,
+                       spec_obj ? json_number(spec->find("specularFactor"), 1.0f) : 1.0f, colour))
+      return true;
+  }
+  return false;
+}
+
+// A mesh file the scene names, read only as far as its materials' reflectances: a `.gltf`'s JSON,
+// a `.glb`'s JSON chunk, a container's section 55. Anything unreadable is read as declaring none:
+// a wrong guess is one more compile.
+bool mesh_declares_specular(const std::string& path) {
+  const auto ends = [&path](std::string_view suffix) {
+    return path.size() >= suffix.size() &&
+           path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0;
+  };
+  io::FileInfo info;
+  if (path.empty() || io::stat_file(path, info) != io::Status::Ok) return false;
+  if (ends(".gltf")) {
+    std::string text;
+    if (info.size > (u64{64} << 20) || io::read_file(path, text) != io::Status::Ok) return false;
+    return gltf_declares_specular(text);
+  }
+  if (ends(".glb")) {
+    u32 head[5] = {};  // magic, version, length; the first chunk's length and type
+    if (!read_range(path, 0, head, sizeof(head))) return false;
+    if (head[0] != 0x46546C67u || head[4] != 0x4E4F534Au || head[3] > (64u << 20)) return false;
+    std::string text(head[3], '\0');
+    if (!read_range(path, sizeof(head), text.data(), head[3])) return false;
+    return gltf_declares_specular(text);
+  }
+  if (!ends(".clusters")) return false;
+  geometry::ClusterFileHeader header;
+  if (!read_range(path, 0, &header, sizeof(header)) || std::memcmp(header.magic, "CLST", 4) != 0 ||
+      header.section_count > 4096)
+    return false;
+  Vector<geometry::ClusterFileSection> sections(header.section_count);
+  if (!read_range(path, sizeof(header), sections.data(),
+                  u64{header.section_count} * sizeof(geometry::ClusterFileSection)))
+    return false;
+  for (const geometry::ClusterFileSection& section : sections) {
+    if (section.kind != static_cast<u32>(geometry::ClusterSection::MaterialSpecular) ||
+        section.element_size != sizeof(geometry::ClusterFileMaterialSpecular) ||
+        section.element_count > 65536)
+      continue;
+    Vector<geometry::ClusterFileMaterialSpecular> records(static_cast<u32>(section.element_count));
+    if (!read_range(path, section.offset, records.data(),
+                    section.element_count * sizeof(geometry::ClusterFileMaterialSpecular)))
+      return false;
+    for (const geometry::ClusterFileMaterialSpecular& r : records) {
+      if ((r.extensions & (assets::k_ext_ior | assets::k_ext_specular)) != 0 &&
+          packs_specular(r.ior, r.specular, r.color))
+        return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 ResolveVariant predict_resolve_variant(const SceneDesc& desc, const ResolvedSettings& resolved,
@@ -174,9 +273,14 @@ ResolveVariant predict_resolve_variant(const SceneDesc& desc, const ResolvedSett
   bool tile_meshes = false;
   for (const StreamedPlacements& entry : desc.streamed)
     tile_meshes = tile_meshes || entry.tile_meshes;
-  if (GpuScene::wants_mesh_room(world_is_dynamic(desc.world, !desc.streamed.empty()),
-                                resolved.stream, tile_meshes))
-    v.foliage = true;
+  const bool room = GpuScene::wants_mesh_room(world_is_dynamic(desc.world, !desc.streamed.empty()),
+                                              resolved.stream, tile_meshes);
+  if (room) v.foliage = true;
+  // A declared reflectance (R234): the masked rule, the GPU scene's, then the files' own words.
+  for (const StreamedPlacements& entry : desc.streamed)
+    v.specular = v.specular || (room && entry.tile_meshes_specular);
+  for (const std::string& mesh : desc.meshes)
+    v.specular = v.specular || mesh_declares_specular(mesh);
   // What the file's recipes use: a role they name, and a rock recipe's own `material.sampling`.
   const std::string dir = desc.materials.empty()
                               ? materials::default_pack_dir(platform::executable_directory())
@@ -237,11 +341,12 @@ bool EarlyPipelines::start(const gfx::Device& device, const ResolveVariant& vari
   stats_.key.color_format = variant.color_format;
   stats_.key.foliage = variant.foliage;
   stats_.key.light_cap = variant.light_cap;
+  stats_.key.specular = variant.specular;
   stats_.key.layout = bindless_.capacity();
   stats_.started = true;
   ENGINE_LOG_INFO(log_renderer, "early pipeline started", log::field("shader", module_->name),
                   log::field("format", gfx::format_name(variant.color_format)),
-                  log::field("foliage", variant.foliage));
+                  log::field("foliage", variant.foliage), log::field("specular", variant.specular));
   // The worker owns nothing: it reads the module and the layout made above and writes the handle
   // under the lock. Creating a pipeline on another thread is the device's normal use (the
   // pipeline cache is not externally synchronized; pipeline_batch.h).
@@ -252,7 +357,8 @@ bool EarlyPipelines::start(const gfx::Device& device, const ResolveVariant& vari
     desc.fragment_entry = "fs_resolve";
     desc.layout = bindless_.pipeline_layout();
     desc.color_format = stats_.key.color_format;
-    desc.specialization = resolve_specialization(stats_.key.foliage, stats_.key.light_cap);
+    desc.specialization =
+        resolve_specialization(stats_.key.foliage, stats_.key.light_cap, stats_.key.specular);
     gfx::PipelineHandle made;
     std::string failure;
     const i64 begin = time::monotonic_ns();
@@ -292,6 +398,7 @@ bool EarlyPipelines::take(const ResolveKey& key, gfx::PipelineHandle& out) {
       if (key.color_format != stats_.key.color_format) add("format");
       if (key.foliage != stats_.key.foliage) add("foliage");
       if (key.light_cap != stats_.key.light_cap) add("light_cap");
+      if (key.specular != stats_.key.specular) add("specular");
       if (!(key.layout == stats_.key.layout)) add("layout");
       stats_.reason =
           "asked for " + key.module + ", started " + stats_.key.module + "; differs in " + differs;

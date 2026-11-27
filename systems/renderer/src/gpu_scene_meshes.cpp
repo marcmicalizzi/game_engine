@@ -300,6 +300,19 @@ bool GpuScene::admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* 
     // both sides as the load's own would.
     ENGINE_ASSERT((made[m].flags & gfx::k_material_foliage_mask) == 0 || has_foliage_materials_,
                   "a scene with a mesh room keeps its foliage lines");
+    // A declared reflectance follows the masked rule (R234): in a scene whose resolve was made
+    // without the declared lines, the record is zeroed here, so the pipeline, the record and the
+    // path tracer agree on the stand-in's 4 %, and said.
+    const Vec4 declared = made[m].specular;
+    if (!has_specular_materials_ &&
+        (declared.x != 0.0f || declared.y != 0.0f || declared.z != 0.0f || declared.w != 0.0f)) {
+      made[m].specular = Vec4{};
+      ENGINE_LOG_WARN(log_renderer, "a tile's material is drawn at the stand-in's reflectance",
+                      log::field("mesh", name), log::field("material", m),
+                      log::field("reason",
+                                 "no generator of the scene said its tiles hand one "
+                                 "(scene_gen::PlacementGeneratorDesc::tile_meshes_specular)"));
+    }
     // Stochastic sampling (R131) where the set asked for it and the scene's resolve is the
     // stochastic one, which is chosen from the load's materials when the scene is made.
     const bool stochastic =

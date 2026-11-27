@@ -1452,6 +1452,7 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
       streamed.where = entry.where;
       streamed.tile_meshes = generator->tile_meshes;
       streamed.tile_meshes_masked = generator->tile_meshes && generator->tile_meshes_masked;
+      streamed.tile_meshes_specular = generator->tile_meshes && generator->tile_meshes_specular;
       streamed.ddc = root;
       std::string clash;
       streamed.meshes = append_placement_meshes(
@@ -3987,9 +3988,11 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.streamed = std::move(resolved.streamed);
   out.tile_meshes = false;
   out.tile_meshes_masked = false;
+  out.tile_meshes_specular = false;
   for (const StreamedPlacements& entry : out.streamed) {
     out.tile_meshes = out.tile_meshes || entry.tile_meshes;
     out.tile_meshes_masked = out.tile_meshes_masked || entry.tile_meshes_masked;
+    out.tile_meshes_specular = out.tile_meshes_specular || entry.tile_meshes_specular;
   }
   out.dynamic = world_is_dynamic(resolved.world, !out.streamed.empty());
   out.sky = resolved.sky;

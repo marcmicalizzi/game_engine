@@ -422,6 +422,7 @@ struct StreamedPlacements {
   // The generator's `tile_meshes`: its tiles hand meshes, so the scene makes room for them.
   bool tile_meshes = false;
   bool tile_meshes_masked = false;  // and they may be alpha-tested (`tile_meshes_masked`)
+  bool tile_meshes_specular = false;  // or declare a reflectance (`tile_meshes_specular`, R234)
   // The derived-data root the reader opened the entry with (`scene_gen::host_derived_root`, T119):
   // the host's, else the scene's own. Every consumer that opens the entry again (the world's
   // placements consumer, the collision) hands this one, so its plans and recipes are the whole
@@ -1136,6 +1137,9 @@ struct SceneData {
   // (`scene_gen::PlacementGeneratorDesc::tile_meshes_masked`): the scene draws through the masked
   // pipelines from its first frame, since they are chosen when it is made (R147).
   bool tile_meshes_masked = false;
+  // ... or declare their own reflectance (`tile_meshes_specular`, R234): the resolve keeps its
+  // declared lines from the first frame, as the masked pipelines are kept.
+  bool tile_meshes_specular = false;
   // A streamed world's own instances (`AuthoredStreaming`): what was streamed and what kept, and
   // the most pairs one tile of them holds in its innermost form — the least room a tail must have,
   // which `GpuScene::create` accounts with the prefix and the terrain rings' slots before anything

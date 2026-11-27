@@ -155,7 +155,7 @@ float3 water_refraction(ResolveParams* params, SceneGeometry geo, WaterOptics o,
   surface.view = -ray.Direction;
   surface.roughness = roughness;
   surface.metallic = metallic;
-  surface.specular = material.specular;  // R234, as the resolve reads it
+  surface.specular = material_specular(material);  // R234, as the resolve reads it
 
   // The light the water lets down to it (above).
   float3 light = emissive;

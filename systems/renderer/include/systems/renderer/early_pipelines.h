@@ -51,6 +51,7 @@ struct ResolveVariant {
   bool stochastic = false;  // a stochastic mesh material (`GpuScene::has_stochastic_materials`)
   bool foliage = false;     // a foliage material (`GpuScene::has_foliage_materials`)
   bool light_cap = false;   // the cap on the shadow rays compiled in (R213, `scene_light_cap`)
+  bool specular = false;    // a declared reflectance (R234, `GpuScene::has_specular_materials`)
   gfx::Format color_format = gfx::Format::R8G8B8A8Unorm;
   bool operator==(const ResolveVariant&) const noexcept = default;
 };
@@ -65,7 +66,10 @@ struct ResolveVariant {
 //     recipe names, or — the one guess — a pack with a stochastic role where the file generates
 //     meshes, since a generator that names no role takes the pack's defaults;
 //   - light_cap: the file's fires, lamps and props (`shadow_light_cap_compiled`), which the load
-//     keeps as they are.
+//     keeps as they are;
+//   - specular: a mesh file whose materials pack a reflectance other than the stand-in's (a glTF's
+//     KHR_materials_ior or _specular, a container's section 55), or a generator's
+//     `tile_meshes_specular` under the mesh room (R234).
 // What only the load can say (renderer.md, "The resolve compiles from the scene file", lists the
 // cases) is a wrong guess at worst, and a wrong guess is one more compile, never a wrong pipeline.
 ResolveVariant predict_resolve_variant(const SceneDesc& desc, const ResolvedSettings& resolved,
@@ -78,6 +82,7 @@ struct ResolveKey {
   gfx::Format color_format = gfx::Format::R8G8B8A8Unorm;
   bool foliage = false;
   bool light_cap = false;  // R213's specialization, which the file says exactly
+  bool specular = false;   // R234's
   // The bindless set's capacity as the device clamped it: the pipeline layout is a function of it,
   // so a renderer whose scene's set has another shape never takes a pipeline made for this one.
   gfx::BindlessConfig layout;

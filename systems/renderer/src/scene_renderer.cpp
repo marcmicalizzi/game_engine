@@ -361,10 +361,11 @@ const char* resolve_module_name(bool shadows, bool water, bool terrain, bool sto
 }
 
 // R177: one SPIR-V, the foliage lines folded out by the driver where the scene has none.
-gfx::Specialization resolve_specialization(bool foliage, bool light_cap) noexcept {
+gfx::Specialization resolve_specialization(bool foliage, bool light_cap, bool specular) noexcept {
   gfx::Specialization spec;
   if (!foliage) spec.set(gfx::k_spec_scene_foliage, 0u);
   if (!light_cap) spec.set(gfx::k_spec_scene_light_cap, 0u);  // R213
+  if (!specular) spec.set(gfx::k_spec_scene_specular, 0u);    // R234
   return spec;
 }
 bool scene_light_cap(std::span<const FireDesc> fires, std::span<const FireDesc> lamps,
@@ -1098,7 +1099,8 @@ bool SceneRenderer::create_frame_pass_pipelines(std::string* error) {
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
   resolve_desc.color_format = k_frame_pass_format;
-  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials(), light_cap_);
+  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials(), light_cap_,
+                                                       scene_->has_specular_materials());
   gfx::GraphicsPipelineDesc encode_desc;
   encode_desc.vertex = encode->module;
   encode_desc.vertex_entry = "vs_encode";
@@ -1582,7 +1584,8 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     if (!gfx::create_compute_pipeline(
             device, half->module, "half_sun_main",
             std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1), sizeof(u64),
-            resolve_specialization(scene_->has_foliage_materials(), light_cap_),
+            resolve_specialization(scene_->has_foliage_materials(), light_cap_,
+                                   scene_->has_specular_materials()),
             pipelines_.half_sun, error)) {
       return false;
     }
@@ -1601,7 +1604,8 @@ bool SceneRenderer::create_pipelines(std::string* error) {
             device, gi->module, "gi_sample_main",
             std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1),
             sizeof(gfx::GiStepPush),
-            resolve_specialization(scene_->has_foliage_materials(), light_cap_),
+            resolve_specialization(scene_->has_foliage_materials(), light_cap_,
+                                   scene_->has_specular_materials()),
             pipelines_.gi_sample, error) ||
         !gfx::create_compute_pipeline(
             device, gi->module, "gi_fold_main",
@@ -1765,7 +1769,8 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   resolve_desc.fragment_entry = "fs_resolve";
   resolve_desc.layout = bindless.pipeline_layout();
   resolve_desc.color_format = desc_.color_format;
-  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials(), light_cap_);
+  resolve_desc.specialization = resolve_specialization(scene_->has_foliage_materials(), light_cap_,
+                                                       scene_->has_specular_materials());
   // The one draw's pipeline, unless the renderer is made to draw by class (R151): the same module
   // twice in one batch is the driver compiling it twice. Started on a worker when the scene file
   // was read (early_pipelines.h; R205): taken after the batch, so the rest compiles beside it.
@@ -1774,7 +1779,8 @@ bool SceneRenderer::create_pipelines(std::string* error) {
                         resolved_.direct;
   const ResolveKey key{resolve->name,      resolve->hash,
                        desc_.color_format, scene_->has_foliage_materials(),
-                       light_cap_,         bindless.capacity()};
+                       light_cap_,         scene_->has_specular_materials(),
+                       bindless.capacity()};
   const bool early = one_draw && desc_.early != nullptr && desc_.early->has(key);
   // Asked only where a compile was started and not taken: another key is then a wrong guess, and
   // is counted as one (a re-create after the take, or nothing started, is not).

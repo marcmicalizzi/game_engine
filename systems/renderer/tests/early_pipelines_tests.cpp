@@ -12,6 +12,7 @@
 #include <core/math/world.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/pipeline_batch.h>
+#include <foundation/io/vfs.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/early_pipelines.h>
@@ -170,6 +171,8 @@ TEST_CASE("renderer: the resolve a scene file names compiles once, early, and is
   CHECK(variant.terrain == scene.has_terrain_materials());
   CHECK(variant.stochastic == scene.has_stochastic_materials());
   CHECK(variant.foliage == scene.has_foliage_materials());
+  CHECK(variant.specular == scene.has_specular_materials());
+  CHECK_FALSE(scene.has_specular_materials());  // R234: the hills declare no reflectance
   // One shape of the bindless set (M1): the early layout's capacity is the scene's, and it is in
   // the key, so a set of another shape is another key and never takes this pipeline.
   CHECK(stats.key.layout == scene.bindless().capacity());
@@ -296,4 +299,32 @@ TEST_CASE("renderer: the resolve's prediction reads the file by the renderer's o
   asked.mesh_info[0].sampling.clear();
   asked.mesh_info[0].sampling.push_back({-2, true});
   CHECK_FALSE(predict(asked).stochastic);
+  // A declared reflectance (R234): a generator's `tile_meshes_specular` under the mesh room, as
+  // the GPU scene reads it, and a mesh file whose material packs one — by the record's packer, so
+  // the defaults stated are no declaration.
+  SceneDesc told = world;
+  told.streamed.back().tile_meshes = true;
+  told.streamed.back().tile_meshes_specular = true;
+  CHECK(predict(told).specular);
+  CHECK_FALSE(predict(world).specular);
+  resolved.stream = true;
+  CHECK_FALSE(predict(told).specular);
+  resolved.stream = false;
+  const auto gltf = [&](const char* name, const char* extensions) {
+    const std::string path = tmp.file(name);
+    const std::string text = std::string(R"({"asset": {"version": "2.0"}, "materials": [{}, )") +
+                             R"({"extensions": )" + extensions + "}]}";
+    REQUIRE(io::write_file(path, text) == io::Status::Ok);
+    SceneDesc desc = base;
+    desc.meshes.push_back(path);
+    return predict(desc).specular;
+  };
+  CHECK(gltf("ior.gltf", R"({"KHR_materials_ior": {"ior": 2.0}})"));
+  CHECK(gltf("specular.gltf", R"({"KHR_materials_specular": {"specularFactor": 0.5}})"));
+  CHECK_FALSE(gltf("defaults.gltf", R"({"KHR_materials_ior": {"ior": 1.5}, )"
+                                    R"("KHR_materials_specular": {}})"));
+  CHECK_FALSE(gltf("none.gltf", R"({})"));
+  SceneDesc missing = base;
+  missing.meshes.push_back(tmp.file("absent.gltf"));
+  CHECK_FALSE(predict(missing).specular);
 }

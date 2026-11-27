@@ -192,7 +192,7 @@ float3 shade_hit(ResolveParams* params, RayDesc ray, SceneHit hit, float footpri
   surface.view = -ray.Direction;
   surface.roughness = roughness;
   surface.metallic = metallic;
-  surface.specular = material.specular;  // R234, as the resolve reads it
+  surface.specular = material_specular(material);  // R234, as the resolve reads it
   SkyParams* sky = (SkyParams*)params->sky_params;
   const bool has_sky = params->sky_params != 0;
   float3 light = emissive;

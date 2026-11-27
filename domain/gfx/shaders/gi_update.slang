@@ -192,7 +192,7 @@ float3 gi_bounce(ResolveParams* params, float3 origin, float3 dir) {
   surface.view = -dir;
   surface.roughness = sampled.roughness;
   surface.metallic = sampled.metallic;
-  surface.specular = material.specular;  // R234, as the resolve reads it
+  surface.specular = material_specular(material);  // R234, as the resolve reads it
   float3 light = sampled.emissive;
   const float3 sun_dir = params->sun.xyz;
   // **A foliage hit is lit as the resolve lights it** (R177; renderer.md, "Foliage lit from both

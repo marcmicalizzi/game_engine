@@ -314,7 +314,9 @@ TEST_CASE("dielectric specular: the resolve draws the reference's sphere") {
   REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * k_blocks,
                              k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
                              &error));
-  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * k_blocks,
+  // Each block twice: by the pipeline unset, then by one made with `k_spec_scene_specular` 0.
+  constexpr u32 k_targets = 2 * k_blocks;
+  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * k_targets,
                              gfx::BufferUsage::TransferDst, true, host_color, &error));
 
   gfx::FrameContext frames;
@@ -338,6 +340,12 @@ TEST_CASE("dielectric specular: the resolve draws the reference's sphere") {
   resolve_desc.color_format = gfx::Format::R8G8B8A8Unorm;
   gfx::PipelineHandle resolve_pipeline = {};
   REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, resolve_desc, resolve_pipeline, &error),
+                  error);
+  // What a scene that declares no reflectance is drawn with (R234): the same SPIR-V, the record's
+  // read and the declared lines folded out by the driver.
+  gfx::PipelineHandle folded_pipeline = {};
+  resolve_desc.specialization.set(gfx::k_spec_scene_specular, 0u);
+  REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, resolve_desc, folded_pipeline, &error),
                   error);
 
   gfx::ClusterDrawParams draw{};
@@ -377,8 +385,8 @@ TEST_CASE("dielectric specular: the resolve draws the reference's sphere") {
   gfx::RenderGraph graph(device);
   const gfx::RgBuffer rg_vis = graph.import_buffer("vis", vis);
   const gfx::RgBuffer rg_host = graph.import_buffer("host", host_color);
-  gfx::RgImage targets[k_blocks];
-  for (u32 b = 0; b < k_blocks; ++b) {
+  gfx::RgImage targets[k_targets];
+  for (u32 b = 0; b < k_targets; ++b) {
     targets[b] = graph.create_image(
         "resolved", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
                      gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
@@ -396,7 +404,7 @@ TEST_CASE("dielectric specular: the resolve draws the reference's sphere") {
         p.write(rg_vis, gfx::Access::FragmentReadWrite);
       },
       [&](gfx::CommandList cb, gfx::RenderGraph&) { raster.draw(cb, bindless, draw, clusters); });
-  for (u32 b = 0; b < k_blocks; ++b) {
+  for (u32 b = 0; b < k_targets; ++b) {
     graph.add_pass(
         "resolve", gfx::PassKind::Raster,
         [&, b](gfx::PassBuilder& p) {
@@ -405,23 +413,24 @@ TEST_CASE("dielectric specular: the resolve draws the reference's sphere") {
           p.read(rg_vis, gfx::Access::FragmentRead);
         },
         [&, b](gfx::CommandList cb, gfx::RenderGraph&) {
-          cb.bind_pipeline(gfx::BindPoint::Graphics, resolve_pipeline);
+          cb.bind_pipeline(gfx::BindPoint::Graphics,
+                           b < k_blocks ? resolve_pipeline : folded_pipeline);
           bindless.bind(cb, gfx::BindPoint::Graphics);
           cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
-                            &block_address[b]);
+                            &block_address[b % k_blocks]);
           cb.draw(3, 1, 0, 0);
         });
   }
   graph.add_pass(
       "readback", gfx::PassKind::Transfer,
       [&](gfx::PassBuilder& p) {
-        for (u32 b = 0; b < k_blocks; ++b)
+        for (u32 b = 0; b < k_targets; ++b)
           p.read(targets[b], gfx::Access::TransferRead);
         p.read(rg_vis, gfx::Access::TransferRead);
         p.write(rg_host, gfx::Access::TransferWrite);
       },
       [&](gfx::CommandList cb, gfx::RenderGraph& g) {
-        for (u32 b = 0; b < k_blocks; ++b) {
+        for (u32 b = 0; b < k_targets; ++b) {
           VkBufferImageCopy region{};
           region.bufferOffset = u64{k_size} * k_size * 4 * b;
           region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -515,6 +524,32 @@ TEST_CASE("dielectric specular: the resolve draws the reference's sphere") {
     }
   }
   CHECK(differ_defaults == 0u);
+  // R234's variant: with the constant 0 the stand-in is the unset pipeline's bytes, and so is every
+  // declared dielectric over the same base — the record's reflectance is read through the constant
+  // alone (`material_specular`), so a scene whose records are zero loses nothing by it.
+  u32 folded_checked = 0;
+  u32 differ_folded = 0;
+  for (u32 b = 0; b < k_blocks; ++b) {
+    if (b < k_count && k_declared[b].metallic != 0.0f) continue;
+    ++folded_checked;
+    for (u32 y = 0; y < k_size; ++y) {
+      for (u32 x = 0; x < k_size; ++x) {
+        if (std::memcmp(pixel(k_blocks + b, x, y), pixel(k_count, x, y), 4) != 0) ++differ_folded;
+      }
+    }
+  }
+  MESSAGE("folded variant: " << folded_checked << " materials against the stand-in, "
+                             << differ_folded << " pixels differ");
+  CHECK(folded_checked == k_count);
+  CHECK(differ_folded == 0u);
+  // And the constant is what made them alike: unset, the 2.0 index is not the stand-in.
+  u32 differ_declared = 0;
+  for (u32 y = 0; y < k_size; ++y) {
+    for (u32 x = 0; x < k_size; ++x) {
+      if (std::memcmp(pixel(2, x, y), pixel(k_count, x, y), 4) != 0) ++differ_declared;
+    }
+  }
+  CHECK(differ_declared > 1000u);
   // A higher index reflects more: 1.33 under 1.5 under 2.0 at the same place on the sphere.
   CHECK(centre_luma[0] < centre_luma[1]);
   CHECK(centre_luma[1] < centre_luma[2]);
@@ -524,6 +559,7 @@ TEST_CASE("dielectric specular: the resolve draws the reference's sphere") {
                      << " materials, worst " << worst << " of 255 (tolerance 2)");
 
   graph.reset();
+  gfx::destroy_pipeline(device, folded_pipeline);
   gfx::destroy_pipeline(device, resolve_pipeline);
   raster.destroy(device);
   gfx::destroy_shader_module(device, resolve_module);

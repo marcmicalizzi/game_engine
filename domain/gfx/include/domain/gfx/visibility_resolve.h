@@ -520,6 +520,12 @@ inline constexpr u32 k_spec_scene_foliage = 177u;
 // and its ranking's registers then drop out at the driver's compile, and the resolve is R87's.
 // Unset, it is 1.
 inline constexpr u32 k_spec_scene_light_cap = 213u;
+// **A scene with no declared reflectance pays nothing for it** (R234; gfx.md, "A dielectric's own
+// reflectance"): the specialization constant material.slang's `k_scene_specular` is, which a
+// pipeline sets to 0 where no material of the scene has a non-zero `specular` below. Every reader
+// takes the field through `material_specular`, so the read of the record's last 16 bytes and every
+// declared branch of brdf.slang drop out at the driver's compile. Unset, it is 1.
+inline constexpr u32 k_spec_scene_specular = 234u;
 // **The backlit sun as a quality tier** (R177; renderer.md, "Foliage lit from both sides", "The
 // backlit sun's tier"): set, a foliage pixel whose sun is behind its sheet asks no shadow ray and
 // takes the sun at the visibility the frame's world-space cache measured there (what the scene let
