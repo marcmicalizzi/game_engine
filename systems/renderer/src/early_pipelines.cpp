@@ -84,32 +84,6 @@ std::string resolve_manifest_path(const std::string& named) {
 
 namespace {
 
-// A container's own word on its materials (T150): its material count and section 33's flags,
-// read from its header, its section table and that one section (`geometry::ClusterFileReader`),
-// with nothing decoded; a container without the section is all plain. False when the file cannot
-// be opened as a container, which the load reports.
-bool peek_material_flags(const std::string& path, Vector<u32>& flags) {
-  geometry::ClusterFileReader reader;
-  if (!reader.open(path)) return false;
-  const u64 materials = reader.element_count(geometry::ClusterSection::Materials);
-  flags.resize(static_cast<u32>(materials), 0u);
-  u64 offset = 0;
-  u64 bytes = 0;
-  if (materials == 0 ||
-      !reader.range(geometry::ClusterSection::MaterialSampling,
-                    static_cast<u32>(sizeof(geometry::ClusterFileMaterialSampling)), 0, materials,
-                    offset, bytes))
-    return true;
-  Vector<geometry::ClusterFileMaterialSampling> records;
-  records.resize(static_cast<u32>(materials));
-  u64 read = 0;
-  if (reader.file().read_at(offset, records.data(), bytes, read) != io::Status::Ok || read != bytes)
-    return true;
-  for (u32 k = 0; k < records.size(); ++k)
-    flags[k] = records[k].flags;
-  return true;
-}
-
 bool foliage_optics(const materials::MaterialSet& set) noexcept {
   return set.transmission > 0.0f || set.normal_spread > 0.0f;
 }
@@ -158,13 +132,47 @@ f32 json_number(const JsonValue* value, f32 fallback) {
   return value != nullptr && value->get_f64(v) ? static_cast<f32>(v) : fallback;
 }
 
-// A glTF's JSON: does a material state KHR_materials_ior or _specular at other than the defaults.
-bool gltf_declares_specular(std::string_view text) {
+// What one file says of its own materials, before the scene's word is applied over it.
+struct FileFacts {
+  bool specular = false;
+  bool counted = false;  // its own material count was learned: `flags` holds one word a material
+  Vector<u32> flags;     // `geometry::k_material_sampling_stochastic` where a material asks (T150)
+};
+
+bool equal_ignoring_case(std::string_view a, std::string_view b) noexcept {
+  if (a.size() != b.size()) return false;
+  for (usize i = 0; i < a.size(); ++i) {
+    const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c + 32) : c; };
+    if (lower(a[i]) != lower(b[i])) return false;
+  }
+  return true;
+}
+
+// A glTF material's `extras.sampling` by the import's rule (gltf.cpp, `sampling_word`): the string
+// "stochastic" in any case asks; anything else, a value that is not a string included, is no
+// request.
+bool asks_stochastic(const JsonValue& material) {
+  const JsonValue* extras = material.is_object() ? material.find("extras") : nullptr;
+  const JsonValue* sampling =
+      extras != nullptr && extras->is_object() ? extras->find("sampling") : nullptr;
+  return sampling != nullptr && sampling->is_string() &&
+         equal_ignoring_case(sampling->as_string(), "stochastic");
+}
+
+// A glTF's JSON, parsed once for both facts: does a material state KHR_materials_ior or _specular
+// at other than the defaults, and which materials ask for stochastic sampling.
+void read_gltf_json(std::string_view text, FileFacts& out) {
   JsonValue root;
-  if (!parse_json(text, root).ok) return false;
+  if (!parse_json(text, root).ok) return;
+  out.counted = true;  // a parsed file with no `materials` array has none of its own
   const JsonValue* materials = root.find("materials");
-  if (materials == nullptr || !materials->is_array()) return false;
+  if (materials == nullptr || !materials->is_array()) return;
+  out.flags.resize(static_cast<u32>(materials->as_array().size()), 0u);
+  u32 index = 0;
   for (const JsonValue& material : materials->as_array()) {
+    if (asks_stochastic(material)) out.flags[index] = geometry::k_material_sampling_stochastic;
+    ++index;
+    if (out.specular) continue;
     const JsonValue* ext = material.is_object() ? material.find("extensions") : nullptr;
     if (ext == nullptr || !ext->is_object()) continue;
     const JsonValue* ior = ext->find("KHR_materials_ior");
@@ -180,9 +188,8 @@ bool gltf_declares_specular(std::string_view text) {
     }
     if (packs_specular(ior_obj ? json_number(ior->find("ior"), 1.5f) : 1.5f,
                        spec_obj ? json_number(spec->find("specularFactor"), 1.0f) : 1.0f, colour))
-      return true;
+      out.specular = true;
   }
-  return false;
 }
 
 enum class MeshFileKind : u8 { none, gltf, glb, clusters };
@@ -208,18 +215,20 @@ MeshFileKind mesh_file_kind(std::string_view path) noexcept {
 std::atomic<u64> g_mesh_declaration_reads{0};
 
 // A `.glb`'s JSON chunk, every length checked against the file's size before anything is allocated.
-void read_glb(const std::string& path, u64 size, MeshDeclarations& out) {
+void read_glb(const std::string& path, u64 size, FileFacts& out) {
   u32 head[5] = {};  // magic, version, length; the first chunk's length and type
   if (size < sizeof(head) || !read_range(path, 0, head, sizeof(head))) return;
   if (head[0] != 0x46546C67u || head[1] != 2u || head[4] != 0x4E4F534Au) return;
   if (head[2] > size || u64{head[3]} > size - sizeof(head) || head[3] > (64u << 20)) return;
   std::string text(head[3], '\0');
   if (!read_range(path, sizeof(head), text.data(), head[3])) return;
-  out.specular = out.specular || gltf_declares_specular(text);
+  read_gltf_json(text, out);
 }
 
-// A container's sections, trusted only at this build's version and only within the file's size.
-void read_clusters(const std::string& path, u64 size, MeshDeclarations& out) {
+// A container's sections, trusted only at this build's version and only within the file's size:
+// section 55's reflectance (R234), and the material count with section 33's flags (T150), as
+// `geometry::ClusterFileReader` would range them; a container without section 33 is all plain.
+void read_clusters(const std::string& path, u64 size, FileFacts& out) {
   geometry::ClusterFileHeader header;
   if (size < sizeof(header) || !read_range(path, 0, &header, sizeof(header)) ||
       std::memcmp(header.magic, "CLST", 4) != 0 ||
@@ -230,8 +239,19 @@ void read_clusters(const std::string& path, u64 size, MeshDeclarations& out) {
   if (!read_range(path, sizeof(header), sections.data(),
                   u64{header.section_count} * sizeof(geometry::ClusterFileSection)))
     return;
+  const geometry::ClusterFileSection* sampling = nullptr;
+  u64 materials = 0;
   for (const geometry::ClusterFileSection& section : sections) {
-    if (section.kind != static_cast<u32>(geometry::ClusterSection::MaterialSpecular) ||
+    if (section.kind == static_cast<u32>(geometry::ClusterSection::Materials)) {
+      materials = section.element_count;
+      continue;
+    }
+    if (section.kind == static_cast<u32>(geometry::ClusterSection::MaterialSampling)) {
+      sampling = &section;
+      continue;
+    }
+    if (out.specular ||
+        section.kind != static_cast<u32>(geometry::ClusterSection::MaterialSpecular) ||
         section.element_size != sizeof(geometry::ClusterFileMaterialSpecular) ||
         section.element_count > 65536)
       continue;
@@ -243,10 +263,58 @@ void read_clusters(const std::string& path, u64 size, MeshDeclarations& out) {
       if ((r.extensions & (assets::k_ext_ior | assets::k_ext_specular)) != 0 &&
           packs_specular(r.ior, r.specular, r.color)) {
         out.specular = true;
-        return;
+        break;
       }
     }
   }
+  if (materials > 65536) return;  // past what any record section is trusted with: not counted
+  out.counted = true;
+  out.flags.resize(static_cast<u32>(materials), 0u);
+  if (materials == 0 || sampling == nullptr ||
+      sampling->element_size != sizeof(geometry::ClusterFileMaterialSampling) ||
+      sampling->element_count < materials)
+    return;
+  const u64 bytes = materials * sizeof(geometry::ClusterFileMaterialSampling);
+  if (sampling->offset > size || bytes > size - sampling->offset) return;
+  Vector<geometry::ClusterFileMaterialSampling> records(static_cast<u32>(materials));
+  if (!read_range(path, sampling->offset, records.data(), bytes)) return;
+  for (u32 k = 0; k < records.size(); ++k)
+    out.flags[k] = records[k].flags;
+}
+
+// The scene's word over a file whose material count is not known: plain materials as many as its
+// entries name plus one no entry names (T150's stand-in), so no entry is refused for want of one.
+void plain_stand_in(const Vector<SceneMeshInfo::MaterialSampling>& sampling, Vector<u32>& flags) {
+  if (sampling.empty()) return;
+  i32 highest = -1;
+  for (const SceneMeshInfo::MaterialSampling& entry : sampling)
+    highest = entry.material > highest ? entry.material : highest;
+  flags.assign(static_cast<u32>(highest + 2), 0u);
+}
+
+// The load's rule over one mesh's materials (`apply_mesh_sampling`): any stochastic at the end.
+bool samples_stochastic(const Vector<SceneMeshInfo::MaterialSampling>& sampling,
+                        Vector<u32>& flags) {
+  std::string ignored;
+  if (!sampling.empty() && !apply_mesh_sampling(sampling, flags, ignored)) return false;  // refused
+  for (const u32 f : flags)
+    if ((f & geometry::k_material_sampling_stochastic) != 0) return true;
+  return false;
+}
+
+// Whether the worker reads `mesh` (`mesh_files_to_read`): by suffix, and never a recipe's path
+// (`handed`, sorted).
+bool read_on_worker(const std::string& mesh, const Vector<std::string>& handed) {
+  return mesh_file_kind(mesh) != MeshFileKind::none &&
+         !std::binary_search(handed.begin(), handed.end(), mesh);
+}
+
+Vector<std::string> handed_paths(const SceneDesc& desc) {
+  Vector<std::string> handed;  // the recipes' paths, sorted: never read from the disk
+  for (const MeshRecipe& recipe : desc.recipes)
+    handed.push_back(recipe.path);
+  std::sort(handed.begin(), handed.end());
+  return handed;
 }
 
 }  // namespace
@@ -255,36 +323,41 @@ u64 mesh_declaration_reads() noexcept {
   return g_mesh_declaration_reads.load(std::memory_order_relaxed);
 }
 
-bool read_mesh_declarations(const std::string& path, MeshDeclarations& out) {
+bool read_mesh_declarations(const std::string& path, MeshDeclarations& out,
+                            const Vector<SceneMeshInfo::MaterialSampling>& sampling) {
   const MeshFileKind kind = mesh_file_kind(path);
   if (kind == MeshFileKind::none) return false;
   io::FileInfo info;
   if (io::stat_file(path, info) != io::Status::Ok) return false;
   g_mesh_declaration_reads.fetch_add(1, std::memory_order_relaxed);
+  FileFacts facts;
   switch (kind) {
     case MeshFileKind::gltf: {
       std::string text;
       if (info.size <= (u64{64} << 20) && io::read_file(path, text) == io::Status::Ok)
-        out.specular = out.specular || gltf_declares_specular(text);
+        read_gltf_json(text, facts);
       break;
     }
-    case MeshFileKind::glb: read_glb(path, info.size, out); break;
-    case MeshFileKind::clusters: read_clusters(path, info.size, out); break;
+    case MeshFileKind::glb: read_glb(path, info.size, facts); break;
+    case MeshFileKind::clusters: read_clusters(path, info.size, facts); break;
     case MeshFileKind::none: break;
   }
+  out.specular = out.specular || facts.specular;
+  // The file's own ask, then the scene's word over it in order (T150): the load's one rule.
+  if (!facts.counted) plain_stand_in(sampling, facts.flags);
+  out.stochastic = out.stochastic || samples_stochastic(sampling, facts.flags);
   return true;
 }
 
-Vector<std::string> mesh_files_to_read(const SceneDesc& desc) {
-  Vector<std::string> handed;  // the recipes' paths, sorted: never read from the disk
-  for (const MeshRecipe& recipe : desc.recipes)
-    handed.push_back(recipe.path);
-  std::sort(handed.begin(), handed.end());
-  Vector<std::string> out;
-  for (const std::string& mesh : desc.meshes) {
-    if (mesh_file_kind(mesh) == MeshFileKind::none) continue;
-    if (std::binary_search(handed.begin(), handed.end(), mesh)) continue;
-    out.push_back(mesh);
+Vector<MeshFileToRead> mesh_files_to_read(const SceneDesc& desc) {
+  const Vector<std::string> handed = handed_paths(desc);
+  Vector<MeshFileToRead> out;
+  for (u32 m = 0; m < desc.meshes.size(); ++m) {
+    if (!read_on_worker(desc.meshes[m], handed)) continue;
+    MeshFileToRead file;
+    file.path = desc.meshes[m];
+    if (m < desc.mesh_info.size()) file.sampling = desc.mesh_info[m].sampling;
+    out.push_back(std::move(file));
   }
   return out;
 }
@@ -297,29 +370,17 @@ ResolveVariant predict_resolve_variant(const SceneDesc& desc, const ResolvedSett
   for (const SceneMeshInfo& info : desc.mesh_info) {
     if (info.water.has_value()) v.water = true;
   }
-  // **A mesh's materials as the load will find them** (T150; renderer.md, "Stochastic mesh
-  // materials"): a container's own section 33, peeked, and then the scene's `Mesh.sampling` by the
-  // load's one rule, in order. A glTF's `extras.sampling` is not read here (that is its import),
-  // so a glTF stands as plain materials as many as its entries name plus one no entry names.
-  for (u32 m = 0; m < desc.meshes.size(); ++m) {
-    const Vector<SceneMeshInfo::MaterialSampling>* asked =
-        m < desc.mesh_info.size() && !desc.mesh_info[m].sampling.empty()
-            ? &desc.mesh_info[m].sampling
-            : nullptr;
+  // **The scene's `Mesh.sampling` over a mesh no file of which is read** (T150; renderer.md,
+  // "Stochastic mesh materials"): plain materials as many as its entries name plus one, by the
+  // load's one rule, in order. A mesh file's own word (a container's section 33, a glTF's
+  // `extras.sampling`) and the scene's over it are the early compile's worker's to read
+  // (`read_mesh_declarations`), so nothing here opens a file.
+  const Vector<std::string> handed = handed_paths(desc);
+  for (u32 m = 0; m < desc.meshes.size() && m < desc.mesh_info.size(); ++m) {
+    if (desc.mesh_info[m].sampling.empty() || read_on_worker(desc.meshes[m], handed)) continue;
     Vector<u32> flags;
-    const bool container = io::extension(desc.meshes[m]) == ".clusters";
-    if (container) {
-      if (!peek_material_flags(desc.meshes[m], flags)) continue;  // the load will say why
-    } else if (asked != nullptr) {
-      i32 highest = -1;
-      for (const SceneMeshInfo::MaterialSampling& entry : *asked)
-        highest = entry.material > highest ? entry.material : highest;
-      flags.resize(static_cast<u32>(highest + 2), 0u);
-    }
-    std::string ignored;
-    if (asked != nullptr && !apply_mesh_sampling(*asked, flags, ignored)) continue;  // refused
-    for (const u32 f : flags)
-      if ((f & geometry::k_material_sampling_stochastic) != 0) v.stochastic = true;
+    plain_stand_in(desc.mesh_info[m].sampling, flags);
+    if (samples_stochastic(desc.mesh_info[m].sampling, flags)) v.stochastic = true;
   }
   v.terrain = desc.terrain.enabled && desc.terrain.materials.has_value();
   // The mesh room keeps the foliage lines whatever was declared (gpu_scene.cpp, R177's review
@@ -370,7 +431,7 @@ void EarlyPipelines::wait_for_reads(std::unique_lock<std::mutex>& lock) const {
 
 bool EarlyPipelines::start(const gfx::Device& device, const ResolveVariant& variant,
                            const std::string& shader_manifest, std::string* error,
-                           Vector<std::string> mesh_files) {
+                           Vector<MeshFileToRead> mesh_files) {
   const auto fail = [&](std::string sentence) {
     stats_.reason = sentence;
     if (error != nullptr) *error = std::move(sentence);
@@ -388,15 +449,11 @@ bool EarlyPipelines::start(const gfx::Device& device, const ResolveVariant& vari
   add_resolve_modules(shaders_);
   const std::string manifest = resolve_manifest_path(shader_manifest);
   if (!manifest.empty() && !shaders_.load_manifest(manifest, &why)) return fail(why);
-  module_ = shaders_.get(
-      resolve_module_name(variant.shadows, variant.water, variant.terrain, variant.stochastic),
-      &why);
-  if (module_ == nullptr) return fail(why);
   // The scene's own shape (`GpuScene::bindless_config`), and the key carries what the device
   // clamped it to, so the pipeline is only ever taken by a renderer whose set matches it.
   if (!bindless_.create(device, GpuScene::bindless_config(), &why)) return fail(why);
-  stats_.key.module = module_->name;
-  stats_.key.hash = module_->hash;
+  // The module is the worker's to take, after its reads: a mesh file's stochastic request (T150)
+  // picks it, and stochastic sampling is a module, not a specialization.
   stats_.key.color_format = variant.color_format;
   stats_.key.foliage = variant.foliage;
   stats_.key.light_cap = variant.light_cap;
@@ -404,33 +461,51 @@ bool EarlyPipelines::start(const gfx::Device& device, const ResolveVariant& vari
   stats_.key.layout = bindless_.capacity();
   stats_.mesh_files = mesh_files.size();
   stats_.started = true;
-  ENGINE_LOG_INFO(log_renderer, "early pipeline started", log::field("shader", module_->name),
+  ENGINE_LOG_INFO(log_renderer, "early pipeline started",
                   log::field("format", gfx::format_name(variant.color_format)),
                   log::field("foliage", variant.foliage), log::field("specular", variant.specular),
+                  log::field("stochastic", variant.stochastic),
                   log::field("mesh_files", mesh_files.size()));
-  // The worker owns nothing: it reads the files it was handed, then the module and the layout made
-  // above, and writes the key's last facts and the handle under the lock. Creating a pipeline on
-  // another thread is the device's normal use (the pipeline cache is not externally synchronized;
-  // pipeline_batch.h).
-  worker_ = std::thread([this, files = std::move(mesh_files), declared_by_file = variant.specular] {
+  // The worker owns nothing: it reads the files it was handed, takes the module their facts pick,
+  // uses the layout made above, and writes the key's last facts and the handle under the lock.
+  // Creating a pipeline on another thread is the device's normal use (the pipeline cache is not
+  // externally synchronized; pipeline_batch.h); the library is the worker's until `take` or
+  // `destroy` joins it.
+  worker_ = std::thread([this, files = std::move(mesh_files), predicted = variant] {
     // **The mesh files' declarations, here and not on the load's thread** (renderer.md, "The
     // resolve compiles from the scene file"): one read a file, in the scene's order, until every
     // fact the key takes from them is known. A fact added to `MeshDeclarations` adds its term to
     // `known` and its field to the key below; the loop stays the one pass.
     MeshDeclarations declared;
-    declared.specular = declared_by_file;
-    const auto known = [](const MeshDeclarations& d) { return d.specular; };
+    declared.specular = predicted.specular;
+    declared.stochastic = predicted.stochastic;
+    const auto known = [](const MeshDeclarations& d) { return d.specular && d.stochastic; };
     u32 opened = 0;
     {
       ENGINE_STARTUP_STAGE("early resolve mesh reads");
-      for (const std::string& path : files) {
+      for (const MeshFileToRead& file : files) {
         if (known(declared)) break;
-        opened += read_mesh_declarations(path, declared) ? 1u : 0u;
+        opened += read_mesh_declarations(file.path, declared, file.sampling) ? 1u : 0u;
       }
       profiling::trace_items(opened);
     }
+    std::string missing;
+    const gfx::Shader* module =
+        shaders_.get(resolve_module_name(predicted.shadows, predicted.water, predicted.terrain,
+                                         declared.stochastic),
+                     &missing);
     {
       const std::lock_guard<std::mutex> lock(mutex_);
+      module_ = module;
+      if (module != nullptr) {
+        stats_.key.module = module->name;
+        stats_.key.hash = module->hash;
+      } else {
+        // No module, no compile: the renderer makes its own, and `take` says why.
+        error_ = missing;
+        stats_.reason = "the early compile found no module: " + missing;
+        stats_.done = true;
+      }
       stats_.key.specular = declared.specular;
       stats_.mesh_files_read = opened;
       stats_.read = true;
@@ -438,7 +513,11 @@ bool EarlyPipelines::start(const gfx::Device& device, const ResolveVariant& vari
     read_cv_.notify_all();
     ENGINE_LOG_INFO(log_renderer, "early pipeline read its mesh files",
                     log::field("files", files.size()), log::field("read", opened),
-                    log::field("specular", declared.specular));
+                    log::field("specular", declared.specular),
+                    log::field("stochastic", declared.stochastic),
+                    log::field("shader", module != nullptr ? std::string_view(module->name)
+                                                           : std::string_view()));
+    if (module == nullptr) return;
     gfx::GraphicsPipelineDesc desc;
     desc.vertex = desc.fragment = module_->module;
     desc.vertex_entry = "vs_fullscreen";
@@ -476,6 +555,9 @@ bool EarlyPipelines::take(const ResolveKey& key, gfx::PipelineHandle& out) {
     wait_for_reads(lock);
     // Nothing started, or taken already (a shader reload's re-create): not a wrong guess.
     if (!stats_.started || stats_.taken) return false;
+    // The worker found no module for what the files said (`reason` says why): nothing to take,
+    // and not a wrong guess.
+    if (stats_.key.module.empty()) return false;
     if (!(stats_.key == key)) {
       ++stats_.mismatched;
       std::string differs;
@@ -538,7 +620,7 @@ void start_early_resolve(EarlyPipelines& early, const gfx::Device& device, const
   resolve_settings(settings, device.features(), nullptr, resolved);
   std::string why;
   // Neither argument touches a file: the mesh files are read on the worker, after `start`'s
-  // refusals, so a refused start reads none of them.
+  // refusals, so a refused start reads none of them, and the load's thread reads none at all.
   if (!early.start(device, predict_resolve_variant(desc, resolved, color_format), shader_manifest,
                    &why, mesh_files_to_read(desc))) {
     ENGINE_LOG_INFO(log_renderer, "early pipeline not started", log::field("reason", why));

@@ -32,6 +32,7 @@
 #include <domain/gfx/device.h>
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/shader_library.h>
+#include <systems/renderer/scene.h>
 
 #include <condition_variable>
 #include <mutex>
@@ -40,7 +41,6 @@
 
 namespace engine::renderer {
 
-struct SceneDesc;
 struct RenderSettings;
 struct ResolvedSettings;
 
@@ -67,7 +67,9 @@ struct ResolveVariant {
 //     `world_is_dynamic`), or a pack role a recipe names whose set has foliage optics;
 //   - stochastic: a recipe's `material.sampling` field naming `Stochastic`, a stochastic role a
 //     recipe names, or — the one guess — a pack with a stochastic role where the file generates
-//     meshes, since a generator that names no role takes the pack's defaults;
+//     meshes, since a generator that names no role takes the pack's defaults; and the scene's
+//     `Mesh.sampling` (T150) over a mesh no file of which is read (`apply_mesh_sampling` over plain
+//     materials). Over a mesh file, the scene's word is the worker's to apply, after its read;
 //   - light_cap: the file's fires, lamps and props (`shadow_light_cap_compiled`), which the load
 //     keeps as they are;
 //   - specular: a generator's `tile_meshes_specular` under the mesh room (R234). What the mesh
@@ -81,26 +83,41 @@ ResolveVariant predict_resolve_variant(const SceneDesc& desc, const ResolvedSett
                                        gfx::Format color_format);
 
 // **What a mesh file's own materials declare that selects the resolve** (R234; renderer.md, "The
-// resolve compiles from the scene file"). One field a fact. A second fact (a container's section
-// 33 sampling flags, for the stochastic module) is a field here, its lines in
-// `read_mesh_declarations`, and a term in the worker's `known` test: the same files, the same one
-// loop, never a second pass.
+// resolve compiles from the scene file"). One field a fact; a fact added is a field here, its lines
+// in `read_mesh_declarations`, and a term in the worker's `known` test: the same files, the same
+// one loop, never a second pass.
 struct MeshDeclarations {
-  bool specular = false;  // a material packs a reflectance other than the stand-in's
+  bool specular = false;    // a material packs a reflectance other than the stand-in's (R234)
+  bool stochastic = false;  // a material the load samples stochastically (T150; the module)
   bool operator==(const MeshDeclarations&) const noexcept = default;
 };
 
-// Reads one mesh file only as far as its materials' declarations and ORs them into `out`: a
-// `.gltf`'s JSON, a `.glb`'s JSON chunk, a `.clusters` container's section 55, chosen by suffix
-// without regard to case before the disk is touched. True when the file was opened (what the
-// startup trace counts). A file that is unreadable, truncated, of another container version, or
-// whose lengths claim more than it holds declares nothing, and nothing is allocated past its size:
-// a wrong guess is one more compile.
-bool read_mesh_declarations(const std::string& path, MeshDeclarations& out);
+// One mesh file the worker reads, with the scene's word over its materials (T150): the mesh's
+// `SceneMeshInfo::sampling`, applied in order over what the file asks, as the load applies it.
+struct MeshFileToRead {
+  std::string path;
+  Vector<SceneMeshInfo::MaterialSampling> sampling;
+};
 
-// The files of `desc.meshes` the worker reads: a `.gltf`, `.glb` or `.clusters` suffix in any case,
-// less the procedural empty path and every path `desc.recipes` hands as bytes. Touches no file.
-Vector<std::string> mesh_files_to_read(const SceneDesc& desc);
+// Reads one mesh file only as far as its materials' declarations and ORs them into `out`: a
+// `.gltf`'s JSON, a `.glb`'s JSON chunk, a `.clusters` container's sections 55 (the reflectance)
+// and 33 (the sampling flags) with its material count, chosen by suffix without regard to case
+// before the disk is touched. `stochastic` is the file's own ask — section 33's flag, or a glTF
+// material's `extras.sampling` of "stochastic" in any case, as the import reads it (any other value
+// is no request, and nothing refuses) — with `sampling` applied over it in order by
+// `apply_mesh_sampling`; an entry the load would refuse declares nothing, and a file whose material
+// count could not be learned has the scene's word applied over plain materials as many as its
+// entries name plus one. True when the file was opened (what the startup trace counts). A file that
+// is unreadable, truncated, of another container version, or whose lengths claim more than it holds
+// declares nothing of its own, and nothing is allocated past its size: a wrong guess is one more
+// compile.
+bool read_mesh_declarations(const std::string& path, MeshDeclarations& out,
+                            const Vector<SceneMeshInfo::MaterialSampling>& sampling = {});
+
+// The files of `desc.meshes` the worker reads, each with its mesh's `sampling`: a `.gltf`, `.glb`
+// or `.clusters` suffix in any case, less the procedural empty path and every path `desc.recipes`
+// hands as bytes. Touches no file.
+Vector<MeshFileToRead> mesh_files_to_read(const SceneDesc& desc);
 
 // How many files `read_mesh_declarations` has opened in this process: for the cases' counts.
 u64 mesh_declaration_reads() noexcept;
@@ -130,7 +147,7 @@ class EarlyPipelines {
     bool ok = false;          // it made a pipeline
     bool taken = false;       // a renderer took it
     u32 mismatched = 0;       // renderers that asked with another key, and made their own
-    bool read = false;        // the worker's mesh-file reads are done: the key is final
+    bool read = false;        // the worker's mesh-file reads are done: key and module are final
     u32 mesh_files = 0;       // files it was handed to read (`mesh_files_to_read`)
     u32 mesh_files_read = 0;  // files it opened before every fact was known
     f64 seconds = 0.0;        // the compile's wall time, on its worker
@@ -150,10 +167,11 @@ class EarlyPipelines {
   // when nothing was started: the device cannot draw the variant, or `renderer.resolve.classes` is
   // not `off` (the split's pipelines are other keys, made at creation). Once per object.
   // `mesh_files` (`mesh_files_to_read`) are read on the worker before it compiles, and what they
-  // declare joins the key (`specular`); a refused start reads none of them.
+  // declare joins the key (`specular`, and `stochastic`, which picks the module: the worker takes
+  // it from the library after the reads); a refused start reads none of them.
   bool start(const gfx::Device& device, const ResolveVariant& variant,
              const std::string& shader_manifest, std::string* error = nullptr,
-             Vector<std::string> mesh_files = {});
+             Vector<MeshFileToRead> mesh_files = {});
 
   // For `SceneRenderer`: whether a pipeline of `key` was started and not taken. Waits for the
   // worker's mesh-file reads (the key is not final before them), never for the compile.

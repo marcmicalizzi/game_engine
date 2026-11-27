@@ -173,8 +173,8 @@ std::string clusters_bytes(const geometry::ClusterFileMaterialSpecular& record,
 // What the worker would read of a scene's mesh files: the same function, the same list.
 MeshDeclarations declares(const SceneDesc& desc) {
   MeshDeclarations d;
-  for (const std::string& path : mesh_files_to_read(desc))
-    (void)read_mesh_declarations(path, d);
+  for (const MeshFileToRead& file : mesh_files_to_read(desc))
+    (void)read_mesh_declarations(file.path, d, file.sampling);
   return d;
 }
 
@@ -194,23 +194,25 @@ TEST_CASE("renderer: the resolve a scene file names compiles once, early, and is
 
   // Two mesh files that declare nothing, handed to the worker: it reads both (only a declared one
   // stops the loop early) and the key stays the scene's.
-  Vector<std::string> files;
-  files.push_back(gpu.tmp.file("plain.gltf"));
-  files.push_back(gpu.tmp.file("plain.glb"));
-  REQUIRE(io::write_file(files[0], gltf_text("{}")) == io::Status::Ok);
-  REQUIRE(io::write_file(files[1], glb_bytes(gltf_text("{}"))) == io::Status::Ok);
+  Vector<MeshFileToRead> files(2);
+  files[0].path = gpu.tmp.file("plain.gltf");
+  files[1].path = gpu.tmp.file("plain.glb");
+  REQUIRE(io::write_file(files[0].path, gltf_text("{}")) == io::Status::Ok);
+  REQUIRE(io::write_file(files[1].path, glb_bytes(gltf_text("{}"))) == io::Status::Ok);
 
   EarlyPipelines early;
   std::string error;
   REQUIRE_MESSAGE(early.start(gpu.device, variant, std::string(), &error, files), error);
-  const std::string module = early.stats().key.module;
-  CHECK(module == (variant.shadows ? "visibility_resolve_rt" : "visibility_resolve"));
 
   Rig rig;
   REQUIRE_MESSAGE(rig.load(gpu.device), rig.error);
   CapturedFrame taken;
   REQUIRE_MESSAGE(rig.render(gpu.device, &early, taken), rig.error);
   const EarlyPipelines::Stats stats = early.stats();
+  // The module is the worker's to take after its reads (the join of R234 and T150: a file's
+  // stochastic request picks it), so it is read once the key is final.
+  const std::string module = stats.key.module;
+  CHECK(module == (variant.shadows ? "visibility_resolve_rt" : "visibility_resolve"));
   CHECK(stats.started);
   CHECK(stats.done);
   CHECK(stats.ok);
@@ -267,12 +269,12 @@ TEST_CASE("renderer: a variant the scene did not name costs one more compile, no
   EarlyPipelines early;
   std::string error;
   REQUIRE_MESSAGE(early.start(gpu.device, wrong, std::string(), &error), error);
-  const std::string module = early.stats().key.module;
 
   Rig rig;
   REQUIRE_MESSAGE(rig.load(gpu.device), rig.error);
   CapturedFrame drawn;
   REQUIRE_MESSAGE(rig.render(gpu.device, &early, drawn), rig.error);
+  const std::string module = early.stats().key.module;  // the worker's, once the reads are done
   // An untaken compile runs to its end on its worker (a driver's compile cannot be called off):
   // `destroy` waits for it and destroys its pipeline, the device still open, before it is counted.
   early.destroy();
@@ -300,14 +302,14 @@ TEST_CASE("renderer: a variant the scene did not name costs one more compile, no
   (void)classes->set_from_text(previous);
 
   // A mesh file that declares a reflectance the scene's load does not have: the worker's read
-  // joins the key (`specular`), the loop stops at the first declared file, and the renderer's
+  // joins the key (`specular`), the loop reads on for the facts still unknown, and the renderer's
   // other key is one more compile, never a wrong pipeline.
-  Vector<std::string> files;
-  files.push_back(gpu.tmp.file("declared.gltf"));
-  files.push_back(gpu.tmp.file("after.gltf"));
-  REQUIRE(io::write_file(files[0], gltf_text(R"({"KHR_materials_ior": {"ior": 2.0}})")) ==
+  Vector<MeshFileToRead> files(2);
+  files[0].path = gpu.tmp.file("declared.gltf");
+  files[1].path = gpu.tmp.file("after.gltf");
+  REQUIRE(io::write_file(files[0].path, gltf_text(R"({"KHR_materials_ior": {"ior": 2.0}})")) ==
           io::Status::Ok);
-  REQUIRE(io::write_file(files[1], gltf_text("{}")) == io::Status::Ok);
+  REQUIRE(io::write_file(files[1].path, gltf_text("{}")) == io::Status::Ok);
   EarlyPipelines read;
   REQUIRE_MESSAGE(read.start(gpu.device, named_variant(gpu.device), std::string(), &error, files),
                   error);
@@ -316,7 +318,9 @@ TEST_CASE("renderer: a variant the scene did not name costs one more compile, no
   CapturedFrame redrawn;
   REQUIRE_MESSAGE(again.render(gpu.device, &read, redrawn), again.error);
   read.destroy();
-  CHECK(read.stats().mesh_files_read == 1);
+  // Both files are read: since the join of R234 and T150 the loop stops once every fact the key
+  // takes from the files is known, and neither file asks for stochastic sampling.
+  CHECK(read.stats().mesh_files_read == 2);
   CHECK(read.stats().key.specular);
   CHECK(read.stats().mismatched == 1);
   CHECK(read.stats().reason.find("specular") != std::string::npos);
@@ -465,6 +469,39 @@ TEST_CASE("renderer: the mesh files' declarations are read by suffix and within 
   CHECK(read(write("other.clusters", clusters_bytes(stated, geometry::k_cluster_file_version +
                                                                 1))) == std::pair{true, false});
 
+  // A glTF material's `extras.sampling` (T150, read in the same pass as the reflectance, the join
+  // of the two rows): "stochastic" in any case asks, any other value asks nothing and refuses
+  // nothing, and the scene's `Mesh.sampling` is applied over the file's own materials in order,
+  // an entry past them declaring nothing, as the load refuses it.
+  const auto stochastic = [&write](const char* name, const char* materials,
+                                   const Vector<SceneMeshInfo::MaterialSampling>& sampling) {
+    const std::string path = write(
+        name, std::string(R"({"asset": {"version": "2.0"}, "materials": [)") + materials + "]}");
+    MeshDeclarations d;
+    CHECK(read_mesh_declarations(path, d, sampling));
+    CHECK_FALSE(d.specular);
+    return d.stochastic;
+  };
+  const char* asks = R"({}, {"extras": {"sampling": "STOCHASTIC"}})";
+  const char* foreign = R"({"extras": {"sampling": "hex"}}, {"extras": {"sampling": 1}})";
+  CHECK(stochastic("asks.gltf", asks, {}));
+  CHECK_FALSE(stochastic("foreign.gltf", foreign, {}));
+  CHECK_FALSE(stochastic("plain.gltf", "{}", {}));
+  CHECK_FALSE(stochastic("taken.gltf", asks, {{1, false}}));
+  CHECK(stochastic("given.gltf", foreign, {{1, true}}));
+  CHECK_FALSE(stochastic("later.gltf", foreign, {{-1, true}, {-1, false}}));
+  CHECK_FALSE(stochastic("past.gltf", "{}", {{1, true}}));  // one material: the load refuses
+  CHECK(stochastic("again.gltf", asks, {{-1, false}, {1, true}}));
+  {
+    MeshDeclarations d;
+    CHECK(read_mesh_declarations(
+        write("asks.glb", glb_bytes(std::string(R"({"asset": {"version": "2.0"}, )"
+                                                R"("materials": [)") +
+                                    asks + "]}")),
+        d));
+    CHECK(d.stochastic);
+  }
+
   // Neither a suffix it does not know nor a missing file is opened.
   CHECK(read(write("declared.json", declared_json)) == std::pair{false, false});
   CHECK(read(tmp.file("absent.glb")) == std::pair{false, false});
@@ -479,11 +516,11 @@ TEST_CASE("renderer: the mesh files' declarations are read by suffix and within 
   desc.meshes.push_back(tmp.file("upper.CLUSTERS"));
   desc.recipes.push_back(MeshRecipe{tmp.file("handed.glb"), "{}"});
   const u64 before = mesh_declaration_reads();
-  const Vector<std::string> files = mesh_files_to_read(desc);
+  const Vector<MeshFileToRead> files = mesh_files_to_read(desc);
   CHECK(mesh_declaration_reads() == before);
   REQUIRE(files.size() == 2);
-  CHECK(files[0] == tmp.file("declared.glb"));
-  CHECK(files[1] == tmp.file("upper.CLUSTERS"));
+  CHECK(files[0].path == tmp.file("declared.glb"));
+  CHECK(files[1].path == tmp.file("upper.CLUSTERS"));
 }
 
 // A refused start reads none of its files (R234's mend): the reads are the worker's, and a start

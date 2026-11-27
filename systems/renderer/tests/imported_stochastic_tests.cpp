@@ -449,9 +449,9 @@ TEST_CASE("renderer: a scene's Mesh.sampling sets its materials' sampling over t
     CHECK_MESSAGE(why.find("coded: sampling names material -2") != std::string::npos, why);
   }
 
-  // **The early resolve's prediction reads a container's own word** (finding 3): the entries the
-  // two loads above wrote are `.clusters` files, peeked without a decode — the asked plane's flag
-  // predicts the stochastic module, the plain one's does not, and the scene's word over the
+  // **The early resolve reads a container's own word** (finding 3): the entries the two loads above
+  // wrote are `.clusters` files, read by range without a decode on its worker — the asked plane's
+  // flag predicts the stochastic module, the plain one's does not, and the scene's word over the
   // container's is read in order as the load reads it.
   {
     SceneDesc built;
@@ -478,7 +478,19 @@ TEST_CASE("renderer: a scene's Mesh.sampling sets its materials' sampling over t
       SceneMeshInfo info;
       info.sampling = sampling;
       desc.mesh_info.push_back(std::move(info));
-      return predict_resolve_variant(desc, resolved, gfx::Format::R8G8B8A8Unorm).stochastic;
+      // Since the join of T150 and R234 the container is read on the early compile's worker, in
+      // the pass that reads its reflectance, and never by the prediction on the load's thread:
+      // the prediction opens nothing and names plain, and the worker's read of the files it is
+      // handed, with the scene's word over each, gives the answer the key takes.
+      const u64 reads = mesh_declaration_reads();
+      const bool predicted =
+          predict_resolve_variant(desc, resolved, gfx::Format::R8G8B8A8Unorm).stochastic;
+      CHECK(mesh_declaration_reads() == reads);
+      CHECK_FALSE(predicted);
+      MeshDeclarations declared;
+      for (const MeshFileToRead& file : mesh_files_to_read(desc))
+        (void)read_mesh_declarations(file.path, declared, file.sampling);
+      return predicted || declared.stochastic;
     };
     CHECK(predicts(asked_container, {}));
     CHECK_FALSE(predicts(plain_container, {}));

@@ -1571,7 +1571,7 @@ every frame, view, cut and eye cell reads the same tiles.
   `geometry::k_material_sampling_stochastic` in the container's material sampling record (section
   33's `flags` word, what was its `pad`, so every older container reads plain), which
   `adopt_container` keeps in `SourceMesh::material_sampling_flags` and the upload turns into the
-  bit. **An imported material asks for it** (T150) with the glTF material's `"extras": {"sampling": "stochastic"}`, which both builders of a container write into section 33 ([assets](assets.md#stochastic-sampling-an-imported-material-asks-for)); **a scene's `Mesh.sampling`** (schema `Mesh` 4) says it for a file that cannot — entries of a material index (`-1`, every material) and `Stochastic` or `Tiled`, applied in order over the file's word at load by one function (`apply_mesh_sampling`), an index below -1 or past **the file's own materials** refusing the load — on a cache hit as on its miss, so never the default a build appended (`SourceMesh::file_materials`). **The scene's word wins**: the scene is where an asset is laid over a surface many times its texture, and a bought file is not its user's to edit. The early resolve's prediction applies the same function: over a `.clusters` mesh's own section 33, peeked (its header, table and that section; no decode), and over a glTF as plain materials, since a glTF's `extras` are its import's to read. It does not know which meshes the content policy admits, so a refused mesh's request still predicts. **A wrong guess costs a whole compile on a cold pipeline cache**: the predicted module compiles to its end beside the one the scene draws with. The upload logs `stochastic materials` with the count when any are drawn.
+  bit. **An imported material asks for it** (T150) with the glTF material's `"extras": {"sampling": "stochastic"}`, which both builders of a container write into section 33 ([assets](assets.md#stochastic-sampling-an-imported-material-asks-for)); **a scene's `Mesh.sampling`** (schema `Mesh` 4) says it for a file that cannot — entries of a material index (`-1`, every material) and `Stochastic` or `Tiled`, applied in order over the file's word at load by one function (`apply_mesh_sampling`), an index below -1 or past **the file's own materials** refusing the load — on a cache hit as on its miss, so never the default a build appended (`SourceMesh::file_materials`). **The scene's word wins**: the scene is where an asset is laid over a surface many times its texture, and a bought file is not its user's to edit. The early resolve applies the same function, and **never on the load's thread**: over a mesh file, its worker reads the file's own word in the pass that reads its declared reflectance (`read_mesh_declarations`: a `.clusters` mesh's material count and section 33 by range, no decode; a glTF's `extras.sampling` by the import's rule, the two words in any case and anything else no request) and applies the scene's entries for that mesh over it in order; over a mesh no file of which is read (a procedural or recipe mesh) the prediction applies them over plain materials as many as its entries name plus one. Stochastic sampling is a module, not a specialization, so the worker takes the module from the library after its reads (the join of T150 and R234, batch 77). It does not know which meshes the content policy admits, so a refused mesh's request still predicts. **A wrong guess costs a whole compile on a cold pipeline cache**: the predicted module compiles to its end beside the one the scene draws with. The upload logs `stochastic materials` with the count when any are drawn.
 - **The reference path tracer** reads materials through the same `sample_material` and
   `apply_normal_map`, which dispatch on the flag, so a stochastic material reads the same three tiles
   there, at level 0 as every material does in it.
@@ -2073,7 +2073,7 @@ thread**, reads every mesh file the scene names before it compiles (`mesh_files_
 JSON, a `.glb`'s JSON chunk, a container's section 55 by range — packed by
 `set_dielectric_specular` as the load packs it, so a scene that declares a reflectance in its own
 files takes its early pipeline. **What the reads cost, and where**: one stat and one open a file,
-and a whole-JSON parse for a glTF, in the scene's order until one declares (so a scene that
+and a whole-JSON parse for a glTF, in the scene's order until both facts are known (so a scene that
 declares nothing reads them all: 2,303 cold opens on a scene of 2,303 `.glb` files); they run
 beside the load, which starts at once, and the startup trace names them as the stage `early
 resolve mesh reads` with the count of files opened as its items. `has` and `take` wait for the
@@ -2083,8 +2083,10 @@ matched without regard to case before the disk is touched, a recipe's path (`Sce
 is never read, every length is checked against the file's size before anything is allocated, and a
 container of another version is not trusted. It guesses wrong (one compile more) for a `.gltf` over
 64 MiB, a file it cannot read where the load later can, and the stream setting's paged reading the
-foliage note gives. A second fact the files say (a container's sampling flags) is a field of
-`MeshDeclarations` read by the same function in the same loop. Nothing writes `specular` into a loaded table, so the
+foliage note gives. The second fact the files say, a stochastic request (T150, "Stochastic mesh
+materials"), is `MeshDeclarations::stochastic`, read by the same function in the same loop with
+the scene's `Mesh.sampling` applied over each file, and it picks the module, which the worker
+therefore takes after the reads; the loop stops once both facts are known. Nothing writes `specular` into a loaded table, so the
 variant never has to change after the load; a live material edit that did would need the declared
 lines or a rebuild of the family. `mesh_texture_tests.cpp` ("a tile's declared reflectance is drawn
 only where a generator said so") holds an undeclared scene's ior-3 tiles to the same rocks stating
