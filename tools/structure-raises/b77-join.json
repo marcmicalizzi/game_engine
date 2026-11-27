@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "b77-join",
+  "reason": "The join of T150 and R234 on renderer.md: the stochastic request read on the early compile's worker in R234's pass, the scene's word over each file, and the module taken after the reads",
+  "date": "2026-11-27",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 735
+  }
+}
