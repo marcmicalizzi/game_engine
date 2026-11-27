@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3941
+      "ceiling": 3964
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -32,21 +32,21 @@
       "measure": "file-lines",
       "file": "systems/renderer/src/gpu_scene.cpp",
       "why": "every feature's GPU state",
-      "ceiling": 6941
+      "ceiling": 6982
     },
     {
       "id": "renderer.gpu_scene_h.lines",
       "measure": "file-lines",
       "file": "systems/renderer/include/systems/renderer/gpu_scene.h",
       "why": "every feature's GPU state",
-      "ceiling": 2617
+      "ceiling": 2630
     },
     {
       "id": "engine_view.main_cpp.lines",
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7870
+      "ceiling": 7883
     },
     {
       "id": "engine_view.run_view.lines",
@@ -54,7 +54,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_view",
       "why": "the windowed loop",
-      "ceiling": 3340
+      "ceiling": 3341
     },
     {
       "id": "engine_view.run_offscreen.lines",
@@ -107,25 +107,25 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 1586976
+      "ceiling": 1629479
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 790174
+      "ceiling": 791471
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 410425
+      "ceiling": 422079
     },
     {
       "id": "page:docs/subsystems/geometry.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/geometry.md",
-      "ceiling": 320644
+      "ceiling": 322011
     },
     {
       "id": "page:docs/subsystems/flora.md",
@@ -209,25 +209,25 @@
       "id": "page:docs/subsystems/scene_collision.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/scene_collision.md",
-      "ceiling": 151338
+      "ceiling": 166953
     },
     {
       "id": "page:docs/subsystems/scene_gen.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/scene_gen.md",
-      "ceiling": 111597
+      "ceiling": 112335
     },
     {
       "id": "page:docs/subsystems/texture.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/texture.md",
-      "ceiling": 133959
+      "ceiling": 134538
     },
     {
       "id": "page:docs/ci/what-to-run.md",
       "measure": "page-bytes",
       "file": "docs/ci/what-to-run.md",
-      "ceiling": 130748
+      "ceiling": 130954
     },
     {
       "id": "page:docs/subsystems/animation.md",
@@ -4962,6 +4962,154 @@
           "id": "page:docs/experiments/README.md",
           "old": 100000,
           "new": 102564
+        }
+      ]
+    },
+    {
+      "date": "2026-11-27",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "43d5662b7",
+      "folded": [
+        {
+          "name": "b77-join",
+          "reason": "The join of T150 and R234 on renderer.md (the stochastic request read on the early compile's worker in R234's pass, the scene's word over each file, the module taken after the reads); then R71's join: gfx.md names all four specialization constants and what raising the limit touches; renderer.md says R71's reflect stays unpredicted after the join",
+          "date": "2026-11-27",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 955,
+            "page:docs/subsystems/gfx.md": 395
+          }
+        },
+        {
+          "name": "R234",
+          "reason": "R234: KHR_materials_ior and KHR_materials_specular drawn, and since batch 77 chosen per scene; gfx.md states the two specifications' formulas, the 128-byte entry, how far shader and reference agree, the measured cost and the variant that gives it back (M0, M1); renderer.md the masked rule for the mesh room, the early compile's prediction and where its mesh-file reads run and cost (the review's mend); scene_gen.md tile_meshes_specular; geometry.md section 55; gpu_scene.h has_specular_materials and the set that says a dropped reflectance once a mesh",
+          "date": "2026-11-27",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_cpp.lines": 9,
+            "renderer.gpu_scene_h.lines": 5,
+            "page:docs/subsystems/renderer.md": 5005,
+            "page:docs/subsystems/gfx.md": 10448,
+            "page:docs/subsystems/geometry.md": 1367,
+            "page:docs/subsystems/scene_gen.md": 738
+          }
+        },
+        {
+          "name": "R239",
+          "reason": "R239: a scene's lamp may be a spot (renderer.md's 'A lamp that throws its light one way', its grounding, what reads a lamp, a photometric file's needs, the verdicts, 'More lamps than the frame's room'; Exposure's order of the fixed values and the night case that did not reproduce G-T25), --no-lights puts out the scene's lights (record_frame's one scene_lights test, engine-view's flag and usage lines), and --exposure-ev100 with no sky says so once (engine-view's look_overrides, apps.md)",
+          "date": "2026-11-27",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 1,
+            "engine_view.main_cpp.lines": 13,
+            "engine_view.run_view.lines": 1,
+            "page:docs/subsystems/renderer.md": 10646,
+            "page:docs/subsystems/apps.md": 388
+          }
+        },
+        {
+          "name": "R71",
+          "reason": "R71 and its mend: a smooth surface reflects the scene, decided by the least its roughness map gives (the flag at upload, the least found from the built chain, the reflection section's design, cases and numbers, the frame budgets after the mend)",
+          "date": "2026-11-27",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 22,
+            "renderer.gpu_scene_cpp.lines": 25,
+            "renderer.gpu_scene_h.lines": 8,
+            "page:docs/subsystems/renderer.md": 24277,
+            "page:docs/subsystems/apps.md": 389,
+            "page:docs/subsystems/gfx.md": 811,
+            "page:docs/subsystems/texture.md": 579,
+            "page:docs/ci/what-to-run.md": 206
+          }
+        },
+        {
+          "name": "T150",
+          "reason": "T150 documents how an imported material and a scene's Mesh.sampling reach the stochastic mesh materials, and its review mend makes the upload's stochastic refusals one line with a count (a scene's -1 over untextured parts asks for each): the rule and the line belong where the sampling is described and uploaded",
+          "date": "2026-11-27",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_cpp.lines": 7,
+            "page:docs/subsystems/renderer.md": 1620
+          }
+        },
+        {
+          "name": "W200",
+          "reason": "W200: scene_collision.md gains 'A scene of authored meshes' (the landing's table, the weld's mend and its pair, the proxies built ahead, the frame that still waits as a design), and since the review's mends the lock rule, the withdrawal, the ranking by bounds, who pays and the five cases; apps.md names the walk summary's new proxy fields",
+          "date": "2026-11-27",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 520,
+            "page:docs/subsystems/scene_collision.md": 15615
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3941,
+          "new": 3964
+        },
+        {
+          "id": "renderer.gpu_scene_cpp.lines",
+          "old": 6941,
+          "new": 6982
+        },
+        {
+          "id": "renderer.gpu_scene_h.lines",
+          "old": 2617,
+          "new": 2630
+        },
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7870,
+          "new": 7883
+        },
+        {
+          "id": "engine_view.run_view.lines",
+          "old": 3340,
+          "new": 3341
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 1586976,
+          "new": 1629479
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 790174,
+          "new": 791471
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 410425,
+          "new": 422079
+        },
+        {
+          "id": "page:docs/subsystems/geometry.md",
+          "old": 320644,
+          "new": 322011
+        },
+        {
+          "id": "page:docs/subsystems/scene_collision.md",
+          "old": 151338,
+          "new": 166953
+        },
+        {
+          "id": "page:docs/subsystems/scene_gen.md",
+          "old": 111597,
+          "new": 112335
+        },
+        {
+          "id": "page:docs/subsystems/texture.md",
+          "old": 133959,
+          "new": 134538
+        },
+        {
+          "id": "page:docs/ci/what-to-run.md",
+          "old": 130748,
+          "new": 130954
         }
       ]
     }
