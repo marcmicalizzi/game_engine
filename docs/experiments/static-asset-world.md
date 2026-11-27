@@ -156,6 +156,12 @@ Proposed as open rows; the coordinator numbers them.
    (`extras`) or the scene's `Mesh` names, so a large imported surface stops tiling. **Done** (T150,
    2026-11-26): `extras.sampling` and `Mesh.sampling`, the scene's word winning
    ([assets](../subsystems/assets.md#stochastic-sampling-an-imported-material-asks-for)).
+   **Zero is the stand-in**, measured on this world, which asks for nothing (2026-11-27, RTX 5090,
+   1920 x 1080, `--raster rt --shadows rt`, its camera path, the batch 76 binary against T150's,
+   interleaved three times on a machine others kept 16 to 91 % busy, so upper bounds): both drew
+   `visibility_resolve_rt`, the frame's GPU median 0.494 / 0.497 / 0.494 ms before against
+   0.494 / 0.494 / 0.492 ms after and the resolve's 0.174 / 0.174 / 0.173 against 0.174 / 0.173 /
+   0.173 ms, and a capture at frame 120 of the path is the same PNG bytes from both.
 6. **The caster policy as data on the scene's `Mesh`**, for an imported species.
 
 ## Bought foliage
