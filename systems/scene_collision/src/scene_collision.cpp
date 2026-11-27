@@ -553,9 +553,12 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
         Placement placed;
         if (decompose(cell_frame_matrix(instance), placed)) {
           AheadRow row;
-          row.at = WorldPos{corner.x + 0.5 * (static_cast<f64>(bounds.min.x) + bounds.max.x),
-                            corner.y + 0.5 * (static_cast<f64>(bounds.min.y) + bounds.max.y),
-                            corner.z + 0.5 * (static_cast<f64>(bounds.min.z) + bounds.max.z)};
+          const auto mid = [](f32 lo, f32 hi) {
+            return 0.5 * (static_cast<f64>(lo) + static_cast<f64>(hi));
+          };
+          row.at = WorldPos{corner.x + mid(bounds.min.x, bounds.max.x),
+                            corner.y + mid(bounds.min.y, bounds.max.y),
+                            corner.z + mid(bounds.min.z, bounds.max.z)};
           row.mesh = instance.mesh;
           row.scale = placed.scale;
           row.key = proxy_key(instance.mesh, placed.scale);
