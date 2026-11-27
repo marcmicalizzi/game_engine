@@ -449,8 +449,25 @@ TEST_CASE("engine-view: --no-lights and --exposure-ev100 rule over the scene fil
     }
     return -100.0;
   };
+  // With no sky the flag changes nothing, and says so once at start-up. Before the sky's legs: a
+  // build with no sky provider (the minimal one) still owes this.
+  const std::string warning = "this scene has no sky, so they change nothing";
+  const Run no_sky = shot(bare, "bare-ev.png", true, {"--exposure-ev100", "5"});
+  REQUIRE_MESSAGE(no_sky.exit_code == 0, no_sky.output);
+  const usize said = no_sky.output.find(warning);
+  CHECK(said != std::string::npos);
+  CHECK(no_sky.output.find(warning, said + 1) == std::string::npos);
+  std::string bare_ev;
+  REQUIRE(io::read_file(tmp.file("bare-ev.png"), bare_ev) == io::Status::Ok);
+  CHECK(bare_ev == bare_off);
+
   // At noon: a frame at the sky's own hour may be a night, black at either exposure.
   const Run scene_ev = shot(sky, "sky-15.png", false, {"--time-of-day", "12"});
+  if (scene_ev.exit_code != 0 &&
+      scene_ev.output.find("which this build does not have") != std::string::npos) {
+    MESSAGE("no sky provider in this build: the exposure's legs are not flown");
+    return;
+  }
   REQUIRE_MESSAGE(scene_ev.exit_code == 0, scene_ev.output);
   const Run run_ev =
       shot(sky, "sky-13.png", false, {"--time-of-day", "12", "--exposure-ev100", "13"});
@@ -484,16 +501,6 @@ TEST_CASE("engine-view: --no-lights and --exposure-ev100 rule over the scene fil
   REQUIRE(io::read_file(tmp.file("night-7.png"), at7) == io::Status::Ok);
   REQUIRE(io::read_file(tmp.file("night-5.png"), at5) == io::Status::Ok);
   CHECK(at7 != at5);
-
-  // With no sky the flag changes nothing, and says so once at start-up.
-  const std::string warning = "this scene has no sky, so they change nothing";
-  const Run no_sky = shot(bare, "bare-ev.png", true, {"--exposure-ev100", "5"});
-  REQUIRE_MESSAGE(no_sky.exit_code == 0, no_sky.output);
-  const usize said = no_sky.output.find(warning);
-  CHECK(said != std::string::npos);
-  CHECK(no_sky.output.find(warning, said + 1) == std::string::npos);
-  std::string bare_ev;
-  REQUIRE(io::read_file(tmp.file("bare-ev.png"), bare_ev) == io::Status::Ok);
-  CHECK(bare_ev == bare_off);
+  // A scene with a sky is never told so.
   CHECK(night_scene.output.find(warning) == std::string::npos);
 }
