@@ -358,8 +358,10 @@ TEST_CASE("mesh room: a dropped reflectance is said once a mesh, not once an adm
     REQUIRE_MESSAGE(load_placement_mesh(rock(tile), rig.data.mesh_options, built, rig.error),
                     rig.error);
     REQUIRE(built.source.data.materials.size() >= 2);
-    for (assets::Material& m : built.source.data.materials)
-      m.ior = 2.0f;  // a declared index: packs other than the stand-in's
+    for (assets::Material& m : built.source.data.materials) {
+      m.extensions |= assets::k_ext_ior;  // a declared index: packs other than the stand-in's
+      m.ior = 2.0f;
+    }
   };
   struct CaptureLog {
     log::RingSink sink{512};
