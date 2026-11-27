@@ -22,7 +22,7 @@
 //   [-] protocol methods  none
 //   [-] tunables          none: run-time parameters arrive in water_state::Config
 //   [-] LOD policy        none: one grid at one resolution; the water's LOD is W173's design
-//   [x] determinism       k_determinism below; the same bytes twice on one device
+//   [x] determinism       k_determinism below: derived (ADR-0080 decision 11)
 //   [x] zero cost unused  nothing is allocated or recorded until a DeviceStep is created
 //   [x] docs, tests, size table
 //   [x] bench             bench/water_live_bench.cpp
@@ -44,11 +44,14 @@ class RenderGraph;
 
 namespace engine::water_live {
 
-/// Determinism stance (ADR-0010): "hashed" on one device — a step is a function of the state's
-/// bytes, the inputs' bytes and the device, in a fixed order with no atomic, so the same device
-/// gives the same bytes twice (a case). Across devices only with Ops::fixed, whose open questions
-/// the experiment page lists (the denormal mode above all).
-inline constexpr const char* k_determinism = "hashed";
+/// Determinism stance (ADR-0010, ADR-0027): "derived". ADR-0080 decision 11: the state on the card
+/// is `derived` until measurement shows it can be more, and nothing `hashed` reads it. On one
+/// device a step is a function of the state's bytes, the inputs' bytes and the device, in a fixed
+/// order with no atomic, so the same device gives the same bytes twice (a case); that is not the
+/// same bytes on every device, which "hashed" (the state enters the sim hash and replays exactly
+/// everywhere) would need. Across devices it may become so only with Ops::fixed, whose open
+/// questions the experiment page lists (the denormal mode above all).
+inline constexpr const char* k_determinism = "derived";
 
 /// How division, the square root and the friction's cube root are taken. `native`: the device's
 /// own (Vulkan allows them 2.5 ulp and more, so two devices may differ in a last bit). `fixed`:

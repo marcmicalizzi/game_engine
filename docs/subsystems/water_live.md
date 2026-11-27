@@ -33,6 +33,17 @@
 - A still pond's slow sink kept by the compensated sum loses what it owes to two ulps of the depth.
 - The SPIR-V carries NoContraction and no GLSL.std.450 Fma; the mirrored structs keep the shader's offsets and sizes.
 
+**Two cards** (roadmap W175, 2026-11-26). The device cases run on the RTX 5090 (`msvc-debug`, driver 621.24, Vulkan 1.4.357) and on the Linux server's Titan Xp (Pascal; `linux-server`, GCC 14, driver 580.178.04, Vulkan 1.4.312), both passing whole. The state's hash (`state_hash`, FNV-1a over every plane's floats), as each card's run printed it:
+
+| case | form | RTX 5090 | Titan Xp | equal |
+|---|---|---|---|---|
+| exact lake, 557 steps, datum 0 and 2,000 m | native | 6248193821885885893 | 6248193821885885893 | yes |
+| exact lake | fixed | 6248193821885885893 | 6248193821885885893 | yes |
+| the count's flow, 400 steps (the "same bytes twice" case; gather twice and stored faces) | native | 3142517362989380888 | 10545315909033131114 | **no** |
+| the count's flow, 400 steps | fixed | 18440459637061453408 | 8796295464579050483 | **no** |
+
+On each card the gather twice and the stored faces gave one hash, so "the same bytes twice on one device" and "a face's flux is one value on both sides" hold on both. The exact lake's equality says little: nothing in it moves, so no rounding is asked for. Machine state: the RTX 5090's run shared the machine with about fifteen other agents' builds and waited 291 s for the GPU lock; the server's load average was 0.84 at the run's start. **What the comparison shows: a flowing state is not the same bytes on these two devices in either form, `Ops::fixed` included, so "the same bytes on every device" is not shown, and is refuted for the step as it stands.** Which operation diverges first (a driver fusing despite NoContraction, the denormal mode, or an operation the fixed form still takes from the device) is not yet found. The step's time on the Titan Xp is not measured: the bench's run under CTest is a smoke run that opens no device, and `tools/remote-build.ps1` runs CTest only, so the timings need the bench run on the server under the GPU lock (`engine_water_live_bench --filter=water_live.* --gpu-lock --wait-quiet=<s>` from the `linux-server` build), which no tool here starts yet.
+
 **Public API.** `include/systems/water_live/water_live.h`.
 
 **Depends on.** `base`, `containers`, `math`, `gfx`, `water_state`.
@@ -56,11 +67,11 @@ the scheduler, or another capability, and it can be removed from the build the s
 | Protocol methods | none | not needed |
 | Tunables | none | run-time parameters arrive in `water_state::Config` and `StepOptions` |
 | LOD policy | none | one grid at one resolution; the water's LOD is W173's design |
-| Determinism | `water_live::k_determinism` = `hashed` | the same bytes twice on one device (a case); across devices only with `Ops::fixed`, whose open questions the experiment page lists |
+| Determinism | `water_live::k_determinism` = `derived` | ADR-0080 decision 11: the card's state is `derived` until measurement shows the same bytes across devices, and nothing `hashed` reads it. The same bytes twice on one device (a case) is not that; across devices it could be only with `Ops::fixed`, whose open questions the experiment page lists ("Two cards", below) |
 | Zero cost when unused | nothing is allocated, compiled into a pipeline or recorded until a `DeviceStep` is created | plan 11 §11.10's first mechanism |
 | Tests and size table | `tests/water_live_tests.cpp`, `tests/water_live_device_tests.cpp`, `tests/size_table.cpp` | the reference's cases on the card |
 | Bench | `systems/water_live/bench/water_live_bench.cpp` | three states, three grids, three forms |
-| Removal proof | `ENGINE_WITH_WATER_LIVE`, off in the minimal build | not run (no configure with it off was run for W175) |
+| Removal proof | `ENGINE_WITH_WATER_LIVE`, off in the minimal build | run 2026-11-26: `msvc-debug`'s settings with this one switch off and everything else on (no preset covers it) built whole, and `water_state`'s tests, the `build.*` and `tools.*` tests, the lint, the documentation check and the structure check passed there, 34 of 34; `modules.json` listed `water_live` alone under `disabled_capabilities`. Nothing named the capability unconditionally |
 
 **Removing it.** `cmake --preset msvc-minimal` (or `-DENGINE_WITH_WATER_LIVE=OFF`) drops the
 module, its tests, and its bench; the module disappears from `build/<preset>/modules.json` and

@@ -14,7 +14,9 @@
 using namespace engine;
 
 TEST_CASE("water_live declares a determinism stance") {
-  CHECK(std::string_view{water_live::k_determinism} == "hashed");
+  // ADR-0080 decision 11: the card's state is derived until the same bytes are shown across
+  // devices, and nothing hashed reads it. One device's same bytes twice is not that.
+  CHECK(std::string_view{water_live::k_determinism} == "derived");
 }
 
 TEST_CASE("water_live: the mirrored structs keep the shader's offsets") {
